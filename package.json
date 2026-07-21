@@ -1,0 +1,26 @@
+{
+  "name": "cortex-notes-backend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/cli.ts dev",
+    "parse": "bun run src/cli.ts parse",
+    "index": "bun run src/cli.ts index",
+    "vault:init": "bun run src/cli.ts vault:init",
+    "vault:check": "bun run src/cli.ts vault:check",
+    "migrate": "bun run src/cli.ts migrate",
+    "mcp": "bun run src/cli.ts mcp",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "remark-frontmatter": "^5.0.0",
+    "remark-parse": "^11.0.0",
+    "unified": "^11.0.5",
+    "yaml": "^2.8.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.8.0"
+  }
+}

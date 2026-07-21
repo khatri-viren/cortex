@@ -1,0 +1,11 @@
+node_modules/
+coverage/
+dist/
+.DS_Store
+.env
+.cortex/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.log
+*.lock
