@@ -4,6 +4,9 @@ import { fileURLToPath } from "node:url";
 import { initVault, requireGitVault, scanVault, vaultHasExpectedGitIgnore } from "./core/vault.js";
 import { migrateVault } from "./core/migration.js";
 import { parseMarkdown } from "./core/markdown.js";
+import { VaultIndexer } from "./core/indexer.js";
+import { startWatcher } from "./core/watcher.js";
+import { GitAdapter } from "./core/git.js";
 
 type CliOptions = {
   command: string;
@@ -46,23 +49,36 @@ function print(value: unknown): void {
 }
 
 function help(): void {
-  console.log(`Cortex Phase 0\n\nCommands:\n  dev [--vault <path>] [--port <port>]\n  parse <file>\n  index --vault <path>\n  vault:init <path>\n  vault:check --vault <path>\n  migrate --vault <path> [--dry-run]\n  mcp --vault <path> --check`);
+  console.log(`Cortex Phase 1\n\nCommands:\n  dev [--vault <path>] [--port <port>]\n  parse <file>\n  index --vault <path>\n  vault:init <path>\n  vault:check --vault <path>\n  migrate --vault <path> [--dry-run]\n  mcp --vault <path> --check\n  git:status --vault <path>\n  git:history --vault <path> <note-path>\n  git:diff --vault <path> <note-path> [revision]\n  git:restore --vault <path> <note-path> <revision>`);
 }
 
 async function runDev(options: CliOptions): Promise<void> {
   const vaultRoot = requireGitVault(vaultArgument(options));
+  const indexer = new VaultIndexer(vaultRoot);
+  let lastReport = indexer.fullRebuild();
+  const watcher = await startWatcher(vaultRoot, async (events) => {
+    lastReport = indexer.incrementalRebuild(events.map((event) => event.path));
+  });
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: options.port ?? 0,
     fetch(request) {
       const url = new URL(request.url);
       if (url.pathname === "/health") {
-        return Response.json({ status: "ok", phase: 0, vaultRoot });
+        return Response.json({ status: "ok", phase: 1, vaultRoot, index: lastReport });
       }
       return new Response("Not found", { status: 404 });
     },
   });
-  console.log(JSON.stringify({ status: "ready", phase: 0, vaultRoot, url: `http://${server.hostname}:${server.port}` }));
+  const shutdown = async () => {
+    await watcher.stop();
+    await watcher.flushSnapshot();
+    server.stop();
+    indexer.close();
+  };
+  process.once("SIGINT", () => void shutdown().then(() => process.exit(0)));
+  process.once("SIGTERM", () => void shutdown().then(() => process.exit(0)));
+  console.log(JSON.stringify({ status: "ready", phase: 1, vaultRoot, url: `http://${server.hostname}:${server.port}`, index: lastReport }));
 }
 
 function runParse(options: CliOptions): void {
@@ -73,16 +89,14 @@ function runParse(options: CliOptions): void {
 }
 
 function runIndex(options: CliOptions): void {
-  const scan = scanVault(vaultArgument(options));
-  print({
-    vaultRoot: scan.vaultRoot,
-    files: scan.files,
-    noteCount: scan.noteCount,
-    linkCount: scan.linkCount,
-    sectionCount: scan.sectionCount,
-    diagnostics: scan.diagnostics,
-  });
-  if (scan.diagnostics.some((item) => item.severity === "error")) process.exitCode = 1;
+  const indexer = new VaultIndexer(vaultArgument(options));
+  try {
+    const report = indexer.fullRebuild();
+    print(report);
+    if (report.diagnostics.some((item) => item.severity === "error")) process.exitCode = 1;
+  } finally {
+    indexer.close();
+  }
 }
 
 function runCheck(options: CliOptions): void {
@@ -92,13 +106,49 @@ function runCheck(options: CliOptions): void {
   if (!vaultHasExpectedGitIgnore(vaultRoot)) {
     diagnostics.push({ severity: "warning", code: "invalid-gitignore", message: "Vault .gitignore does not cover runtime data.", filePath: `${vaultRoot}/.gitignore` });
   }
-  print({ vaultRoot: scan.vaultRoot, diagnostics, ok: !diagnostics.some((item) => item.severity === "error") });
+  let index;
+  const indexer = new VaultIndexer(vaultRoot);
+  try {
+    index = indexer.store.counts();
+  } finally {
+    indexer.close();
+  }
+  print({ vaultRoot: scan.vaultRoot, diagnostics, index, ok: !diagnostics.some((item) => item.severity === "error") });
   if (diagnostics.some((item) => item.severity === "error")) process.exitCode = 1;
 }
 
 function runMigrate(options: CliOptions): void {
   const changes = migrateVault(vaultArgument(options), options.dryRun);
   print({ dryRun: options.dryRun, changedCount: changes.filter((item) => item.changed).length, changes });
+}
+
+function runGit(options: CliOptions): void {
+  const git = new GitAdapter(vaultArgument(options));
+  const path = options.positionals[0];
+  switch (options.command) {
+    case "git:status":
+      print(git.status());
+      return;
+    case "git:history":
+      if (!path) throw new Error("Usage: bun run git:history -- --vault <path> <note-path>");
+      print(git.history(path));
+      return;
+    case "git:diff":
+      if (!path) throw new Error("Usage: bun run git:diff -- --vault <path> <note-path> [revision]");
+      print({ path, diff: git.diff(path, options.positionals[1]) });
+      return;
+    case "git:restore":
+      if (!path || !options.positionals[1]) throw new Error("Usage: bun run git:restore -- --vault <path> <note-path> <revision>");
+      git.restore(path, options.positionals[1]);
+      const indexer = new VaultIndexer(git.vaultRoot);
+      try {
+        const report = indexer.incrementalRebuild([resolve(git.vaultRoot, path)]);
+        print({ restored: path, revision: options.positionals[1], index: report });
+      } finally {
+        indexer.close();
+      }
+      return;
+  }
 }
 
 async function main(): Promise<void> {
@@ -127,6 +177,12 @@ async function main(): Promise<void> {
       return;
     case "migrate":
       runMigrate(options);
+      return;
+    case "git:status":
+    case "git:history":
+    case "git:diff":
+    case "git:restore":
+      runGit(options);
       return;
     case "mcp":
       requireGitVault(vaultArgument(options));

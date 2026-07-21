@@ -10,10 +10,15 @@
     "vault:check": "bun run src/cli.ts vault:check",
     "migrate": "bun run src/cli.ts migrate",
     "mcp": "bun run src/cli.ts mcp",
+    "git:status": "bun run src/cli.ts git:status",
+    "git:history": "bun run src/cli.ts git:history",
+    "git:diff": "bun run src/cli.ts git:diff",
+    "git:restore": "bun run src/cli.ts git:restore",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@parcel/watcher": "^2.5.1",
     "remark-frontmatter": "^5.0.0",
     "remark-parse": "^11.0.0",
     "unified": "^11.0.5",

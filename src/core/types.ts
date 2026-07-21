@@ -50,6 +50,13 @@ export type Wikilink = {
   location: SourceLocation;
 };
 
+export type TableData = {
+  sectionId?: string;
+  headers: string[];
+  rows: string[][];
+  startLine: number;
+};
+
 export type Section = {
   id?: string;
   level: number;
@@ -64,6 +71,7 @@ export type ParsedNote = {
   frontmatter?: NoteFrontmatter;
   wikilinks: Wikilink[];
   sections: Section[];
+  tables: TableData[];
   diagnostics: Diagnostic[];
   body: string;
 };

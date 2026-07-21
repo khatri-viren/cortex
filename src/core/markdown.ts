@@ -3,7 +3,7 @@ import { unified } from "unified";
 import remarkFrontmatter from "remark-frontmatter";
 import remarkParse from "remark-parse";
 import { parseFrontmatter } from "./frontmatter.js";
-import type { Diagnostic, Section, SourceLocation, Wikilink } from "./types.js";
+import type { Diagnostic, Section, SourceLocation, TableData, Wikilink } from "./types.js";
 import type { ParsedNote } from "./types.js";
 
 const SECTION_MARKER_RE = /^\s*<!--\s*cortex:section\s+id="(sec-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})"\s*-->\s*$/i;
@@ -89,6 +89,36 @@ function parseSections(text: string, lineOffset: number): { sections: Section[];
   return { sections, diagnostics };
 }
 
+function splitTableRow(line: string): string[] {
+  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  return trimmed.split("|").map((cell) => cell.trim());
+}
+
+function isTableDelimiter(line: string): boolean {
+  const cells = splitTableRow(line);
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function parseTables(body: string, sections: Section[], lineOffset: number): TableData[] {
+  const lines = body.split(/\r?\n/);
+  const tables: TableData[] = [];
+  for (let index = 0; index + 1 < lines.length; index += 1) {
+    if (!lines[index].includes("|") || !isTableDelimiter(lines[index + 1])) continue;
+    const headers = splitTableRow(lines[index]);
+    const rows: string[][] = [];
+    let rowIndex = index + 2;
+    while (rowIndex < lines.length && lines[rowIndex].trim() && lines[rowIndex].includes("|")) {
+      rows.push(splitTableRow(lines[rowIndex]));
+      rowIndex += 1;
+    }
+    const absoluteLine = index + 1 + lineOffset;
+    const sectionId = sections.find((section) => section.startLine <= absoluteLine && absoluteLine <= section.endLine)?.id;
+    tables.push({ sectionId, headers, rows, startLine: absoluteLine });
+    index = rowIndex - 1;
+  }
+  return tables;
+}
+
 export function parseMarkdown(text: string, filePath?: string): ParsedNote {
   const parsedFrontmatter = parseFrontmatter(text);
   const diagnostics = parsedFrontmatter.diagnostics.map((item) => ({ ...item, filePath }));
@@ -104,6 +134,7 @@ export function parseMarkdown(text: string, filePath?: string): ParsedNote {
     frontmatter: parsedFrontmatter.frontmatter,
     wikilinks: parseWikilinks(parsedFrontmatter.body, parsedFrontmatter.bodyLineOffset),
     sections: sectionResult.sections,
+    tables: parseTables(parsedFrontmatter.body, sectionResult.sections, parsedFrontmatter.bodyLineOffset),
     diagnostics,
     body: parsedFrontmatter.body,
   };
