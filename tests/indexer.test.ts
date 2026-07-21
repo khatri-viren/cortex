@@ -113,7 +113,10 @@ describe("watcher", () => {
     const vault = tempVault();
     let handle: Awaited<ReturnType<typeof startWatcher>> | undefined;
     const eventPromise = new Promise<string>((resolve) => {
-      void startWatcher(vault, async (events) => resolve(events[0]?.path ?? "")).then((value) => {
+      void startWatcher(vault, async (events) => {
+        const watched = events.find((event) => event.path.endsWith("watched.md"));
+        if (watched) resolve(watched.path);
+      }).then((value) => {
         handle = value;
         writeFileSync(join(vault, "notes", "watched.md"), readFileSync(join(vault, "project-map.md"), "utf8"));
       });

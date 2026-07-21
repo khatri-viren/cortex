@@ -7,7 +7,7 @@
 
 **Status:** design locked, pre-implementation
 **Owner:** Viren
-**Last updated:** 2026-07-21
+**Last updated:** 2026-07-22
 
 ---
 
@@ -164,7 +164,10 @@ which serves fast queries back to the MCP server (and backlink/search to the edi
 ### 6.4 MCP server (agent interface)
 - Primary agent surface. Returns **structured slices, not file dumps** — this is the
   entire token win vs. Claude Code reading/grepping files directly.
-- Tool surface (input → output shapes in §8).
+- Phase 2 ships a per-vault stdio server implemented with the stable v1 TypeScript MCP
+  SDK. Localhost HTTP remains deferred until the UI needs a shared endpoint.
+- Tool surface (input → output shapes in §8). Responses are bounded and return stable
+  structured error codes rather than arbitrary exceptions.
 
 ### 6.5 Editor (human interface)
 - **CodeMirror 6** — the same foundation Obsidian uses.
@@ -193,7 +196,8 @@ which serves fast queries back to the MCP server (and backlink/search to the edi
 ### 6.7 Backend process
 - A single local **Bun** process that owns the files, the SQLite index, and the
   watcher, and exposes **two faces of the same core**:
-  - MCP (stdio or localhost) for Claude Code.
+  - MCP stdio for agents in Phase 2; localhost can be added later when the UI needs a
+    shared endpoint.
   - A local API for the CM6 UI.
 - Use Bun-native primitives where they keep the system lean:
   - `bun:sqlite` for the rebuildable SQLite index.
@@ -201,8 +205,10 @@ which serves fast queries back to the MCP server (and backlink/search to the edi
   - TypeScript as the backend language, run directly by Bun.
 - Keeping one shared core behind two interfaces is what keeps the human and agent sides
   consistent.
-- Existing-note agent writes are section-scoped through `patch_section`; full-file agent
-  overwrites are not supported. `create_note` may write a new file.
+- Existing-note agent writes support section-scoped `patch_section` and optimistic full
+  Markdown replacement through `replace_note`. Full replacement requires the expected
+  file hash, preserves `id` and `created_at`, permits ordinary metadata edits, and lets
+  the backend manage `updated_at`. `create_note` may write a new file.
 
 ### 6.8 Desktop shell (deferred)
 - **Tauri** (Rust core + OS native webview) when a packaged desktop app is wanted.
@@ -235,44 +241,62 @@ so disk-change handling matters more. **No CRDT required for single-user.**
     and `view diff`; never silently discard either version.
 - `patch_section` includes the section's expected content hash/revision, so stale agent
   writes are rejected as conflicts instead of overwriting newer human edits.
+- `replace_note` includes the expected full-file SHA-256 hash and applies the same
+  optimistic conflict rule. Backend writes are atomic and synchronously trigger an
+  incremental reindex; watcher delivery remains the recovery path for external edits.
 - **CRDT (Yjs on the text buffer)** only if human + agent routinely edit the *same file
   at the same moment* — rare in this workflow; don't pay for it upfront.
 
 ---
 
-## 8. MCP tool surface (draft)
+## 8. MCP tool surface (Phase 2)
 
-Return slices, keep responses in the hundreds of tokens. Finalize shapes during build.
+Return bounded slices, keep responses in the hundreds of tokens where practical, and
+cap server-side limits. Phase 2 uses a per-vault stdio process; stdout is reserved for
+MCP protocol traffic and logs go to stderr.
 
 | Tool | Input | Output |
 |---|---|---|
 | `get_note` | note id/path | frontmatter + section outline (not full body) |
 | `get_section` | note id + section ID/heading | just that section's text + revision |
 | `patch_section` | note id + section ID + expected revision + new content | success, conflict, or new mtime |
+| `replace_note` | note id/path + expected file hash + complete Markdown | success, conflict, or new mtime |
 | `search` | query, limit | FTS5 hits with note + snippet |
 | `project_map` | path or node id, depth, limit | relevant files, modules, notes, and relationships |
 | `graph_query` | node id/path, direction (in/out/neighbors), depth | linked code and note nodes with edge types |
 | `get_context` | node id/path, task hint, limit | compact purpose, dependencies, attached notes, and likely files |
 | `query_table` | table-note id + filter | matching rows |
 | `list_notes` | optional prefix/tag filter | note ids + titles |
-| `create_note` | title, frontmatter, body | new note id/path |
+| `create_note` | title, frontmatter, body, optional vault-relative path | new note id/path |
 | `get_history` | note id/path, limit | commits affecting the note |
 | `get_diff` | note id/path, commit or revision | markdown diff |
 | `restore_note` | note id/path, commit or revision | restored path + new mtime |
 | `vault_check` | optional scope | unresolved links/targets, duplicate anchors, malformed metadata |
 
+`create_note` defaults to a slugged path under `notes/`; an explicit relative `.md` path
+is allowed when it remains inside the vault and outside runtime or Git metadata. All
+write tools validate frontmatter, use atomic same-directory replacement, serialize
+writes per vault, and synchronously reindex the changed path.
+
+`replace_note` requires the existing UUID and `created_at` to remain unchanged. Title,
+type, aliases, tags, and `applies_to` may change; `updated_at` is rewritten by the
+backend. Stale section revisions or file hashes return a conflict without modifying
+the source file.
+
 ---
 
-## 9. Claude Code integration
+## 9. Claude Code integration (deferred after Phase 2)
 
-Division of labor (official): CLAUDE.md = always-on context; skills = on-demand
+Division of labor (when this integration milestone is implemented): CLAUDE.md = always-on context; skills = on-demand
 knowledge/workflows; MCP = external connections; hooks = automation/guarantees;
 plugins = packaging.
 
-- **MCP** — register the notes server:
-  `claude mcp add notes -- <command>` for stdio by default. Use
-  `claude mcp add --transport http notes http://localhost:PORT` only when a shared
-  localhost endpoint is needed. Scope: local > project > user.
+- Phase 2 deliberately stops at the MCP server and its protocol tests. It does not add
+  Claude configuration, skills, hooks, or plugin packaging. Those become a follow-up
+  Phase 2b/3 integration milestone.
+- **MCP registration** — when integration begins, register the per-vault server with
+  `claude mcp add notes -- <command>`. Use HTTP only when a shared localhost endpoint
+  is needed.
 - **CLAUDE.md** — short, always-loaded pointer + hard rules: "notes system exposed via
   `notes` MCP; query it before exploring; update the relevant note after meaningful
   changes." Keep procedures OUT of here (context budget).
@@ -285,8 +309,8 @@ plugins = packaging.
     agent to `project_map`/`get_context` for detail.
   - `PostToolUse` on Write/Edit → run incremental reindexer (keeps SQLite fresh).
   - `UserPromptSubmit` → inject notes relevant to the prompt.
-- The notes skill instructs agents to use section-scoped writes for existing notes and
-  never overwrite a whole note file through the MCP surface.
+- The notes skill should instruct agents to prefer section-scoped writes and use
+  `replace_note` only with a fresh file hash and complete validated Markdown.
 - **Plugin** — bundle MCP + skill + hooks into one installable, namespaced unit so it
   drops into any repo and can be distributed.
 
@@ -299,7 +323,7 @@ verify against code.claude.com/docs at build time.
 
 - **Source of truth:** markdown files + YAML frontmatter, in a git repo.
 - **Backend:** single local Bun process, written in TypeScript.
-- **Local API:** `Bun.serve` if the CM6 UI needs HTTP; stdio remains available for MCP.
+- **Local API:** `Bun.serve` if the CM6 UI needs HTTP; Phase 2 MCP is per-vault stdio.
 - **Parser/indexer:** TypeScript (`remark`/unified or `markdown-it`) first; optional Rust
   parser (`comrak`/`pulldown-cmark` + `tree-sitter-markdown`) only if profiling proves
   the need.
@@ -337,18 +361,28 @@ human surface, then packaging.
   rebuilding the DB reproduces identical state.
 
 ### Phase 2 — Agent value (headless)
-- MCP server implementing the §8 tool surface (slices, not dumps).
-- Claude Code wiring: `claude mcp add`, CLAUDE.md rules, `SKILL.md`, hooks
-  (SessionStart, PostToolUse reindex, UserPromptSubmit).
+- MCP server implementing the §8 tool surface (slices, not dumps) as a per-vault Bun
+  stdio process.
+- Optimistic section and full-note writes with atomic replacement, conflict detection,
+  validation, and synchronous incremental reindexing.
 - Project-map and task-context queries that return focused graph neighborhoods instead of
   whole-repository dumps.
 - MCP Git history, diff, and explicit restore tools; automatic checkpointing remains opt-in.
-- Add a reproducible `bench/` evaluation with 3–5 fixed tasks on a real repository.
+- Add a reproducible `bench/` evaluation with 3–5 fixed tasks against the current Cortex
+  repository.
   Compare baseline grep/read exploration against MCP exploration using tool-call count,
   returned-token count, and wall-clock time.
-- **Done when:** Claude Code answers a structural question via `graph_query`/`search`
-  instead of grepping; a code change triggers auto-reindex; and the benchmark records a
-  repeatable reduction in tool calls and returned tokens without unacceptable latency.
+- **Done when:** the MCP protocol exposes all Phase 2 tools, external changes are
+  reindexed, stale writes are rejected, Git restore reindexes, and the benchmark records
+  a repeatable reduction in exploration calls and returned tokens without unacceptable
+  latency. Claude-specific wiring is not a Phase 2 acceptance criterion.
+
+### Phase 2b — Claude Code integration (deferred)
+- Register the MCP server with Claude Code.
+- Add `CLAUDE.md`, the notes skill, SessionStart/UserPromptSubmit/PostToolUse hooks, and
+  optional plugin packaging.
+- Measure injected-context budgets and verify the read-before/update-after workflow in
+  a real Claude Code session.
 
 ### Phase 3 — Human surface
 - Phase 3 entry gate: complete the live-preview candidate spike from §6.5 and choose a
@@ -378,8 +412,8 @@ human surface, then packaging.
   reading polish, KaTeX, Mermaid, or accessibility needs exceed it.
 - Concurrency: do not add CRDTs unless same-file conflicts become routine, such as
   several conflicts per week.
-- MCP transport: use stdio by default for Claude Code; add localhost HTTP only when
-  the UI needs a shared endpoint.
+- MCP transport: Phase 2 is a per-vault stdio process. Add localhost HTTP only when the
+  UI needs a shared endpoint.
 - Frontmatter: begin with immutable backend-managed `id` and `created_at`, backend-managed
   `updated_at`, plus `title`, `aliases`, `type`, `tags`, and optional `applies_to` targets.
   Initial types are `note`, `map`, and `table`; links remain wikilinks rather than a
@@ -392,12 +426,14 @@ human surface, then packaging.
   reported by `vault_check`.
 - Two-writer rule: non-overlapping section edits merge automatically; overlapping edits
   require an explicit keep/take/diff choice, with stale revisions rejected.
+- Agent writes: `patch_section` is section-scoped; `replace_note` is an optimistic full
+  Markdown replacement guarded by a file hash. Both are atomic and reindex after success.
 - Live-preview risk: timebox a candidate spike before Phase 3 and ship source/read-only
   modes if no candidate passes.
 - Evaluation: keep a checked-in 3–5 task benchmark comparing grep/read exploration with
   MCP queries across tool calls, returned tokens, and wall-clock time.
-- SessionStart: cap injected context at a configurable 500–800 tokens and fall back to
-  an index-of-indices summary when the full map exceeds the budget.
+- Claude context injection: defer the 500–800 token SessionStart budget and index-of-
+  indices fallback until Phase 2b integration.
 - Project graph: v1 covers repository structure, imports/manifests, tests, and curated
   note attachments. Symbol-level and runtime graphs are later enhancements.
 - Versioning: Git is the vault's local history. Manual checkpoints are the default;

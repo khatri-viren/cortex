@@ -7,6 +7,7 @@ import { parseMarkdown } from "./core/markdown.js";
 import { VaultIndexer } from "./core/indexer.js";
 import { startWatcher } from "./core/watcher.js";
 import { GitAdapter } from "./core/git.js";
+import { MCP_TOOL_NAMES, runMcpServer } from "./mcp/server.js";
 
 type CliOptions = {
   command: string;
@@ -49,7 +50,7 @@ function print(value: unknown): void {
 }
 
 function help(): void {
-  console.log(`Cortex Phase 1\n\nCommands:\n  dev [--vault <path>] [--port <port>]\n  parse <file>\n  index --vault <path>\n  vault:init <path>\n  vault:check --vault <path>\n  migrate --vault <path> [--dry-run]\n  mcp --vault <path> --check\n  git:status --vault <path>\n  git:history --vault <path> <note-path>\n  git:diff --vault <path> <note-path> [revision]\n  git:restore --vault <path> <note-path> <revision>`);
+  console.log(`Cortex Phase 2\n\nCommands:\n  dev [--vault <path>] [--port <port>]\n  parse <file>\n  index --vault <path>\n  vault:init <path>\n  vault:check --vault <path>\n  migrate --vault <path> [--dry-run]\n  mcp --vault <path> [--check]\n  git:status --vault <path>\n  git:history --vault <path> <note-path>\n  git:diff --vault <path> <note-path> [revision]\n  git:restore --vault <path> <note-path> <revision>`);
 }
 
 async function runDev(options: CliOptions): Promise<void> {
@@ -185,9 +186,12 @@ async function main(): Promise<void> {
       runGit(options);
       return;
     case "mcp":
-      requireGitVault(vaultArgument(options));
-      if (!options.check) throw new Error("Phase 0 only supports 'mcp --check'; full MCP starts in Phase 2.");
-      print({ status: "ready", phase: 0, transport: "stdio", tools: [] });
+      if (options.check) {
+        const vaultRoot = requireGitVault(vaultArgument(options));
+        print({ status: "ready", phase: 2, transport: "stdio", vaultRoot, tools: MCP_TOOL_NAMES });
+      } else {
+        await runMcpServer(vaultArgument(options));
+      }
       return;
     default:
       help();

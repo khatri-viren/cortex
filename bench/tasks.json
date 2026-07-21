@@ -1,0 +1,52 @@
+[
+  {
+    "id": "locate-markdown-parser",
+    "description": "Locate the Markdown parsing implementation and its structural helpers.",
+    "baseline": [
+      ["rg", "-n", "parseMarkdown|parseSections|parseWikilinks", "src"],
+      ["sed", "-n", "1,220p", "src/core/markdown.ts"]
+    ],
+    "mcp": [
+      { "tool": "get_context", "arguments": { "node": "src/core/markdown.ts", "task_hint": "Markdown parser", "limit": 20 } },
+      { "tool": "graph_query", "arguments": { "node": "src/core/markdown.ts", "direction": "out", "depth": 1, "limit": 20 } }
+    ]
+  },
+  {
+    "id": "trace-incremental-indexing",
+    "description": "Find how file changes become incremental index updates.",
+    "baseline": [
+      ["rg", "-n", "incrementalRebuild|startWatcher|fullRebuild", "src"],
+      ["sed", "-n", "1,220p", "src/core/indexer.ts"],
+      ["sed", "-n", "1,180p", "src/core/watcher.ts"]
+    ],
+    "mcp": [
+      { "tool": "get_context", "arguments": { "node": "src/core/indexer.ts", "task_hint": "incremental reindex watcher", "limit": 30 } },
+      { "tool": "graph_query", "arguments": { "node": "src/core/indexer.ts", "direction": "neighbors", "depth": 2, "limit": 30 } }
+    ]
+  },
+  {
+    "id": "find-git-restore-flow",
+    "description": "Locate Git restore behavior and the reindex path after restore.",
+    "baseline": [
+      ["rg", "-n", "git:restore|restore\\(|GitAdapter", "src"],
+      ["sed", "-n", "120,215p", "src/cli.ts"],
+      ["sed", "-n", "1,180p", "src/core/git.ts"]
+    ],
+    "mcp": [
+      { "tool": "get_context", "arguments": { "node": "src/core/git.ts", "task_hint": "Git restore reindex", "limit": 30 } },
+      { "tool": "graph_query", "arguments": { "node": "src/core/git.ts", "direction": "in", "depth": 2, "limit": 30 } }
+    ]
+  },
+  {
+    "id": "find-mcp-entrypoint",
+    "description": "Locate the MCP server entrypoint and tool registration boundary.",
+    "baseline": [
+      ["rg", "-n", "runMcpServer|createMcpServer|case \"mcp\"", "src"],
+      ["sed", "-n", "1,260p", "src/mcp/server.ts"]
+    ],
+    "mcp": [
+      { "tool": "project_map", "arguments": { "node": "src/mcp/server.ts", "depth": 1, "limit": 30 } },
+      { "tool": "get_context", "arguments": { "node": "src/mcp/server.ts", "task_hint": "MCP tool registration", "limit": 30 } }
+    ]
+  }
+]

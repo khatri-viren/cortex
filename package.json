@@ -10,6 +10,7 @@
     "vault:check": "bun run src/cli.ts vault:check",
     "migrate": "bun run src/cli.ts migrate",
     "mcp": "bun run src/cli.ts mcp",
+    "benchmark": "bun run bench/run.ts",
     "git:status": "bun run src/cli.ts git:status",
     "git:history": "bun run src/cli.ts git:history",
     "git:diff": "bun run src/cli.ts git:diff",
@@ -18,11 +19,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1",
     "@parcel/watcher": "^2.5.1",
     "remark-frontmatter": "^5.0.0",
     "remark-parse": "^11.0.0",
     "unified": "^11.0.5",
-    "yaml": "^2.8.0"
+    "yaml": "^2.8.0",
+    "zod": "^3"
   },
   "devDependencies": {
     "@types/bun": "latest",
