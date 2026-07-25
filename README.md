@@ -1,10 +1,11 @@
 # Cortex
 
 A local-first, version-controlled notes system where **Markdown files are the source of
-truth** and both humans and coding agents read/write the same notes. Humans get a fast,
-Obsidian-style editor and graph view; agents get a structured [MCP](https://modelcontextprotocol.io)
-interface so they can consult and update project knowledge instead of re-exploring the
-codebase on every task.
+truth** — and every note is wired into a live graph of the code it documents. Humans get a
+fast, Obsidian-style editor and graph view; agents get a structured
+[MCP](https://modelcontextprotocol.io) interface that puts the right note in front of them
+the moment they touch the file or module it explains, instead of re-deriving that context
+from scratch.
 
 ## Why
 
@@ -13,6 +14,15 @@ into Notion for a readable UI, the agent edits, and the copy goes stale — so n
 and nobody reads it. Cortex removes the copy step. Notes live as plain Markdown under Git,
 SQLite is just a rebuildable index over them, and read-before / update-after discipline is
 enforced deterministically (hooks + MCP tools), not left to the model to remember.
+
+Notes aren't a side channel next to the code graph — they're part of it. A note's
+`applies_to` frontmatter creates real graph edges (`documents`, `implements`, `owns`) linking
+it to the file or module it's about, stored in the same SQLite projection as the codebase's
+directory, import, and dependency structure. Call `project_map` or `search` and you land on
+the note attached to the code in question, not a folder of Markdown to search by hand. For
+an agent starting cold — a new session, a subagent with no prior context — that's the
+difference between re-deriving a decision from five files and reading the one paragraph that
+already explains it.
 
 ## How it works
 
