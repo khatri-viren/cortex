@@ -42,8 +42,8 @@ export function getNoteSource(selector: string): Promise<ApiNoteSource> {
   return request<ApiNoteSource>("/api/note?selector=" + encodeURIComponent(selector) + "&source=true");
 }
 
-export function getProjectMap(): Promise<ProjectMapResponse> {
-  return request<ProjectMapResponse>("/api/project-map?depth=1&limit=40");
+export function getProjectMap(node?: string): Promise<ProjectMapResponse> {
+  return request<ProjectMapResponse>("/api/project-map?depth=1&limit=40" + (node ? "&node=" + encodeURIComponent(node) : ""));
 }
 
 export function getContext(node: string): Promise<ApiContext> {
