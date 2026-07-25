@@ -1,46 +1,263 @@
 @import "tailwindcss";
+@import "@atomic-editor/editor/styles.css";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/ibm-plex-sans";
 
-/* Cortex palette. Names are deliberately distinct from Tailwind's default
-   colors (`teal`, `amber`, ...) so a stray `bg-teal-500` can never be mistaken
-   for the brand color. */
-@theme {
-  --color-paper: #f4f7f5;
-  --color-surface: #ffffff;
-  --color-surface-muted: #eef3f0;
-  --color-ink: #183b35;
-  --color-muted: #6a7e78;
-  --color-line: #d8e3de;
-  --color-brand: #1c7465;
-  --color-brand-soft: #dff1eb;
-  --color-accent: #d28b37;
-  --color-accent-soft: #fff3dd;
-  --color-accent-line: #efd09e;
-  --color-accent-ink: #63420f;
-  --color-danger: #b44c3d;
-
-  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-}
+@custom-variant dark (&:is(.dark *));
 
 @layer base {
   html {
-    background: var(--color-paper);
-    color: var(--color-ink);
-    font-family: var(--font-sans);
     font-synthesis: none;
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
+    @apply bg-background font-sans text-foreground;
   }
 
   body {
     min-width: 320px;
     min-height: 100vh;
+    @apply bg-background text-foreground;
+  }
+  * {
+    @apply border-border outline-ring/50;
+  }
+}
+
+/* Theme toggle: a full-page rectangular wipe from the bottom edge upward,
+   driven by the View Transition API. The old frame needs no animation of its
+   own (it's just what's visible underneath as the new one wipes over it). */
+::view-transition-old(root) {
+  animation: none;
+}
+::view-transition-new(root) {
+  animation: theme-reveal-bottom-up 0.4s ease-in-out;
+}
+@keyframes theme-reveal-bottom-up {
+  from {
+    clip-path: inset(100% 0 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
   }
 }
 
 /* React Flow ships its own stylesheet; recolor its chrome to match. */
 .react-flow__controls button {
-  background: var(--color-surface);
-  border-color: var(--color-line);
-  color: var(--color-ink);
+  background: var(--card);
+  border-color: var(--border);
+  color: var(--foreground);
+}
+
+/* @atomic-editor/editor ships its own stylesheet themed via these custom
+   properties; remap them to our shadcn tokens so Reading mode matches the
+   app instead of the library's default dark theme.
+
+   --primary is tuned as a button-fill color (light, high-chroma, paired with
+   a dark --primary-foreground on top of it), so using it directly as
+   foreground text color (links, inline code, syntax-highlight tokens) reads
+   as washed-out/illegible against a near-white background. The hl- and link
+   variables below fix lightness and chroma for legibility while keeping
+   each token's existing hue (shifted off --primary's hue) for
+   differentiation. The dark-mode override further down restores the
+   original inherit-primary's-own-lightness pattern, which already reads
+   fine against a dark background. */
+.atomic-editor-host {
+  --atomic-editor-bg: var(--background);
+  --atomic-editor-bg-panel: var(--muted);
+  --atomic-editor-bg-surface: var(--muted);
+  --atomic-editor-fg: var(--foreground);
+  --atomic-editor-fg-faint: var(--muted-foreground);
+  --atomic-editor-fg-muted: var(--muted-foreground);
+  --atomic-editor-border: var(--border);
+  --atomic-editor-link: oklch(from var(--primary) 0.48 0.16 h);
+  --atomic-editor-link-hover: oklch(from var(--primary) 0.4 0.18 h);
+  --atomic-editor-code-bg: var(--muted);
+  --atomic-editor-code-rail: var(--border);
+  --atomic-editor-font: var(--font-sans);
+  --atomic-editor-font-mono: var(--font-mono);
+  --atomic-editor-accent: var(--primary);
+  --atomic-editor-accent-bright: var(--primary);
+  --atomic-editor-accent-soft: color-mix(in oklch, var(--primary) 30%, var(--background));
+  --atomic-editor-radius: var(--radius);
+  --atomic-editor-measure: 84ch;
+  --atomic-editor-initial-reveal-bg: color-mix(in oklch, var(--primary) 10%, var(--background));
+  --atomic-editor-initial-reveal-bg-strong: color-mix(in oklch, var(--primary) 20%, var(--background));
+  --atomic-editor-search-bg: color-mix(in oklch, var(--primary) 15%, var(--background));
+  --atomic-editor-search-bg-active: color-mix(in oklch, var(--primary) 45%, var(--background));
+  --atomic-editor-selection-bg: color-mix(in oklch, var(--primary) 25%, var(--background));
+  --atomic-editor-hl-comment: var(--muted-foreground);
+  --atomic-editor-hl-escape: oklch(from var(--primary) 0.5 0.15 calc(h + 80));
+  --atomic-editor-hl-function: oklch(from var(--primary) 0.5 0.15 calc(h + 140));
+  --atomic-editor-hl-invalid: var(--destructive);
+  --atomic-editor-hl-keyword: oklch(from var(--primary) 0.48 0.16 h);
+  --atomic-editor-hl-number: oklch(from var(--primary) 0.5 0.15 calc(h - 40));
+  --atomic-editor-hl-operator: var(--foreground);
+  --atomic-editor-hl-property: var(--foreground);
+  --atomic-editor-hl-regexp: oklch(from var(--primary) 0.5 0.15 calc(h + 80));
+  --atomic-editor-hl-string: oklch(from var(--primary) 0.5 0.15 calc(h + 40));
+  --atomic-editor-hl-tag: oklch(from var(--primary) 0.5 0.15 calc(h + 200));
+  --atomic-editor-hl-type: oklch(from var(--primary) 0.5 0.15 calc(h - 80));
+  --atomic-editor-hl-variable: var(--foreground);
+  padding: 24px 28px 32px;
+}
+
+/* @atomic-editor/editor's built-in theme sets .cm-content's padding-bottom to
+   40vh (a "scroll past end" convention useful for an editable buffer, so the
+   last line can be scrolled up to the top while typing). Reading mode is
+   read-only, so that reads as a large permanent blank area below the actual
+   content instead — override it down to a small breathing-room amount. */
+.atomic-editor-host .cm-content {
+  padding-bottom: 32px !important;
+}
+
+.dark .atomic-editor-host {
+  --atomic-editor-link: var(--primary);
+  --atomic-editor-link-hover: oklch(from var(--primary) 0.85 c h);
+  --atomic-editor-hl-escape: oklch(from var(--primary) l c calc(h + 80));
+  --atomic-editor-hl-function: var(--primary);
+  --atomic-editor-hl-keyword: var(--primary);
+  --atomic-editor-hl-number: oklch(from var(--primary) l c calc(h - 40));
+  --atomic-editor-hl-regexp: oklch(from var(--primary) l c calc(h + 80));
+  --atomic-editor-hl-string: oklch(from var(--primary) l c calc(h + 40));
+  --atomic-editor-hl-tag: var(--primary);
+  --atomic-editor-hl-type: oklch(from var(--primary) l c calc(h - 80));
+}
+
+/* Reading mode's scroller uses macOS/Chromium overlay scrollbars, which are
+   invisible except while actively scrolling — long notes then look "cut off"
+   with no visible affordance that more content exists below. Force a slim,
+   always-visible themed scrollbar instead. */
+.atomic-editor-host .cm-scroller {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.atomic-editor-host .cm-scroller::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.atomic-editor-host .cm-scroller::-webkit-scrollbar-track {
+  background: transparent;
+}
+.atomic-editor-host .cm-scroller::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.atomic-editor-host .cm-scroller::-webkit-scrollbar-thumb:hover {
+  background-color: var(--muted-foreground);
+}
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: 'IBM Plex Sans Variable', sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.841 0.238 128.85);
+  --primary-foreground: oklch(0.405 0.101 131.063);
+  --secondary: oklch(0.967 0.001 286.375);
+  --secondary-foreground: oklch(0.21 0.006 285.885);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.648 0.2 131.684);
+  --sidebar-primary-foreground: oklch(0.986 0.031 120.757);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.768 0.233 130.85);
+  --primary-foreground: oklch(0.405 0.101 131.063);
+  --secondary: oklch(0.274 0.006 286.033);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.768 0.233 130.85);
+  --sidebar-primary-foreground: oklch(0.274 0.072 132.109);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
 }

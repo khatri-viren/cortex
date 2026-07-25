@@ -1,8 +1,57 @@
 import { useEffect, useMemo, useState } from "react";
+import {
+  FileTextIcon,
+  HistoryIcon,
+  NetworkIcon,
+  NotebookTextIcon,
+  PanelRightIcon,
+  RotateCcwIcon,
+} from "lucide-react";
 import type { ApiContext, ApiHistory, ApiNoteSource } from "../../src/api/contracts";
 import { Editor } from "./Editor";
 import { GraphPane } from "./GraphPane";
-import { getContext, getDiff, getHistory, getNoteSource, listNotes, reconcile, replaceNote, restoreNote, searchNotes, subscribeToChanges, type NoteSummary } from "./api";
+import {
+  getContext,
+  getDiff,
+  getHistory,
+  getNoteSource,
+  listNotes,
+  reconcile,
+  replaceNote,
+  restoreNote,
+  searchNotes,
+  subscribeToChanges,
+  type NoteSummary,
+} from "./api";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarGroup,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarInput,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarSeparator,
+  SidebarTrigger,
+  useSidebar,
+} from "@/components/ui/sidebar";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 type Mode = "source" | "reading";
 type Panel = "context" | "git";
@@ -24,6 +73,16 @@ function useRoute(): [Route, (next: Route) => void] {
   return [route, (next: Route) => { window.location.hash = next === "graph" ? "#/graph" : "#/notes"; }];
 }
 
+function ContextSidebarTrigger() {
+  const { toggleSidebar } = useSidebar();
+  return (
+    <Button variant="ghost" size="icon-sm" onClick={toggleSidebar}>
+      <PanelRightIcon />
+      <span className="sr-only">Toggle context panel</span>
+    </Button>
+  );
+}
+
 function App() {
   const [route, navigate] = useRoute();
   const [notes, setNotes] = useState<NoteSummary[]>([]);
@@ -31,7 +90,7 @@ function App() {
   const [source, setSource] = useState<ApiNoteSource>();
   const [draft, setDraft] = useState("");
   const [base, setBase] = useState("");
-  const [mode, setMode] = useState<Mode>("source");
+  const [mode, setMode] = useState<Mode>("reading");
   const [panel, setPanel] = useState<Panel>("context");
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Array<{ title: string; path: string; snippet: string }>>([]);
@@ -179,61 +238,285 @@ function App() {
   }
 
   return (
-    <main className="flex min-h-screen flex-col">
-      <header className="flex h-[58px] items-center gap-5 border-b border-line bg-surface px-[18px] max-[700px]:px-3">
-        <div className="flex min-w-[190px] items-center gap-2.5 max-[700px]:min-w-0">
-          <span className="grid size-7 place-items-center rounded-[7px] bg-brand font-extrabold text-white">C</span>
-          <div className="max-[700px]:hidden">
-            <strong className="block text-sm font-bold tracking-[0.02em]">Cortex</strong>
-            <span className="block text-[10px] tracking-[0.12em] text-muted uppercase">project notes</span>
+    <div className="flex h-screen flex-col overflow-hidden">
+      <header className="flex h-[52px] shrink-0 items-center gap-4 border-b bg-card px-4">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="grid size-7 shrink-0 place-items-center rounded-md bg-primary text-sm font-bold text-primary-foreground">C</span>
+          <div className="hidden leading-tight sm:block">
+            <strong className="block text-sm font-semibold">Cortex</strong>
+            <span className="block text-[10px] tracking-wide text-muted-foreground uppercase">Project notes</span>
           </div>
         </div>
-        <nav className="flex gap-0.5">
-          <button className={"cursor-pointer border-b-2 px-3 pt-[18px] pb-4 text-xs hover:text-ink " + (route === "notes" ? "border-b-brand font-bold text-ink" : "border-b-transparent text-muted")} onClick={() => navigate("notes")}>Notes</button>
-          <button className={"cursor-pointer border-b-2 px-3 pt-[18px] pb-4 text-xs hover:text-ink " + (route === "graph" ? "border-b-brand font-bold text-ink" : "border-b-transparent text-muted")} onClick={() => navigate("graph")}>Graph</button>
+        <nav className="flex items-center gap-1">
+          <Button variant={route === "notes" ? "secondary" : "ghost"} size="sm" onClick={() => navigate("notes")}>
+            <NotebookTextIcon />
+            Notes
+          </Button>
+          <Button variant={route === "graph" ? "secondary" : "ghost"} size="sm" onClick={() => navigate("graph")}>
+            <NetworkIcon />
+            Graph
+          </Button>
         </nav>
-        <div className="ml-auto flex items-center gap-2 text-xs text-muted max-[700px]:max-w-[140px] max-[700px]:truncate"><span className={"size-[7px] rounded-full " + (isDirty ? "bg-accent" : "bg-brand")} />{status}</div>
-        {route === "notes" && <button className="cursor-pointer rounded border border-brand bg-brand px-[13px] py-[7px] text-xs text-white disabled:cursor-default disabled:opacity-45" onClick={() => void save()} disabled={!isDirty || !source}>Save</button>}
+        <div className="ml-auto flex items-center gap-3">
+          <Badge variant="outline" className="max-w-[200px] gap-1.5 text-muted-foreground">
+            <span className={"size-1.5 rounded-full " + (isDirty ? "bg-foreground/60" : "bg-primary")} />
+            <span className="truncate">{status}</span>
+          </Badge>
+          {route === "notes" && (
+            <Button size="sm" onClick={() => void save()} disabled={!isDirty || !source}>
+              Save
+            </Button>
+          )}
+          <ThemeToggle />
+        </div>
       </header>
 
-      {route === "graph" && <section className="flex h-[calc(100vh-58px)] min-h-0 flex-col bg-surface"><GraphPane onOpenPath={openPath} /></section>}
-
-      {route === "notes" && <section data-testid="workspace" className="grid min-h-[calc(100vh-58px)] grid-cols-[240px_minmax(0,1fr)_320px] max-[1100px]:grid-cols-[210px_minmax(0,1fr)] max-[700px]:flex max-[700px]:flex-col">
-        <aside className="min-w-0 border-r border-line bg-surface px-3 py-[18px] max-[700px]:max-h-[270px] max-[700px]:overflow-auto max-[700px]:border-r-0 max-[700px]:border-b">
-          <div className="flex justify-between px-1.5 pb-3 text-[11px] font-extrabold tracking-[0.12em] text-muted uppercase"><span>Notes</span><span className="text-brand">{notes.length}</span></div>
-          <label className="mb-3.5 block"><span className="mx-1.5 mb-[5px] block text-[11px] text-muted">Search</span><input className="w-full rounded border border-line bg-paper px-[9px] py-2 text-xs text-ink outline-none focus:border-brand focus:ring-2 focus:ring-brand-soft" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Title or path" /></label>
-          {searchResults.length > 0 && (
-            <div className="mb-2 grid gap-0.5 border-b border-line pb-2.5">
-              {searchResults.map((result) => <button key={result.path} data-testid="search-result" className="cursor-pointer rounded px-2 py-[9px] text-left hover:bg-surface-muted" onClick={() => openPath(result.path)}><strong className="block truncate text-xs font-[650]">{result.title}</strong><small className="mt-[3px] block truncate text-[10px] text-muted">{result.snippet}</small></button>)}
-            </div>
-          )}
-          <div className="grid gap-0.5">
-            {visibleNotes.map((note) => <button key={note.path} data-testid="note-row" className={"cursor-pointer rounded px-2 py-[9px] text-left " + (selected === note.path ? "bg-brand-soft" : "hover:bg-surface-muted")} onClick={() => openPath(note.path)}><span className="block truncate text-xs font-[650]">{note.title}</span><small className="mt-[3px] block truncate text-[10px] text-muted">{note.path}</small></button>)}
-          </div>
-        </aside>
-
-        <section className="flex min-w-0 flex-col bg-surface">
-          <div className="flex min-h-[82px] items-center justify-between gap-4 border-b border-line px-6 py-4 max-[700px]:px-4 max-[700px]:py-3.5">
-            <div><span className="block text-[10px] font-extrabold tracking-[0.12em] text-brand uppercase">{source?.note.type ?? "note"}</span><h1 className="mt-1 text-[19px] leading-tight font-bold">{currentTitle}</h1></div>
-            <div className="flex gap-0.5">
-              <button className={"cursor-pointer border-b-2 px-[9px] py-2 text-[11px] hover:text-ink " + (mode === "source" ? "border-b-brand font-bold text-ink" : "border-b-transparent text-muted")} onClick={() => setMode("source")}>Source</button>
-              <button className={"cursor-pointer border-b-2 px-[9px] py-2 text-[11px] hover:text-ink " + (mode === "reading" ? "border-b-brand font-bold text-ink" : "border-b-transparent text-muted")} onClick={() => setMode("reading")}>Reading</button>
-            </div>
-          </div>
-          <div className="min-h-0 flex-1">{source ? <Editor value={draft} mode={mode} onChange={setDraft} linkTargets={notes.map((note) => note.title)} /> : <div className="grid h-full min-h-[300px] content-center place-items-center gap-1.5 p-6 text-center text-muted"><strong className="text-ink">Choose a note</strong><span className="text-xs">The indexed Markdown workspace will appear here.</span></div>}</div>
-          {conflict && <div className="flex items-center justify-between gap-4 border-t border-accent-line bg-accent-soft px-[18px] py-3 text-accent-ink max-[700px]:flex-col max-[700px]:items-start"><div><strong className="block">External edit needs your decision</strong><span className="mt-1 block text-[11px]">Conflicts: {conflict.sections.join(", ")}</span></div><div className="flex gap-[7px]"><button className="cursor-pointer rounded border border-[#a76a1e] px-[13px] py-[7px] text-xs text-[#7b4e12]" onClick={() => { setDraft(conflict.remote); setBase(conflict.remote); setConflict(undefined); setStatus("Using external version"); }}>Take theirs</button><button className="cursor-pointer rounded border border-[#a76a1e] px-[13px] py-[7px] text-xs text-[#7b4e12]" onClick={() => { void keepMine(); }}>Keep mine</button></div></div>}
+      {route === "graph" && (
+        <section className="flex min-h-0 flex-1 flex-col bg-background">
+          <GraphPane onOpenPath={openPath} />
         </section>
+      )}
 
-        <aside className="flex min-h-0 min-w-0 flex-col border-l border-line bg-surface max-[1100px]:col-span-full max-[1100px]:min-h-[260px] max-[1100px]:border-t max-[1100px]:border-l-0">
-          <div className="flex gap-0.5 border-b border-line px-3 pt-3">
-            <button className={"cursor-pointer border-b-2 px-[9px] py-2 text-[11px] hover:text-ink " + (panel === "context" ? "border-b-brand font-bold text-ink" : "border-b-transparent text-muted")} onClick={() => setPanel("context")}>Context</button>
-            <button className={"cursor-pointer border-b-2 px-[9px] py-2 text-[11px] hover:text-ink " + (panel === "git" ? "border-b-brand font-bold text-ink" : "border-b-transparent text-muted")} onClick={() => setPanel("git")}>Git</button>
-          </div>
-          {panel === "context" && <div className="grid gap-px overflow-auto"><section className="grid gap-[7px] border-b border-line p-4"><span className="block text-[10px] font-extrabold tracking-[0.12em] text-brand uppercase">Path</span><code className="font-mono text-[11px] break-words text-ink">{source?.note.path ?? "No note selected"}</code></section><section className="grid gap-[7px] border-b border-line p-4"><span className="block text-[10px] font-extrabold tracking-[0.12em] text-brand uppercase">Sections</span><strong className="text-2xl">{source?.sections.length ?? 0}</strong><small className="text-[11px] leading-normal text-muted">Marked sections available for focused agent patches.</small></section><section className="grid gap-[7px] border-b border-line p-4"><span className="block text-[10px] font-extrabold tracking-[0.12em] text-brand uppercase">Diagnostics</span>{source?.diagnostics.length ? source.diagnostics.map((item, index) => <p className="m-0 text-[11px] leading-[1.45] text-danger" key={item.code + index}>{item.severity}: {item.message}</p>) : <small className="text-[11px] leading-normal text-muted">No note diagnostics.</small>}</section><section className="grid gap-[7px] border-b border-line p-4"><span className="block text-[10px] font-extrabold tracking-[0.12em] text-brand uppercase">Related Notes</span>{context?.attached_notes?.length ? context.attached_notes.map((node) => <button className="cursor-pointer border-b border-line py-[7px] text-left text-xs text-brand" key={node.nodeId} onClick={() => node.path && openPath(node.path)}>{node.name}</button>) : <small className="text-[11px] leading-normal text-muted">No attached notes in the bounded neighborhood.</small>}</section></div>}
-          {panel === "git" && <div className="min-h-0 overflow-auto">{!source ? <div className="grid h-full min-h-[300px] content-center place-items-center gap-1.5 p-6 text-center text-muted">Select a note to inspect its Git history and diff.</div> : <><div className="flex items-center justify-between border-b border-line p-4"><span className="block text-[10px] font-extrabold tracking-[0.12em] text-brand uppercase">History</span><button className="cursor-pointer rounded border border-line bg-surface px-[9px] py-1.5 text-[11px] text-ink disabled:cursor-default disabled:opacity-45" disabled={!selectedRevision} onClick={() => void restoreSelected()}>Restore</button></div><div className="grid gap-px border-b border-line">{history?.commits.length ? history.commits.map((commit) => <button key={commit.hash} className={"grid cursor-pointer gap-1 border-l-[3px] px-3.5 py-2.5 text-left " + (selectedRevision === commit.hash ? "border-l-brand bg-surface-muted" : "border-l-transparent bg-surface hover:border-l-brand hover:bg-surface-muted")} onClick={() => setSelectedRevision(commit.hash)}><strong className="truncate text-[11px]">{commit.subject}</strong><small className="text-[10px] text-muted">{commit.hash.slice(0, 8)} · {new Date(commit.date).toLocaleDateString()}</small></button>) : <small className="block p-4 text-[10px] text-muted">No committed history for this note.</small>}</div><div className="p-4"><span className="block text-[10px] font-extrabold tracking-[0.12em] text-brand uppercase">Diff</span><pre className="mt-2.5 max-h-[280px] overflow-auto border border-line bg-[#f8faf9] p-2.5 font-mono text-[10px] leading-relaxed break-words whitespace-pre-wrap text-ink">{diff || "Select a revision"}</pre></div></>}</div>}
-        </aside>
-      </section>}
-    </main>
+      {route === "notes" && (
+        <SidebarProvider className="min-h-0 flex-1 [contain:layout]">
+          <Sidebar collapsible="icon">
+            <SidebarHeader className="gap-2.5">
+              <SidebarMenu>
+                <SidebarMenuItem>
+                  <SidebarMenuButton size="lg" className="pointer-events-none">
+                    <NotebookTextIcon />
+                    <span className="font-medium group-data-[collapsible=icon]:hidden">All notes</span>
+                    <Badge variant="secondary" className="ml-auto group-data-[collapsible=icon]:hidden">{notes.length}</Badge>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              </SidebarMenu>
+              <SidebarInput
+                placeholder="Search notes"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                className="group-data-[collapsible=icon]:hidden"
+              />
+            </SidebarHeader>
+            <SidebarContent>
+              {searchResults.length > 0 && (
+                <SidebarGroup>
+                  <SidebarGroupLabel>Search results</SidebarGroupLabel>
+                  <SidebarMenu>
+                    {searchResults.map((result) => (
+                      <SidebarMenuItem key={result.path}>
+                        <SidebarMenuButton size="lg" data-testid="search-result" onClick={() => openPath(result.path)}>
+                          <FileTextIcon />
+                          <div className="flex min-w-0 flex-col items-start gap-0.5 group-data-[collapsible=icon]:hidden">
+                            <span className="truncate font-medium">{result.title}</span>
+                            <span className="truncate text-[10px] text-muted-foreground">{result.snippet}</span>
+                          </div>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    ))}
+                  </SidebarMenu>
+                </SidebarGroup>
+              )}
+              <SidebarGroup>
+                <SidebarGroupLabel>Notes</SidebarGroupLabel>
+                <SidebarMenu>
+                  {visibleNotes.map((note) => (
+                    <SidebarMenuItem key={note.path}>
+                      <SidebarMenuButton
+                        size="lg"
+                        data-testid="note-row"
+                        isActive={selected === note.path}
+                        tooltip={note.title}
+                        onClick={() => openPath(note.path)}
+                      >
+                        <FileTextIcon />
+                        <div className="flex min-w-0 flex-col items-start gap-0.5 group-data-[collapsible=icon]:hidden">
+                          <span className="truncate font-medium">{note.title}</span>
+                          <span className="truncate text-[10px] text-muted-foreground">{note.path}</span>
+                        </div>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ))}
+                </SidebarMenu>
+              </SidebarGroup>
+            </SidebarContent>
+          </Sidebar>
+
+          <SidebarInset data-testid="workspace" className="min-w-0">
+            <SidebarProvider className="min-h-0 flex-1" defaultOpen>
+              <div className="flex min-h-0 flex-1">
+                <div className="flex min-w-0 flex-1 flex-col bg-background">
+                  <div className="flex min-h-[64px] items-center justify-between gap-4 border-b px-5 py-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <SidebarTrigger />
+                      <div className="min-w-0">
+                        <span className="block text-[10px] font-semibold tracking-wide text-primary uppercase">{source?.note.type ?? "note"}</span>
+                        <h1 className="truncate text-base leading-tight font-semibold">{currentTitle}</h1>
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Tabs value={mode} onValueChange={(value) => setMode(value as Mode)}>
+                        <TabsList>
+                          <TabsTrigger value="source">Source</TabsTrigger>
+                          <TabsTrigger value="reading">Reading</TabsTrigger>
+                        </TabsList>
+                      </Tabs>
+                      <ContextSidebarTrigger />
+                    </div>
+                  </div>
+                  <div className="min-h-0 flex-1">
+                    {source ? (
+                      <Editor value={draft} mode={mode} onChange={setDraft} linkTargets={notes.map((note) => note.title)} notePath={activeNotePath} notes={notes} onOpenNote={openPath} />
+                    ) : (
+                      <Empty className="h-full">
+                        <EmptyHeader>
+                          <EmptyMedia variant="icon">
+                            <FileTextIcon />
+                          </EmptyMedia>
+                          <EmptyTitle>Choose a note</EmptyTitle>
+                          <EmptyDescription>The indexed Markdown workspace will appear here.</EmptyDescription>
+                        </EmptyHeader>
+                      </Empty>
+                    )}
+                  </div>
+                  {conflict && (
+                    <Alert variant="destructive" className="m-3 shrink-0">
+                      <AlertTitle>External edit needs your decision</AlertTitle>
+                      <AlertDescription>
+                        <p>Conflicts: {conflict.sections.join(", ")}</p>
+                        <div className="mt-2 flex gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => { setDraft(conflict.remote); setBase(conflict.remote); setConflict(undefined); setStatus("Using external version"); }}
+                          >
+                            Take theirs
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => void keepMine()}>
+                            Keep mine
+                          </Button>
+                        </div>
+                      </AlertDescription>
+                    </Alert>
+                  )}
+                </div>
+
+                <Sidebar side="right" collapsible="offcanvas">
+                  <SidebarHeader>
+                    <Tabs value={panel} onValueChange={(value) => setPanel(value as Panel)}>
+                      <TabsList className="w-full">
+                        <TabsTrigger value="context" className="flex-1">Context</TabsTrigger>
+                        <TabsTrigger value="git" className="flex-1">Git</TabsTrigger>
+                      </TabsList>
+                    </Tabs>
+                  </SidebarHeader>
+                  <SidebarContent>
+                    {panel === "context" && (
+                      <>
+                        <SidebarGroup>
+                          <SidebarGroupLabel>Path</SidebarGroupLabel>
+                          <code className="block px-2 pb-1 font-mono text-[11px] break-words text-foreground">{source?.note.path ?? "No note selected"}</code>
+                        </SidebarGroup>
+                        <SidebarSeparator />
+                        <SidebarGroup>
+                          <SidebarGroupLabel>Sections</SidebarGroupLabel>
+                          <div className="px-2 pb-1">
+                            <strong className="text-2xl">{source?.sections.length ?? 0}</strong>
+                            <p className="text-[11px] leading-normal text-muted-foreground">Marked sections available for focused agent patches.</p>
+                          </div>
+                        </SidebarGroup>
+                        <SidebarSeparator />
+                        <SidebarGroup>
+                          <SidebarGroupLabel>Diagnostics</SidebarGroupLabel>
+                          <div className="grid gap-1.5 px-2 pb-1">
+                            {source?.diagnostics.length ? (
+                              source.diagnostics.map((item, index) => (
+                                <Alert key={item.code + index} variant="destructive">
+                                  <AlertDescription>{item.severity}: {item.message}</AlertDescription>
+                                </Alert>
+                              ))
+                            ) : (
+                              <p className="text-[11px] leading-normal text-muted-foreground">No note diagnostics.</p>
+                            )}
+                          </div>
+                        </SidebarGroup>
+                        <SidebarSeparator />
+                        <SidebarGroup>
+                          <SidebarGroupLabel>Related notes</SidebarGroupLabel>
+                          {context?.attached_notes?.length ? (
+                            <SidebarMenu>
+                              {context.attached_notes.map((node) => (
+                                <SidebarMenuItem key={node.nodeId}>
+                                  <SidebarMenuButton disabled={!node.path} onClick={() => node.path && openPath(node.path)}>
+                                    <span className="truncate">{node.name}</span>
+                                  </SidebarMenuButton>
+                                </SidebarMenuItem>
+                              ))}
+                            </SidebarMenu>
+                          ) : (
+                            <p className="px-2 text-[11px] leading-normal text-muted-foreground">No attached notes in the bounded neighborhood.</p>
+                          )}
+                        </SidebarGroup>
+                      </>
+                    )}
+                    {panel === "git" && (
+                      !source ? (
+                        <Empty className="h-full">
+                          <EmptyHeader>
+                            <EmptyMedia variant="icon">
+                              <HistoryIcon />
+                            </EmptyMedia>
+                            <EmptyDescription>Select a note to inspect its Git history and diff.</EmptyDescription>
+                          </EmptyHeader>
+                        </Empty>
+                      ) : (
+                        <>
+                          <SidebarGroup>
+                            <div className="flex items-center justify-between">
+                              <SidebarGroupLabel className="px-0">History</SidebarGroupLabel>
+                              <Button size="icon-sm" variant="ghost" disabled={!selectedRevision} onClick={() => void restoreSelected()}>
+                                <RotateCcwIcon />
+                                <span className="sr-only">Restore</span>
+                              </Button>
+                            </div>
+                            <SidebarMenu>
+                              {history?.commits.length ? (
+                                history.commits.map((commit) => (
+                                  <SidebarMenuItem key={commit.hash}>
+                                    <SidebarMenuButton
+                                      size="lg"
+                                      isActive={selectedRevision === commit.hash}
+                                      onClick={() => setSelectedRevision(commit.hash)}
+                                    >
+                                      <div className="flex min-w-0 flex-col items-start gap-0.5">
+                                        <span className="truncate font-medium">{commit.subject}</span>
+                                        <span className="truncate text-[10px] text-muted-foreground">{commit.hash.slice(0, 8)} · {new Date(commit.date).toLocaleDateString()}</span>
+                                      </div>
+                                    </SidebarMenuButton>
+                                  </SidebarMenuItem>
+                                ))
+                              ) : (
+                                <p className="px-2 text-[10px] text-muted-foreground">No committed history for this note.</p>
+                              )}
+                            </SidebarMenu>
+                          </SidebarGroup>
+                          <SidebarSeparator />
+                          <SidebarGroup>
+                            <SidebarGroupLabel>Diff</SidebarGroupLabel>
+                            <ScrollArea className="mx-2 mb-2 max-h-[280px] rounded-md border bg-muted/40">
+                              <pre className="p-2.5 font-mono text-[10px] leading-relaxed break-words whitespace-pre-wrap text-foreground">{diff || "Select a revision"}</pre>
+                            </ScrollArea>
+                          </SidebarGroup>
+                        </>
+                      )
+                    )}
+                  </SidebarContent>
+                </Sidebar>
+              </div>
+            </SidebarProvider>
+          </SidebarInset>
+        </SidebarProvider>
+      )}
+    </div>
   );
 }
 

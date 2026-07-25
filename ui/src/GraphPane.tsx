@@ -1,9 +1,20 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { Fragment, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Background, Controls, Handle, MiniMap, Position, ReactFlow } from "@xyflow/react";
 import type { Edge, Node, NodeProps } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { getProjectMap, getWorkspaceStatus } from "./api";
 import type { ApiGraph, ApiWorkspaceStatus } from "../../src/api/contracts";
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb";
+import { Badge } from "@/components/ui/badge";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { NetworkIcon } from "lucide-react";
 
 const COLUMN_WIDTH = 190;
 const ROW_HEIGHT = 100;
@@ -49,16 +60,31 @@ const CONTAINER_KINDS = new Set(["project", "repository", "directory"]);
 const LEAF_CODE_KINDS = new Set(["file", "test", "configuration", "module", "symbol", "package"]);
 
 function nodeStyle(kind: string): CSSProperties {
-  if (kind === "note") return { border: "1px solid #d28b37", background: "#fff7e6", color: "#173b35" };
-  if (CONTAINER_KINDS.has(kind)) return { border: "1px solid #6d7fd6", background: "#eef0fc", color: "#2a2f66", cursor: "pointer" };
-  if (LEAF_CODE_KINDS.has(kind)) return { border: "1px dashed #9bbdb5", background: "#f6fbf9", color: "#3a5450", opacity: 0.85 };
-  return { border: "1px solid #9bbdb5", background: "#f6fbf9", color: "#173b35" };
+  if (kind === "note") {
+    return {
+      border: "1px solid var(--primary)",
+      background: "color-mix(in oklch, var(--primary) 14%, var(--background))",
+      color: "var(--foreground)",
+    };
+  }
+  if (CONTAINER_KINDS.has(kind)) {
+    return {
+      border: "1px solid oklch(from var(--primary) l c calc(h + 140))",
+      background: "color-mix(in oklch, oklch(from var(--primary) l c calc(h + 140)) 12%, var(--background))",
+      color: "var(--foreground)",
+      cursor: "pointer",
+    };
+  }
+  if (LEAF_CODE_KINDS.has(kind)) {
+    return { border: "1px dashed var(--border)", background: "var(--muted)", color: "var(--muted-foreground)", opacity: 0.85 };
+  }
+  return { border: "1px solid var(--border)", background: "var(--card)", color: "var(--foreground)" };
 }
 
 function nodeColor(kind: string): string {
-  if (kind === "note") return "#d28b37";
-  if (CONTAINER_KINDS.has(kind)) return "#6d7fd6";
-  return "#5c9d91";
+  if (kind === "note") return "var(--primary)";
+  if (CONTAINER_KINDS.has(kind)) return "oklch(from var(--primary) l c calc(h + 140))";
+  return "var(--muted-foreground)";
 }
 
 type NoteNodeData = { label: string; kind: string; path?: string; onDrill: () => void };
@@ -75,7 +101,7 @@ function NoteNodeContent({ data }: NodeProps & { data: NoteNodeData }) {
           event.stopPropagation();
           data.onDrill();
         }}
-        className="grid h-4 w-4 shrink-0 place-items-center rounded-sm border border-[#d28b37] bg-transparent text-[10px] leading-none text-[#d28b37] hover:bg-[#d28b37] hover:text-white"
+        className="grid h-4 w-4 shrink-0 place-items-center rounded-sm border border-primary bg-transparent text-[10px] leading-none text-primary hover:bg-primary hover:text-primary-foreground"
       >
         +
       </button>
@@ -149,36 +175,64 @@ export function GraphPane({ onOpenPath }: GraphPaneProps) {
     source: edge.fromId,
     target: edge.toId,
     label: edge.kind,
-    style: { stroke: "#a7bdb8" },
-    labelStyle: { fill: "#56716b", fontSize: 9 },
+    style: { stroke: "var(--border)" },
+    labelStyle: { fill: "var(--muted-foreground)", fontSize: 9 },
   })), [graph]);
 
-  if (error) return <div className="grid h-full min-h-[300px] content-center place-items-center gap-1.5 p-6 text-center text-muted">Graph unavailable: {error}</div>;
-  if (!graph) return <div className="grid h-full min-h-[300px] content-center place-items-center gap-1.5 p-6 text-center text-muted">Loading project map...</div>;
+  if (error) {
+    return (
+      <Empty className="h-full">
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <NetworkIcon />
+          </EmptyMedia>
+          <EmptyTitle>Graph unavailable</EmptyTitle>
+          <EmptyDescription>{error}</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    );
+  }
+  if (!graph) {
+    return (
+      <Empty className="h-full">
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <NetworkIcon />
+          </EmptyMedia>
+          <EmptyTitle>Loading project map…</EmptyTitle>
+        </EmptyHeader>
+      </Empty>
+    );
+  }
   const workspaceStatusLine = workspaceLine(workspace);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex min-h-[82px] items-center justify-between gap-4 border-b border-line px-6 py-4 max-[700px]:px-4 max-[700px]:py-3.5">
-        <div><span className="block text-[10px] font-extrabold tracking-[0.12em] text-brand uppercase">Project map</span><h1 className="mt-1 text-[19px] leading-tight font-bold">Graph</h1></div>
-        <span className="text-[11px] text-muted">{graph.nodes.length + 1} nodes · {graph.edges.length} edges</span>
+      <div className="flex min-h-[64px] items-center justify-between gap-4 border-b px-5 py-3">
+        <div><span className="block text-[10px] font-semibold tracking-wide text-primary uppercase">Project map</span><h1 className="mt-1 text-base leading-tight font-semibold">Graph</h1></div>
+        <Badge variant="secondary">{graph.nodes.length + 1} nodes · {graph.edges.length} edges</Badge>
       </div>
-      {workspaceStatusLine && <div className="border-b border-line bg-surface-muted px-3 py-1.5 text-[11px] text-muted">{workspaceStatusLine}</div>}
-      <div className="flex items-center gap-1 border-b border-line px-3 py-1.5 text-[11px] text-muted">
-        {trail.map((crumb, index) => (
-          <span key={crumb.nodeId} className="flex items-center gap-1">
-            {index > 0 && <span>›</span>}
-            {index === trail.length - 1 ? (
-              <span className="font-semibold text-ink">{crumb.name}</span>
-            ) : (
-              <button type="button" onClick={() => jumpTo(index)} className="text-brand hover:underline">
-                {crumb.name}
-              </button>
-            )}
-          </span>
-        ))}
+      {workspaceStatusLine && <div className="border-b bg-muted/40 px-3 py-1.5 text-[11px] text-muted-foreground">{workspaceStatusLine}</div>}
+      <div className="border-b px-3 py-1.5">
+        <Breadcrumb>
+          <BreadcrumbList>
+            {trail.map((crumb, index) => (
+              <Fragment key={crumb.nodeId}>
+                {index > 0 && <BreadcrumbSeparator />}
+                <BreadcrumbItem>
+                  {index === trail.length - 1 ? (
+                    <BreadcrumbPage>{crumb.name}</BreadcrumbPage>
+                  ) : (
+                    <BreadcrumbLink render={<button type="button" onClick={() => jumpTo(index)} />}>{crumb.name}</BreadcrumbLink>
+                  )}
+                </BreadcrumbItem>
+              </Fragment>
+            ))}
+          </BreadcrumbList>
+        </Breadcrumb>
       </div>
       <div className="min-h-0 flex-1">
         <ReactFlow
+          style={{ width: "100%", height: "100%" }}
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}
@@ -195,7 +249,7 @@ export function GraphPane({ onOpenPath }: GraphPaneProps) {
             if (path?.endsWith(".md")) onOpenPath(path);
           }}
         >
-          <Background color="#dce9e5" gap={24} />
+          <Background color="var(--border)" gap={24} />
           <Controls />
           <MiniMap nodeColor={(node) => nodeColor(typeof node.data?.kind === "string" ? node.data.kind : "")} />
         </ReactFlow>

@@ -1,31 +1,108 @@
-import { useEffect, useRef } from "react";
-import { autocompletion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import { AtomicCodeMirrorEditor, wikiLinks } from "@atomic-editor/editor";
+import {
+  autocompletion,
+  type CompletionContext,
+  type CompletionResult,
+} from "@codemirror/autocomplete";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
+import { LanguageDescription } from "@codemirror/language";
 import { searchKeymap } from "@codemirror/search";
-import { Compartment, EditorState } from "@codemirror/state";
-import { drawSelection, EditorView, highlightActiveLine, highlightSpecialChars, keymap, lineNumbers } from "@codemirror/view";
+import { EditorState } from "@codemirror/state";
+import {
+  drawSelection,
+  EditorView,
+  highlightActiveLine,
+  highlightSpecialChars,
+  keymap,
+  lineNumbers,
+} from "@codemirror/view";
+import type { NoteSummary } from "./api";
+
+// Only the vault's actually-used fence languages get a grammar; matches
+// @atomic-editor/editor's own code-languages.ts entries so more can be
+// added later the same way (install `@codemirror/lang-<name>`, append here).
+const CODE_LANGUAGES = [
+  LanguageDescription.of({
+    name: "JavaScript",
+    alias: ["js", "jsx"],
+    extensions: ["js", "mjs", "cjs", "jsx"],
+    load: () =>
+      import("@codemirror/lang-javascript").then((module) =>
+        module.javascript({ jsx: true }),
+      ),
+  }),
+  LanguageDescription.of({
+    name: "TypeScript",
+    alias: ["ts", "tsx"],
+    extensions: ["ts", "mts", "cts", "tsx"],
+    load: () =>
+      import("@codemirror/lang-javascript").then((module) =>
+        module.javascript({ typescript: true, jsx: true }),
+      ),
+  }),
+];
+
+const sourceTheme = EditorView.theme({
+  "&": { height: "100%", backgroundColor: "transparent" },
+  ".cm-scroller": {
+    overflow: "auto",
+    fontFamily: "var(--font-mono)",
+    lineHeight: "1.65",
+  },
+  ".cm-content": { padding: "24px 28px 120px" },
+  ".cm-gutters": {
+    backgroundColor: "transparent",
+    border: "none",
+    color: "var(--muted-foreground)",
+    paddingLeft: "10px",
+  },
+  ".cm-activeLineGutter": {
+    backgroundColor: "transparent",
+    color: "var(--foreground)",
+  },
+  ".cm-activeLine": {
+    backgroundColor: "color-mix(in oklch, var(--primary) 6%, transparent)",
+  },
+});
 
 type EditorProps = {
   value: string;
   mode: "source" | "reading";
   onChange: (value: string) => void;
   linkTargets?: string[];
+  notePath?: string;
+  notes?: NoteSummary[];
+  onOpenNote?: (path: string) => void;
 };
 
-export function Editor({ value, mode, onChange, linkTargets = [] }: EditorProps) {
-  const host = useRef<HTMLDivElement>(null);
+export function Editor({
+  value,
+  mode,
+  onChange,
+  linkTargets = [],
+  notePath,
+  notes = [],
+  onOpenNote,
+}: EditorProps) {
   const view = useRef<EditorView | null>(null);
-  const editable = useRef(new Compartment());
   const onChangeRef = useRef(onChange);
-  const initialValue = useRef(value);
-  const initialMode = useRef(mode);
   const linkTargetsRef = useRef(linkTargets);
+  const notesRef = useRef(notes);
+  const onOpenNoteRef = useRef(onOpenNote);
   onChangeRef.current = onChange;
   linkTargetsRef.current = linkTargets;
+  notesRef.current = notes;
+  onOpenNoteRef.current = onOpenNote;
 
-  function wikilinkCompletions(context: CompletionContext): CompletionResult | null {
-    const before = context.state.sliceDoc(Math.max(0, context.pos - 80), context.pos);
+  function wikilinkCompletions(
+    context: CompletionContext,
+  ): CompletionResult | null {
+    const before = context.state.sliceDoc(
+      Math.max(0, context.pos - 80),
+      context.pos,
+    );
     const match = before.match(/\[\[([^\]\n]*)$/);
     if (!match) return null;
     const query = match[1].toLocaleLowerCase();
@@ -37,10 +114,14 @@ export function Editor({ value, mode, onChange, linkTargets = [] }: EditorProps)
     return { from, options };
   }
 
-  useEffect(() => {
-    if (!host.current) return;
+  const attachSourceHost = useCallback((node: HTMLDivElement | null) => {
+    if (!node) {
+      view.current?.destroy();
+      view.current = null;
+      return;
+    }
     const state = EditorState.create({
-      doc: initialValue.current,
+      doc: value,
       extensions: [
         lineNumbers(),
         highlightSpecialChars(),
@@ -52,35 +133,81 @@ export function Editor({ value, mode, onChange, linkTargets = [] }: EditorProps)
         autocompletion({ override: [wikilinkCompletions] }),
         EditorView.lineWrapping,
         EditorView.updateListener.of((update) => {
-          if (update.docChanged) onChangeRef.current(update.state.doc.toString());
+          if (update.docChanged)
+            onChangeRef.current(update.state.doc.toString());
         }),
-        editable.current.of(EditorView.editable.of(initialMode.current === "source")),
-        EditorView.theme({
-          "&": { height: "100%", backgroundColor: "transparent" },
-          ".cm-scroller": { overflow: "auto", fontFamily: "var(--font-mono)", lineHeight: "1.65" },
-          ".cm-content": { padding: "24px 28px 120px" },
-          ".cm-gutters": { backgroundColor: "transparent", border: "none", color: "var(--color-muted)", paddingLeft: "10px" },
-          ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--color-ink)" },
-          ".cm-activeLine": { backgroundColor: "rgba(28, 116, 101, 0.06)" },
-        }),
+        sourceTheme,
       ],
     });
-    view.current = new EditorView({ state, parent: host.current });
-    return () => {
-      view.current?.destroy();
-      view.current = null;
-    };
+    view.current = new EditorView({ state, parent: node });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     const current = view.current;
     if (!current || current.state.doc.toString() === value) return;
-    current.dispatch({ changes: { from: 0, to: current.state.doc.length, insert: value } });
+    current.dispatch({
+      changes: { from: 0, to: current.state.doc.length, insert: value },
+    });
   }, [value]);
 
-  useEffect(() => {
-    view.current?.dispatch({ effects: editable.current.reconfigure(EditorView.editable.of(mode === "source")) });
-  }, [mode]);
+  function findNoteByTitle(title: string): NoteSummary | undefined {
+    const lowered = title.toLocaleLowerCase();
+    return notesRef.current.find(
+      (note) => note.title.toLocaleLowerCase() === lowered,
+    );
+  }
 
-  return <div className="h-full min-h-[440px] max-[700px]:min-h-[420px]" ref={host} aria-label="Markdown editor" />;
+  const readingExtensions = useMemo(
+    () => [
+      wikiLinks({
+        suggest: async (query) => {
+          const lowered = query.toLocaleLowerCase();
+          return notesRef.current
+            .filter((note) => note.title.toLocaleLowerCase().includes(lowered))
+            .slice(0, 20)
+            .map((note) => ({ target: note.title, label: note.title }));
+        },
+        resolve: async (target) => {
+          const note = findNoteByTitle(target);
+          return note
+            ? { target, label: note.title, status: "resolved" as const }
+            : { target, label: target, status: "missing" as const };
+        },
+        onOpen: (target) => {
+          const note = findNoteByTitle(target);
+          if (note) onOpenNoteRef.current?.(note.path);
+        },
+        openOnClick: true,
+      }),
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    ],
+    [],
+  );
+
+  if (mode === "reading") {
+    return (
+      <div
+        className="atomic-editor-host h-full min-h-[440px] overflow-auto max-[700px]:min-h-[420px]"
+        aria-label="Markdown editor"
+      >
+        <AtomicCodeMirrorEditor
+          documentId={notePath}
+          markdownSource={value}
+          readOnly
+          codeLanguages={CODE_LANGUAGES}
+          onMarkdownChange={onChange}
+          extensions={readingExtensions}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="h-full min-h-[440px] max-[700px]:min-h-[420px]"
+      ref={attachSourceHost}
+      aria-label="Markdown editor"
+    />
+  );
 }
