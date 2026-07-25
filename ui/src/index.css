@@ -1,118 +1,46 @@
-:root {
-  --paper: #f4f7f5;
-  --surface: #ffffff;
-  --surface-muted: #eef3f0;
-  --ink: #183b35;
-  --muted: #6a7e78;
-  --line: #d8e3de;
-  --teal: #1c7465;
-  --teal-soft: #dff1eb;
-  --amber: #d28b37;
-  --amber-soft: #fff3dd;
-  --danger: #b44c3d;
-  --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: var(--ink);
-  background: var(--paper);
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
+@import "tailwindcss";
+
+/* Cortex palette. Names are deliberately distinct from Tailwind's default
+   colors (`teal`, `amber`, ...) so a stray `bg-teal-500` can never be mistaken
+   for the brand color. */
+@theme {
+  --color-paper: #f4f7f5;
+  --color-surface: #ffffff;
+  --color-surface-muted: #eef3f0;
+  --color-ink: #183b35;
+  --color-muted: #6a7e78;
+  --color-line: #d8e3de;
+  --color-brand: #1c7465;
+  --color-brand-soft: #dff1eb;
+  --color-accent: #d28b37;
+  --color-accent-soft: #fff3dd;
+  --color-accent-line: #efd09e;
+  --color-accent-ink: #63420f;
+  --color-danger: #b44c3d;
+
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
-* { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; min-height: 100vh; }
-button, input { font: inherit; }
-button { color: inherit; }
+@layer base {
+  html {
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
 
-.app-shell { min-height: 100vh; display: flex; flex-direction: column; }
-.topbar { height: 58px; display: flex; align-items: center; gap: 20px; padding: 0 18px; border-bottom: 1px solid var(--line); background: var(--surface); }
-.brand { display: flex; align-items: center; gap: 10px; min-width: 190px; }
-.brand-mark { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; background: var(--teal); color: white; font-weight: 800; }
-.brand strong, .brand span { display: block; }
-.brand strong { font-size: 14px; letter-spacing: .02em; }
-.brand div span { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .12em; }
-.topbar-status { display: flex; align-items: center; gap: 8px; margin-left: auto; color: var(--muted); font-size: 12px; }
-.status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--teal); }
-.status-dot.dirty { background: var(--amber); }
-.primary-button, .conflict-actions button { border: 1px solid var(--teal); background: var(--teal); color: white; border-radius: 4px; padding: 7px 13px; cursor: pointer; font-size: 12px; }
-.primary-button:disabled { opacity: .45; cursor: default; }
-
-.workspace { min-height: calc(100vh - 58px); display: grid; grid-template-columns: 240px minmax(0, 1fr) 320px; }
-.sidebar, .context-panel { background: var(--surface); min-width: 0; }
-.sidebar { border-right: 1px solid var(--line); padding: 18px 12px; }
-.context-panel { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
-.sidebar-heading { display: flex; justify-content: space-between; padding: 0 6px 12px; color: var(--muted); font-size: 11px; font-weight: 750; text-transform: uppercase; letter-spacing: .12em; }
-.count { color: var(--teal); }
-.search-box { display: block; margin-bottom: 14px; }
-.search-box span { display: block; margin: 0 6px 5px; color: var(--muted); font-size: 11px; }
-.search-box input { width: 100%; border: 1px solid var(--line); border-radius: 4px; padding: 8px 9px; background: var(--paper); color: var(--ink); outline: none; font-size: 12px; }
-.search-box input:focus { border-color: var(--teal); box-shadow: 0 0 0 2px var(--teal-soft); }
-.note-list, .search-results { display: grid; gap: 2px; }
-.note-row, .search-result { border: 0; text-align: left; background: transparent; cursor: pointer; border-radius: 4px; padding: 9px 8px; }
-.note-row:hover, .search-result:hover { background: var(--surface-muted); }
-.note-row.selected { background: var(--teal-soft); }
-.note-row span, .note-row small, .search-result strong, .search-result small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.note-row span, .search-result strong { font-size: 12px; font-weight: 650; }
-.note-row small, .search-result small { color: var(--muted); margin-top: 3px; font-size: 10px; }
-.search-results { border-bottom: 1px solid var(--line); padding-bottom: 10px; margin-bottom: 8px; }
-
-.editor-column { min-width: 0; display: flex; flex-direction: column; background: var(--surface); }
-.editor-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 82px; padding: 16px 24px; border-bottom: 1px solid var(--line); }
-.eyebrow { display: block; color: var(--teal); font-size: 10px; font-weight: 750; text-transform: uppercase; letter-spacing: .12em; }
-h1 { margin: 4px 0 0; font-size: 19px; line-height: 1.2; font-weight: 700; }
-.mode-switch, .panel-tabs { display: flex; gap: 2px; }
-.mode-switch button, .panel-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); cursor: pointer; padding: 8px 9px; font-size: 11px; }
-.mode-switch button.active, .panel-tabs button.active { border-bottom-color: var(--teal); color: var(--ink); font-weight: 700; }
-.editor-frame { min-height: 0; flex: 1; }
-.editor-host { height: 100%; min-height: 440px; }
-.empty-state, .panel-message { display: grid; place-items: center; align-content: center; gap: 6px; height: 100%; min-height: 300px; padding: 24px; color: var(--muted); text-align: center; }
-.empty-state strong { color: var(--ink); }
-.empty-state span { font-size: 12px; }
-.conflict-banner { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 18px; background: var(--amber-soft); border-top: 1px solid #efd09e; color: #63420f; }
-.conflict-banner strong, .conflict-banner span { display: block; }
-.conflict-banner span { margin-top: 4px; font-size: 11px; }
-.conflict-actions { display: flex; gap: 7px; }
-.conflict-actions button { border-color: #a76a1e; background: transparent; color: #7b4e12; }
-
-.panel-tabs { padding: 12px 12px 0; border-bottom: 1px solid var(--line); }
-.context-content { display: grid; gap: 1px; overflow: auto; }
-.context-content section { display: grid; gap: 7px; padding: 16px; border-bottom: 1px solid var(--line); }
-.context-content strong { font-size: 24px; }
-.context-content small { color: var(--muted); font-size: 11px; line-height: 1.5; }
-.related-note { border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--teal); cursor: pointer; padding: 7px 0; text-align: left; font-size: 12px; }
-code { color: var(--ink); font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; }
-.diagnostic { margin: 0; color: var(--danger); font-size: 11px; line-height: 1.45; }
-.graph-canvas { display: flex; flex-direction: column; min-height: 0; flex: 1; height: calc(100vh - 111px); }
-.graph-flow-container { flex: 1; min-height: 0; }
-.graph-workspace-banner { padding: 6px 12px; font-size: 11px; color: var(--muted); border-bottom: 1px solid var(--line); background: var(--surface-muted); }
-.react-flow__controls button { background: var(--surface); border-color: var(--line); color: var(--ink); }
-.git-panel { min-height: 0; overflow: auto; }
-.git-heading { display: flex; align-items: center; justify-content: space-between; padding: 16px; border-bottom: 1px solid var(--line); }
-.quiet-button { border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); cursor: pointer; padding: 6px 9px; font-size: 11px; }
-.quiet-button:disabled { cursor: default; opacity: .45; }
-.commit-list { display: grid; gap: 1px; border-bottom: 1px solid var(--line); }
-.commit-row { display: grid; gap: 4px; border: 0; border-left: 3px solid transparent; background: var(--surface); cursor: pointer; padding: 10px 14px; text-align: left; }
-.commit-row:hover, .commit-row.selected { background: var(--surface-muted); border-left-color: var(--teal); }
-.commit-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
-.commit-row small, .panel-padding { color: var(--muted); font-size: 10px; }
-.panel-padding { display: block; padding: 16px; }
-.diff-panel { padding: 16px; }
-.diff-panel pre { max-height: 280px; overflow: auto; margin: 10px 0 0; border: 1px solid var(--line); background: #f8faf9; color: var(--ink); padding: 10px; font: 10px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
-
-@media (max-width: 1100px) {
-  .workspace { grid-template-columns: 210px minmax(0, 1fr); }
-  .context-panel { grid-column: 1 / -1; min-height: 260px; border-left: 0; border-top: 1px solid var(--line); }
-  .graph-canvas { height: 360px; }
+  body {
+    min-width: 320px;
+    min-height: 100vh;
+  }
 }
-@media (max-width: 700px) {
-  .topbar { padding: 0 12px; }
-  .brand { min-width: auto; }
-  .brand div { display: none; }
-  .topbar-status { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .workspace { display: flex; flex-direction: column; }
-  .sidebar { border-right: 0; border-bottom: 1px solid var(--line); max-height: 270px; overflow: auto; }
-  .editor-toolbar { padding: 14px 16px; }
-  .editor-host { min-height: 420px; }
-  .context-panel { min-height: 260px; }
-  .conflict-banner { align-items: flex-start; flex-direction: column; }
+
+/* React Flow ships its own stylesheet; recolor its chrome to match. */
+.react-flow__controls button {
+  background: var(--color-surface);
+  border-color: var(--color-line);
+  color: var(--color-ink);
 }

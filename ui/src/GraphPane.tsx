@@ -60,13 +60,17 @@ export function GraphPane({ onOpenPath }: GraphPaneProps) {
     labelStyle: { fill: "#56716b", fontSize: 9 },
   })), [graph]);
 
-  if (error) return <div className="panel-message">Graph unavailable: {error}</div>;
-  if (!graph) return <div className="panel-message">Loading project map...</div>;
+  if (error) return <div className="grid h-full min-h-[300px] content-center place-items-center gap-1.5 p-6 text-center text-muted">Graph unavailable: {error}</div>;
+  if (!graph) return <div className="grid h-full min-h-[300px] content-center place-items-center gap-1.5 p-6 text-center text-muted">Loading project map...</div>;
   const workspaceStatusLine = workspaceLine(workspace);
   return (
-    <div className="graph-canvas">
-      {workspaceStatusLine && <div className="graph-workspace-banner">{workspaceStatusLine}</div>}
-      <div className="graph-flow-container">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex min-h-[82px] items-center justify-between gap-4 border-b border-line px-6 py-4 max-[700px]:px-4 max-[700px]:py-3.5">
+        <div><span className="block text-[10px] font-extrabold tracking-[0.12em] text-brand uppercase">Project map</span><h1 className="mt-1 text-[19px] leading-tight font-bold">Graph</h1></div>
+        <span className="text-[11px] text-muted">{graph.nodes.length} nodes · {graph.edges.length} edges</span>
+      </div>
+      {workspaceStatusLine && <div className="border-b border-line bg-surface-muted px-3 py-1.5 text-[11px] text-muted">{workspaceStatusLine}</div>}
+      <div className="min-h-0 flex-1">
         <ReactFlow
           nodes={nodes}
           edges={edges}

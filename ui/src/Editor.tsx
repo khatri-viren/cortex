@@ -57,10 +57,10 @@ export function Editor({ value, mode, onChange, linkTargets = [] }: EditorProps)
         editable.current.of(EditorView.editable.of(initialMode.current === "source")),
         EditorView.theme({
           "&": { height: "100%", backgroundColor: "transparent" },
-          ".cm-scroller": { overflow: "auto", fontFamily: "var(--mono)", lineHeight: "1.65" },
+          ".cm-scroller": { overflow: "auto", fontFamily: "var(--font-mono)", lineHeight: "1.65" },
           ".cm-content": { padding: "24px 28px 120px" },
-          ".cm-gutters": { backgroundColor: "transparent", border: "none", color: "var(--muted)", paddingLeft: "10px" },
-          ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--ink)" },
+          ".cm-gutters": { backgroundColor: "transparent", border: "none", color: "var(--color-muted)", paddingLeft: "10px" },
+          ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--color-ink)" },
           ".cm-activeLine": { backgroundColor: "rgba(28, 116, 101, 0.06)" },
         }),
       ],
@@ -82,5 +82,5 @@ export function Editor({ value, mode, onChange, linkTargets = [] }: EditorProps)
     view.current?.dispatch({ effects: editable.current.reconfigure(EditorView.editable.of(mode === "source")) });
   }, [mode]);
 
-  return <div className="editor-host" ref={host} aria-label="Markdown editor" />;
+  return <div className="h-full min-h-[440px] max-[700px]:min-h-[420px]" ref={host} aria-label="Markdown editor" />;
 }
