@@ -63,6 +63,12 @@
    original inherit-primary's-own-lightness pattern, which already reads
    fine against a dark background. */
 .atomic-editor-host {
+  /* .atomic-editor-host/.atomic-cm-editor/.cm-editor set no background of
+     their own (@atomic-editor/editor's theme keeps `&` transparent), so
+     without this the pane just shows whatever ancestor bg-background paints
+     through — the global --background, not --atomic-editor-bg — and a
+     dark-mode-only override of the latter would have no visible effect. */
+  background-color: var(--atomic-editor-bg);
   --atomic-editor-bg: var(--background);
   --atomic-editor-bg-panel: var(--muted);
   --atomic-editor-bg-surface: var(--muted);
@@ -112,6 +118,12 @@
 }
 
 .dark .atomic-editor-host {
+  /* --background/--foreground are tuned for app chrome (near-black on
+     near-white text elsewhere), which is harsher than reading mode wants for
+     a full pane of body text. Narrow the lightness gap for a softer,
+     lower-contrast reading surface instead of pure black-on-white. */
+  --atomic-editor-bg: oklch(0.22 0 0);
+  --atomic-editor-fg: oklch(0.85 0 0);
   --atomic-editor-link: var(--primary);
   --atomic-editor-link-hover: oklch(from var(--primary) 0.85 c h);
   --atomic-editor-hl-escape: oklch(from var(--primary) l c calc(h + 80));
