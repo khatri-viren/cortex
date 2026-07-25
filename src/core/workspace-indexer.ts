@@ -173,6 +173,7 @@ export class WorkspaceIndexer {
       for (const previous of this.store.workspaceRepositories()) {
         if (!active.has(previous.repository_id)) this.store.markWorkspaceRepositoryMissing(previous.repository_id);
       }
+      this.store.linkRepositoriesToProject(this.config.repositories.map((repository) => repository.id));
       this.store.setState("last_workspace_rebuild", new Date().toISOString());
     });
     return this.report("full", this.config.repositories.map((repository) => repository.id), started);
@@ -186,6 +187,7 @@ export class WorkspaceIndexer {
       const files = walkRepository(repository, this.config);
       const graph = buildGraph(repository, files);
       this.store.replaceWorkspaceRepository(repository.id, repository.path, files, graph, graph.diagnostics);
+      this.store.linkRepositoriesToProject(this.config.repositories.map((candidate) => candidate.id));
       this.store.setState("last_workspace_rebuild", new Date().toISOString());
     });
     return this.report("incremental", [repositoryId], started);

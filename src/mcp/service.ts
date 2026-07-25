@@ -253,7 +253,6 @@ export class VaultRuntime {
     this.workspace = workspace;
     this.workspaceIndexer = new WorkspaceIndexer(this.indexer.store, workspace);
     this.workspaceIndexer.fullRebuild();
-    this.indexer.store.linkRepositoriesToProject(workspace.repositories.map((repository) => repository.id));
     this.refreshWorkspaceAttachments();
     for (const repository of workspace.repositories) {
       this.repoGit.set(repository.id, new GitAdapter(repository.absolutePath));
