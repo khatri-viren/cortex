@@ -380,7 +380,7 @@ export class VaultRuntime {
   private resolveGraphNode(selector: string): GraphNodeRecord {
     let nodeId = selector;
     if (UUID_RE.test(selector)) nodeId = noteNodeId(selector);
-    if (!selector.includes(":")) {
+    else if (!selector.includes(":")) {
       const relative = this.relativePath(selector).relative;
       nodeId = relative === "." ? projectNodeId() : this.indexer.store.db.query<{ node_id: string }, [string]>("SELECT node_id FROM graph_nodes WHERE path = ?1").get(relative)?.node_id ?? "";
     }

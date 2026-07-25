@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { directoryNodeId, fileNodeId, noteNodeId, projectNodeId, repositoryRelativePath } from "./identity.js";
-import type { Diagnostic, ParsedNote } from "./types.js";
+import type { Diagnostic, NoteFrontmatter, ParsedNote } from "./types.js";
 import type { GraphBuild, GraphEdge, GraphNode } from "./index-types.js";
 
 const MODULE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx"]);
@@ -61,6 +61,11 @@ export function buildProjectGraph(vaultRoot: string, notes: ParsedNote[]): Graph
   const edges: GraphEdge[] = [];
   const diagnostics: Diagnostic[] = [];
   const pathToNode = new Map<string, string>();
+  const notesByPath = new Map<string, NoteFrontmatter>();
+  for (const note of notes) {
+    if (!note.frontmatter || !note.filePath) continue;
+    notesByPath.set(repositoryRelativePath(root, note.filePath), note.frontmatter);
+  }
 
   for (const entry of entries) {
     if (entry.isDirectory) {
@@ -72,9 +77,12 @@ export function buildProjectGraph(vaultRoot: string, notes: ParsedNote[]): Graph
       continue;
     }
 
-    const nodeId = fileNodeId(root, entry.absolutePath);
+    const frontmatter = notesByPath.get(entry.path);
+    const nodeId = frontmatter ? noteNodeId(frontmatter.id) : fileNodeId(root, entry.absolutePath);
     pathToNode.set(entry.path, nodeId);
-    addNode(nodes, { nodeId, kind: fileKind(entry.path), path: entry.path, name: basename(entry.path), metadata: { extension: extname(entry.path) } });
+    addNode(nodes, frontmatter
+      ? { nodeId, kind: "note", path: entry.path, name: frontmatter.title, metadata: { type: frontmatter.type } }
+      : { nodeId, kind: fileKind(entry.path), path: entry.path, name: basename(entry.path), metadata: { extension: extname(entry.path) } });
     const parent = dirname(entry.path);
     addEdge(edges, parent === "." ? projectNodeId() : directoryNodeId(root, join(root, parent)), nodeId, "contains");
   }
@@ -119,9 +127,7 @@ export function buildProjectGraph(vaultRoot: string, notes: ParsedNote[]): Graph
 
   for (const note of notes) {
     if (!note.frontmatter || !note.filePath) continue;
-    const notePath = repositoryRelativePath(root, note.filePath);
     const nodeId = noteNodeId(note.frontmatter.id);
-    addNode(nodes, { nodeId, kind: "note", path: notePath, name: note.frontmatter.title, metadata: { type: note.frontmatter.type } });
     for (const attachment of note.frontmatter.applies_to) {
       if (attachment.repository) continue;
       const [targetPath, symbol] = attachment.target.split("#", 2);
