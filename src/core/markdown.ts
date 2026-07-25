@@ -14,6 +14,27 @@ function lineLocation(lines: string[], lineIndex: number, characterIndex: number
   return { line: lineIndex + 1 + lineOffset, column: characterIndex + 1 };
 }
 
+// Inline code spans are prose about syntax, not links: `[[Note Title]]` must not index as a
+// wikilink. A backtick run opens a span and the next run of the same length closes it.
+function inlineCodeRanges(line: string): Array<[number, number]> {
+  const runs = Array.from(line.matchAll(/`+/g), (match) => ({ index: match.index ?? 0, length: match[0].length }));
+  const ranges: Array<[number, number]> = [];
+  let index = 0;
+
+  while (index < runs.length) {
+    const opener = runs[index];
+    const closer = runs.findIndex((run, position) => position > index && run.length === opener.length);
+    if (closer === -1) {
+      index += 1;
+      continue;
+    }
+    ranges.push([opener.index, runs[closer].index + runs[closer].length]);
+    index = closer + 1;
+  }
+
+  return ranges;
+}
+
 function parseWikilinks(body: string, lineOffset: number): Wikilink[] {
   const links: Wikilink[] = [];
   const lines = body.split(/\r?\n/);
@@ -34,7 +55,10 @@ function parseWikilinks(body: string, lineOffset: number): Wikilink[] {
     }
     if (inFence) return;
 
+    const codeRanges = inlineCodeRanges(line);
     for (const match of line.matchAll(WIKILINK_RE)) {
+      const start = match.index ?? 0;
+      if (codeRanges.some(([from, to]) => start >= from && start + match[0].length <= to)) continue;
       const raw = match[1].trim();
       const [beforeDisplay, display] = raw.split("|", 2);
       const [target, section] = beforeDisplay.split("#", 2);
@@ -43,7 +67,7 @@ function parseWikilinks(body: string, lineOffset: number): Wikilink[] {
         target: target.trim(),
         section: section?.trim() || undefined,
         display: display?.trim() || undefined,
-        location: lineLocation(lines, lineIndex, match.index ?? 0, lineOffset),
+        location: lineLocation(lines, lineIndex, start, lineOffset),
       });
     }
   });

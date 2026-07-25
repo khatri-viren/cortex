@@ -123,6 +123,7 @@ export function buildProjectGraph(vaultRoot: string, notes: ParsedNote[]): Graph
     const nodeId = noteNodeId(note.frontmatter.id);
     addNode(nodes, { nodeId, kind: "note", path: notePath, name: note.frontmatter.title, metadata: { type: note.frontmatter.type } });
     for (const attachment of note.frontmatter.applies_to) {
+      if (attachment.repository) continue;
       const [targetPath, symbol] = attachment.target.split("#", 2);
       const normalizedTarget = targetPath || ".";
       let targetId = normalizedTarget === "." ? projectNodeId() : pathToNode.get(normalizedTarget);

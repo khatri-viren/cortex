@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CORTEX_VAULT_ROOT=\"/Users/khatri_viren/Developer/Projects/cortex-notes\" bun run \"/Users/khatri_viren/Developer/Projects/cortex/src/claude-hooks.ts\" session-start",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CORTEX_VAULT_ROOT=\"/Users/khatri_viren/Developer/Projects/cortex-notes\" bun run \"/Users/khatri_viren/Developer/Projects/cortex/src/claude-hooks.ts\" reindex",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

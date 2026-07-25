@@ -3,12 +3,13 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, extname, resolve } from "node:path";
+import { dirname, extname, relative as relativePath, resolve } from "node:path";
 import { addMissingSectionMarkers, parseMarkdown } from "../core/markdown.js";
 import { createFrontmatter, serializeFrontmatter } from "../core/frontmatter.js";
 import { repositoryRelativePath, projectNodeId, noteNodeId } from "../core/identity.js";
@@ -19,6 +20,9 @@ import { RUNTIME_DIRECTORY } from "../core/vault.js";
 import type { Diagnostic, NoteFrontmatter, NoteType, Section } from "../core/types.js";
 import type { IndexReport } from "../core/index-types.js";
 import { startWatcher, type WatcherHandle } from "../core/watcher.js";
+import { loadWorkspaceConfig, workspaceManifestPath, repositoryRelativePath as workspaceRepositoryRelativePath, type WorkspaceConfig, type WorkspaceRepository } from "../core/workspace.js";
+import { WorkspaceIndexer } from "../core/workspace-indexer.js";
+import { resolveWorkspaceAttachments, requireAppliesToRepository, type NoteAttachmentInput } from "../core/workspace-attachments.js";
 
 const MAX_SEARCH_LIMIT = 50;
 const MAX_LIST_LIMIT = 100;
@@ -55,6 +59,22 @@ export type GraphEdgeRecord = {
   toId: string;
   kind: string;
   metadata: Record<string, unknown>;
+};
+
+export type VaultChangeEvent = {
+  type: "create" | "update" | "delete";
+  path: string;
+  content_hash?: string;
+  mtime?: string;
+  repository?: string;
+};
+
+export type WorkspaceStatus = {
+  active: boolean;
+  workspaceRoot?: string;
+  workspaceExists?: boolean;
+  repositories: Array<{ id: string; path: string; status: string; lastIndexedAt?: string }>;
+  diagnostics: Diagnostic[];
 };
 
 export type ServiceErrorCode =
@@ -103,7 +123,7 @@ type WriteResult = {
   index: IndexReport;
 };
 
-function hashContent(content: string): string {
+function hashContent(content: Buffer | string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
@@ -187,12 +207,18 @@ class AsyncMutex {
   }
 }
 
-export class McpVaultService {
+export class VaultRuntime {
   readonly vaultRoot: string;
   readonly indexer: VaultIndexer;
   readonly git: GitAdapter;
+  workspace?: WorkspaceConfig;
+  private workspaceIndexer?: WorkspaceIndexer;
+  private workspaceAttachmentDiagnostics: Diagnostic[] = [];
+  private readonly repoGit = new Map<string, GitAdapter>();
+  private readonly repoWatchers = new Map<string, WatcherHandle>();
   private watcher?: WatcherHandle;
   private readonly writes = new AsyncMutex();
+  private readonly subscribers = new Set<(events: VaultChangeEvent[]) => void>();
 
   private constructor(vaultRoot: string, indexer: VaultIndexer, git: GitAdapter) {
     this.vaultRoot = vaultRoot;
@@ -200,14 +226,19 @@ export class McpVaultService {
     this.git = git;
   }
 
-  static async start(vaultRoot: string): Promise<McpVaultService> {
+  static async start(vaultRoot: string, options?: { workspaceRoot?: string }): Promise<VaultRuntime> {
     const indexer = new VaultIndexer(vaultRoot);
     try {
       indexer.fullRebuild();
-      const service = new McpVaultService(indexer.vaultRoot, indexer, new GitAdapter(indexer.vaultRoot));
+      const service = new VaultRuntime(indexer.vaultRoot, indexer, new GitAdapter(indexer.vaultRoot));
+      const workspaceRequested = Boolean(options?.workspaceRoot) || Boolean(process.env.CORTEX_WORKSPACE_ROOT) || existsSync(workspaceManifestPath(service.vaultRoot));
+      if (workspaceRequested) await service.startWorkspace(options?.workspaceRoot);
       service.watcher = await startWatcher(service.vaultRoot, async (events) => {
         await service.writes.run(() => {
-          service.indexer.incrementalRebuild(events.map((event) => event.path));
+          const normalized = events.map((event) => ({ ...event, path: service.normalizeEventPath(event.path) }));
+          service.indexer.incrementalRebuild(normalized.map((event) => event.path));
+          service.refreshWorkspaceAttachments();
+          service.publishChanges(normalized);
         });
       });
       return service;
@@ -217,10 +248,98 @@ export class McpVaultService {
     }
   }
 
+  private async startWorkspace(workspaceRoot?: string): Promise<void> {
+    const workspace = loadWorkspaceConfig(this.vaultRoot, workspaceRoot);
+    this.workspace = workspace;
+    this.workspaceIndexer = new WorkspaceIndexer(this.indexer.store, workspace);
+    this.workspaceIndexer.fullRebuild();
+    this.indexer.store.linkRepositoriesToProject(workspace.repositories.map((repository) => repository.id));
+    this.refreshWorkspaceAttachments();
+    for (const repository of workspace.repositories) {
+      this.repoGit.set(repository.id, new GitAdapter(repository.absolutePath));
+      const handle = await startWatcher(repository.absolutePath, async (events) => {
+        await this.writes.run(() => {
+          const normalized = events.map((event) => ({ ...event, path: this.normalizeEventPath(event.path, repository.absolutePath) }));
+          this.workspaceIndexer!.incrementalRebuild(repository.id);
+          this.refreshWorkspaceAttachments();
+          this.publishChanges(normalized, repository.id);
+        });
+      });
+      this.repoWatchers.set(repository.id, handle);
+    }
+  }
+
+  private refreshWorkspaceAttachments(): void {
+    if (!this.workspace) return;
+    const scan = scanVault(this.vaultRoot);
+    const notes: NoteAttachmentInput[] = scan.notes
+      .filter((note): note is typeof note & { frontmatter: NoteFrontmatter; filePath: string } => Boolean(note.frontmatter && note.filePath))
+      .map((note) => ({ noteId: note.frontmatter.id, path: repositoryRelativePath(this.vaultRoot, note.filePath), appliesTo: note.frontmatter.applies_to }));
+    const result = resolveWorkspaceAttachments(this.workspace, notes);
+    this.indexer.store.replaceWorkspaceAttachmentEdges(result.edges);
+    this.workspaceAttachmentDiagnostics = result.diagnostics;
+  }
+
+  private requireRepository(repositoryId: string): WorkspaceRepository {
+    const repository = this.workspace?.repositories.find((candidate) => candidate.id === repositoryId);
+    if (!repository) throw new ServiceError("NOT_FOUND", `Repository '${repositoryId}' was not discovered in the workspace.`);
+    return repository;
+  }
+
+  private repositoryPath(repositoryId: string, target: string): { repository: WorkspaceRepository; relative: string } {
+    const repository = this.requireRepository(repositoryId);
+    const workspace = this.workspace!;
+    try {
+      return { repository, relative: workspaceRepositoryRelativePath(workspace.workspaceRoot, repository, target) };
+    } catch (cause) {
+      throw new ServiceError("INVALID_INPUT", cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
   async close(): Promise<void> {
     await this.watcher?.stop();
     await this.watcher?.flushSnapshot();
+    for (const handle of this.repoWatchers.values()) {
+      await handle.stop();
+      await handle.flushSnapshot();
+    }
     this.indexer.close();
+    this.subscribers.clear();
+  }
+
+  subscribe(listener: (events: VaultChangeEvent[]) => void): () => void {
+    this.subscribers.add(listener);
+    return () => this.subscribers.delete(listener);
+  }
+
+  private normalizeEventPath(path: string, root: string = this.vaultRoot): string {
+    const realRoot = realpathSync(root);
+    const realPath = existsSync(path) ? realpathSync(path) : path;
+    const relative = relativePath(realRoot, realPath).split("\\").join("/");
+    if (relative === ".." || relative.startsWith("../")) throw new Error("Watcher reported a path outside the root.");
+    return resolve(root, relative);
+  }
+
+  private publishChanges(events: Array<{ type: "create" | "update" | "delete"; path: string }>, repositoryId?: string): void {
+    const root = repositoryId ? this.requireRepository(repositoryId).absolutePath : this.vaultRoot;
+    const changes = events.map((event) => {
+      const relative = repositoryRelativePath(root, event.path);
+      const repository = repositoryId ? { repository: repositoryId } : {};
+      if (event.type === "delete" || !existsSync(event.path)) return { type: event.type, path: relative, ...repository } satisfies VaultChangeEvent;
+      try {
+        const stats = statSync(event.path);
+        return {
+          type: event.type,
+          path: relative,
+          content_hash: hashContent(readFileSync(event.path)),
+          mtime: new Date(stats.mtimeMs).toISOString(),
+          ...repository,
+        } satisfies VaultChangeEvent;
+      } catch {
+        return { type: event.type, path: relative, ...repository } satisfies VaultChangeEvent;
+      }
+    });
+    for (const subscriber of this.subscribers) subscriber(changes);
   }
 
   private relativePath(input: string, allowMissing = false): { absolute: string; relative: string } {
@@ -266,7 +385,7 @@ export class McpVaultService {
       nodeId = relative === "." ? projectNodeId() : this.indexer.store.db.query<{ node_id: string }, [string]>("SELECT node_id FROM graph_nodes WHERE path = ?1").get(relative)?.node_id ?? "";
     }
     if (!nodeId) throw new ServiceError("NOT_FOUND", `Graph node '${selector}' was not found.`);
-    const row = this.indexer.store.db.query<{ node_id: string; kind: string; path: string | null; name: string; metadata_json: string }, [string]>("SELECT node_id, kind, path, name, metadata_json FROM graph_nodes WHERE node_id = ?1").get(nodeId);
+    const row = this.indexer.store.unifiedNode(nodeId);
     if (!row) throw new ServiceError("NOT_FOUND", `Graph node '${selector}' was not found.`);
     return { nodeId: row.node_id, kind: row.kind, path: row.path ?? undefined, name: row.name, metadata: jsonMetadata(row.metadata_json) };
   }
@@ -279,8 +398,8 @@ export class McpVaultService {
     for (let currentDepth = 0; currentDepth < depth && frontier.length > 0; currentDepth += 1) {
       const next: string[] = [];
       for (const nodeId of frontier) {
-        const outgoing = direction === "in" ? [] : this.indexer.store.db.query<{ from_id: string; to_id: string; kind: string; metadata_json: string }, [string]>("SELECT from_id, to_id, kind, metadata_json FROM graph_edges WHERE from_id = ?1").all(nodeId);
-        const incoming = direction === "out" ? [] : this.indexer.store.db.query<{ from_id: string; to_id: string; kind: string; metadata_json: string }, [string]>("SELECT from_id, to_id, kind, metadata_json FROM graph_edges WHERE to_id = ?1").all(nodeId);
+        const outgoing = direction === "in" ? [] : this.indexer.store.unifiedEdgesFrom(nodeId);
+        const incoming = direction === "out" ? [] : this.indexer.store.unifiedEdgesTo(nodeId);
         for (const row of [...outgoing, ...incoming]) {
           const edge = { fromId: row.from_id, toId: row.to_id, kind: row.kind, metadata: jsonMetadata(row.metadata_json) };
           edges.set(`${edge.fromId}|${edge.toId}|${edge.kind}|${row.metadata_json}`, edge);
@@ -314,6 +433,14 @@ export class McpVaultService {
     const content = readFileSync(absolute, "utf8");
     const parsed = parseMarkdown(content, absolute);
     return { note, sections: parsed.sections };
+  }
+
+  getSource(selector: NoteSelector): { note: NoteRecord; markdown: string; sections: Section[]; diagnostics: Diagnostic[] } {
+    const note = this.noteRow(selector);
+    const absolute = resolve(this.vaultRoot, note.path);
+    const markdown = readFileSync(absolute, "utf8");
+    const parsed = parseMarkdown(markdown, absolute);
+    return { note, markdown, sections: parsed.sections, diagnostics: parsed.diagnostics };
   }
 
   getSection(selector: NoteSelector, sectionId?: string, heading?: string): { note: NoteRecord; section: Section; body: string } {
@@ -356,13 +483,17 @@ export class McpVaultService {
       const parsed = parseMarkdown(markdown, absolute);
       if (diagnosticsHaveErrors(parsed.diagnostics) || !parsed.frontmatter) throw new ServiceError("INVALID_INPUT", "Replacement Markdown has invalid frontmatter or section metadata.", { diagnostics: parsed.diagnostics });
       if (parsed.frontmatter.id !== note.id || parsed.frontmatter.created_at !== note.created_at) throw new ServiceError("CONFLICT", "id and created_at are immutable.");
+      if (this.workspace) this.validateAppliesTo(parsed.frontmatter.applies_to);
       const content = serializeFrontmatter({ ...parsed.frontmatter, updated_at: new Date().toISOString() }) + parsed.body;
-      return this.writeAndIndexLocked(note.path, content);
+      const result = this.writeAndIndexLocked(note.path, content);
+      if (this.workspace) this.refreshWorkspaceAttachments();
+      return result;
     });
   }
 
   async createNote(input: { title: string; type?: NoteType; aliases?: string[]; tags?: string[]; applies_to?: NoteFrontmatter["applies_to"]; body?: string; path?: string }): Promise<WriteResult & { id: string }> {
     return this.writes.run(() => {
+      if (this.workspace && input.applies_to) this.validateAppliesTo(input.applies_to);
       const frontmatter = createFrontmatter({ title: input.title, type: input.type, aliases: input.aliases, tags: input.tags, applies_to: input.applies_to });
       const body = addMissingSectionMarkers(input.body ?? "").body;
       const content = serializeFrontmatter(frontmatter) + body;
@@ -370,8 +501,17 @@ export class McpVaultService {
       if (extname(relative).toLocaleLowerCase() !== ".md") throw new ServiceError("INVALID_INPUT", "Notes must use a .md path.");
       if (existsSync(resolve(this.vaultRoot, relative))) throw new ServiceError("CONFLICT", `Note path '${relative}' already exists.`);
       const result = this.writeAndIndexLocked(relative, content);
+      if (this.workspace) this.refreshWorkspaceAttachments();
       return { ...result, id: frontmatter.id };
     });
+  }
+
+  private validateAppliesTo(appliesTo: NoteFrontmatter["applies_to"]): void {
+    try {
+      requireAppliesToRepository(appliesTo);
+    } catch (error) {
+      throw new ServiceError("INVALID_INPUT", error instanceof Error ? error.message : String(error));
+    }
   }
 
   private writeAndIndexLocked(relative: string, content: string): WriteResult {
@@ -478,4 +618,50 @@ export class McpVaultService {
     if (!vaultHasExpectedGitIgnore(this.vaultRoot)) diagnostics.push({ severity: "warning", code: "invalid-gitignore", message: "Vault .gitignore does not cover runtime data.", filePath: `${this.vaultRoot}/.gitignore` });
     return { vaultRoot: this.vaultRoot, diagnostics, index: this.indexer.store.counts(), gitStatus: this.git.status(), ok: !diagnosticsHaveErrors(diagnostics) };
   }
+
+  workspaceStatus(): WorkspaceStatus {
+    if (!this.workspace) return { active: false, repositories: [], diagnostics: [] };
+    const repositories = this.indexer.store.workspaceRepositories().map((row) => ({ id: row.repository_id, path: row.path, status: row.status, lastIndexedAt: row.last_indexed_at ?? undefined }));
+    const diagnostics = [
+      ...this.workspace.diagnostics.map((diagnostic) => ({ severity: diagnostic.severity, code: diagnostic.code, message: diagnostic.message, filePath: diagnostic.path })),
+      ...this.indexer.store.workspaceDiagnostics(),
+      ...this.workspaceAttachmentDiagnostics,
+    ];
+    return { active: true, workspaceRoot: this.workspace.workspaceRoot, workspaceExists: this.workspace.workspaceExists, repositories, diagnostics };
+  }
+
+  getRepoHistory(repositoryId: string, path: string, limit?: number): { repository: string; path: string; commits: GitCommit[] } {
+    const { repository, relative } = this.repositoryPath(repositoryId, path);
+    const git = this.repoGit.get(repository.id);
+    if (!git) throw new ServiceError("NOT_FOUND", `Repository '${repositoryId}' has no Git adapter available.`);
+    return { repository: repository.id, path: relative, commits: git.history(relative, clamp(limit, 20, 100)) };
+  }
+
+  getRepoDiff(repositoryId: string, path: string, revision?: string): { repository: string; path: string; diff: string } {
+    const { repository, relative } = this.repositoryPath(repositoryId, path);
+    const git = this.repoGit.get(repository.id);
+    if (!git) throw new ServiceError("NOT_FOUND", `Repository '${repositoryId}' has no Git adapter available.`);
+    return { repository: repository.id, path: relative, diff: git.diff(relative, revision) };
+  }
+
+  async restoreRepoPath(repositoryId: string, path: string, revision: string, confirm: boolean): Promise<{ repository: string; path: string; revision: string; mtime: string }> {
+    if (!confirm) throw new ServiceError("INVALID_INPUT", "Restoring a repository path requires explicit confirm: true.");
+    return this.writes.run(async () => {
+      const { repository, relative } = this.repositoryPath(repositoryId, path);
+      const git = this.repoGit.get(repository.id);
+      if (!git) throw new ServiceError("NOT_FOUND", `Repository '${repositoryId}' has no Git adapter available.`);
+      try {
+        git.restore(relative, revision);
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("dirty")) throw new ServiceError("GIT_DIRTY", error.message);
+        throw error;
+      }
+      this.workspaceIndexer!.incrementalRebuild(repository.id);
+      this.refreshWorkspaceAttachments();
+      const stats = statSync(resolve(repository.absolutePath, relative));
+      return { repository: repository.id, path: relative, revision, mtime: new Date(stats.mtimeMs).toISOString() };
+    });
+  }
 }
+
+export { VaultRuntime as McpVaultService };

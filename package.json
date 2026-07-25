@@ -10,12 +10,16 @@
     "vault:check": "bun run src/cli.ts vault:check",
     "migrate": "bun run src/cli.ts migrate",
     "mcp": "bun run src/cli.ts mcp",
+    "ui:dev": "cd ui && bun run dev",
+    "ui:build": "cd ui && bun run build",
+    "ui:preview": "cd ui && bun run preview",
+    "e2e": "cd ui && bun run e2e",
     "benchmark": "bun run bench/run.ts",
     "git:status": "bun run src/cli.ts git:status",
     "git:history": "bun run src/cli.ts git:history",
     "git:diff": "bun run src/cli.ts git:diff",
     "git:restore": "bun run src/cli.ts git:restore",
-    "test": "bun test",
+    "test": "bun test tests",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

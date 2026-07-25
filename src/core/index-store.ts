@@ -104,6 +104,53 @@ CREATE INDEX IF NOT EXISTS idx_sections_note ON sections(note_id);
 CREATE INDEX IF NOT EXISTS idx_graph_edges_from ON graph_edges(from_id);
 CREATE INDEX IF NOT EXISTS idx_graph_edges_to ON graph_edges(to_id);
 CREATE INDEX IF NOT EXISTS idx_diagnostics_path ON diagnostics(path);
+CREATE TABLE IF NOT EXISTS workspace_repositories (
+  repository_id TEXT PRIMARY KEY,
+  path TEXT NOT NULL,
+  status TEXT NOT NULL,
+  last_indexed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS workspace_files (
+  repository_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  mtime_ms REAL NOT NULL,
+  status TEXT NOT NULL,
+  indexed_at TEXT NOT NULL,
+  PRIMARY KEY (repository_id, path)
+);
+CREATE TABLE IF NOT EXISTS workspace_graph_nodes (
+  node_id TEXT PRIMARY KEY,
+  repository_id TEXT,
+  kind TEXT NOT NULL,
+  path TEXT,
+  name TEXT NOT NULL,
+  metadata_json TEXT NOT NULL,
+  stale INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS workspace_graph_edges (
+  row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  from_id TEXT NOT NULL,
+  to_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  metadata_json TEXT NOT NULL,
+  UNIQUE (from_id, to_id, kind, metadata_json)
+);
+CREATE TABLE IF NOT EXISTS workspace_diagnostics (
+  row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repository_id TEXT,
+  path TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  code TEXT NOT NULL,
+  message TEXT NOT NULL,
+  line INTEGER,
+  column_number INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_edges_from ON workspace_graph_edges(from_id);
+CREATE INDEX IF NOT EXISTS idx_workspace_edges_to ON workspace_graph_edges(to_id);
+CREATE INDEX IF NOT EXISTS idx_workspace_files_repo ON workspace_files(repository_id);
 `;
 
 export class IndexStore {
@@ -158,6 +205,88 @@ export class IndexStore {
       this.db.run(`DELETE FROM ${table}`);
     }
     this.db.run("DELETE FROM notes_fts");
+  }
+
+  resetWorkspaceRepository(repositoryId: string): void {
+    this.db.query("DELETE FROM workspace_files WHERE repository_id = ?1").run(repositoryId);
+    this.db.query("DELETE FROM workspace_diagnostics WHERE repository_id = ?1").run(repositoryId);
+    this.db.query("DELETE FROM workspace_graph_edges WHERE from_id LIKE ?1 OR to_id LIKE ?1").run(`%:${repositoryId}:%`);
+    this.db.query("DELETE FROM workspace_graph_edges WHERE from_id = ?1 OR to_id = ?1").run(`repo:${repositoryId}`);
+    this.db.query("DELETE FROM workspace_graph_nodes WHERE repository_id = ?1 OR node_id = ?2").run(repositoryId, `repo:${repositoryId}`);
+  }
+
+  replaceWorkspaceRepository(repositoryId: string, repositoryPath: string, files: Array<{ path: string; kind: string; hash: string; size: number; mtimeMs: number }>, graph: GraphBuild, diagnostics: Diagnostic[]): void {
+    this.resetWorkspaceRepository(repositoryId);
+    for (const file of files) {
+      this.db.query("INSERT INTO workspace_files (repository_id, path, kind, content_hash, size, mtime_ms, status, indexed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'ok', ?7)").run(repositoryId, file.path, file.kind, file.hash, file.size, file.mtimeMs, new Date().toISOString());
+    }
+    for (const node of graph.nodes) {
+      this.db.query("INSERT OR REPLACE INTO workspace_graph_nodes (node_id, repository_id, kind, path, name, metadata_json, stale) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)").run(node.nodeId, repositoryId, node.kind, node.path ?? null, node.name, JSON.stringify(node.metadata ?? {}));
+    }
+    for (const edge of graph.edges) {
+      this.db.query("INSERT OR IGNORE INTO workspace_graph_edges (from_id, to_id, kind, metadata_json) VALUES (?1, ?2, ?3, ?4)").run(edge.fromId, edge.toId, edge.kind, JSON.stringify(edge.metadata ?? {}));
+    }
+    for (const diagnostic of diagnostics) {
+      this.db.query("INSERT INTO workspace_diagnostics (repository_id, path, severity, code, message, line, column_number) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)").run(repositoryId, diagnostic.filePath ?? repositoryPath, diagnostic.severity, diagnostic.code, diagnostic.message, diagnostic.line ?? null, diagnostic.column ?? null);
+    }
+    this.db.query("INSERT OR REPLACE INTO workspace_repositories (repository_id, path, status, last_indexed_at) VALUES (?1, ?2, 'ready', ?3)").run(repositoryId, repositoryPath, new Date().toISOString());
+  }
+
+  markWorkspaceRepositoryMissing(repositoryId: string): void {
+    this.db.query("UPDATE workspace_repositories SET status = 'stale' WHERE repository_id = ?1").run(repositoryId);
+    this.db.query("UPDATE workspace_graph_nodes SET stale = 1 WHERE repository_id = ?1").run(repositoryId);
+  }
+
+  removeWorkspaceRepository(repositoryId: string): void {
+    this.resetWorkspaceRepository(repositoryId);
+    this.db.query("DELETE FROM workspace_repositories WHERE repository_id = ?1").run(repositoryId);
+  }
+
+  workspaceRepositories(): Array<{ repository_id: string; path: string; status: string; last_indexed_at: string | null }> {
+    return this.db.query<{ repository_id: string; path: string; status: string; last_indexed_at: string | null }, []>("SELECT repository_id, path, status, last_indexed_at FROM workspace_repositories ORDER BY repository_id").all();
+  }
+
+  workspaceCounts(): { fileCount: number; graphNodeCount: number; graphEdgeCount: number } {
+    const count = (table: string): number => (this.db.query<{ count: number }, []>(`SELECT COUNT(*) as count FROM ${table}`).get()?.count ?? 0);
+    return { fileCount: count("workspace_files"), graphNodeCount: count("workspace_graph_nodes"), graphEdgeCount: count("workspace_graph_edges") };
+  }
+
+  workspaceDiagnostics(): Diagnostic[] {
+    return this.db.query<Diagnostic & { column_number: number | null }, []>("SELECT severity, code, message, path as filePath, line, column_number FROM workspace_diagnostics ORDER BY row_id").all().map((row) => ({ severity: row.severity, code: row.code, message: row.message, filePath: row.filePath, line: row.line ?? undefined, column: row.column_number ?? undefined }));
+  }
+
+  linkRepositoriesToProject(repositoryIds: string[]): void {
+    this.db.query("DELETE FROM workspace_graph_edges WHERE from_id = 'project:root' AND to_id LIKE 'repo:%'").run();
+    for (const repositoryId of repositoryIds) {
+      this.db.query("INSERT OR IGNORE INTO workspace_graph_edges (from_id, to_id, kind, metadata_json) VALUES ('project:root', ?1, 'contains', '{}')").run(`repo:${repositoryId}`);
+    }
+  }
+
+  replaceWorkspaceAttachmentEdges(edges: Array<{ fromId: string; toId: string; kind: string; metadata?: Record<string, unknown> }>): void {
+    this.db.run("DELETE FROM workspace_graph_edges WHERE from_id LIKE 'note:%'");
+    for (const edge of edges) {
+      this.db.query("INSERT OR IGNORE INTO workspace_graph_edges (from_id, to_id, kind, metadata_json) VALUES (?1, ?2, ?3, ?4)").run(edge.fromId, edge.toId, edge.kind, JSON.stringify(edge.metadata ?? {}));
+    }
+  }
+
+  unifiedNode(nodeId: string): { node_id: string; kind: string; path: string | null; name: string; metadata_json: string } | undefined {
+    return this.db.query<{ node_id: string; kind: string; path: string | null; name: string; metadata_json: string }, [string]>("SELECT node_id, kind, path, name, metadata_json FROM graph_nodes WHERE node_id = ?1").get(nodeId)
+      ?? this.db.query<{ node_id: string; kind: string; path: string | null; name: string; metadata_json: string }, [string]>("SELECT node_id, kind, path, name, metadata_json FROM workspace_graph_nodes WHERE node_id = ?1").get(nodeId)
+      ?? undefined;
+  }
+
+  unifiedEdgesFrom(nodeId: string): Array<{ from_id: string; to_id: string; kind: string; metadata_json: string }> {
+    return [
+      ...this.db.query<{ from_id: string; to_id: string; kind: string; metadata_json: string }, [string]>("SELECT from_id, to_id, kind, metadata_json FROM graph_edges WHERE from_id = ?1").all(nodeId),
+      ...this.db.query<{ from_id: string; to_id: string; kind: string; metadata_json: string }, [string]>("SELECT from_id, to_id, kind, metadata_json FROM workspace_graph_edges WHERE from_id = ?1").all(nodeId),
+    ];
+  }
+
+  unifiedEdgesTo(nodeId: string): Array<{ from_id: string; to_id: string; kind: string; metadata_json: string }> {
+    return [
+      ...this.db.query<{ from_id: string; to_id: string; kind: string; metadata_json: string }, [string]>("SELECT from_id, to_id, kind, metadata_json FROM graph_edges WHERE to_id = ?1").all(nodeId),
+      ...this.db.query<{ from_id: string; to_id: string; kind: string; metadata_json: string }, [string]>("SELECT from_id, to_id, kind, metadata_json FROM workspace_graph_edges WHERE to_id = ?1").all(nodeId),
+    ];
   }
 
   removePath(path: string): void {

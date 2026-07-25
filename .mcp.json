@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "cortex": {
+      "type": "stdio",
+      "command": "bun",
+      "args": [
+        "run",
+        "/Users/khatri_viren/Developer/Projects/cortex/src/cli.ts",
+        "mcp",
+        "--vault",
+        "/Users/khatri_viren/Developer/Projects/cortex-notes"
+      ],
+      "env": {}
+    }
+  }
+}

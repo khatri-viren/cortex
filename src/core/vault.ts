@@ -47,6 +47,9 @@ export function scanVault(vaultRoot: string): VaultScan {
   for (const note of notes) {
     if (note.frontmatter) {
       for (const attachment of note.frontmatter.applies_to) {
+        // Targets naming a workspace repository resolve against that repository's root,
+        // not the vault, and are validated by resolveWorkspaceAttachments instead.
+        if (attachment.repository) continue;
         const targetPath = attachment.target.split("#", 1)[0];
         const absoluteTarget = join(root, targetPath || ".");
         if (!existsSync(absoluteTarget)) {

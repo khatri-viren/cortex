@@ -13,6 +13,7 @@ export type AttachmentRelation = (typeof ATTACHMENT_RELATIONS)[number];
 export type AppliesTo = {
   target: string;
   relation: AttachmentRelation;
+  repository?: string;
 };
 
 export type NoteFrontmatter = {

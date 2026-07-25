@@ -1,18 +1,24 @@
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { initVault, requireGitVault, scanVault, vaultHasExpectedGitIgnore } from "./core/vault.js";
 import { migrateVault } from "./core/migration.js";
 import { parseMarkdown } from "./core/markdown.js";
 import { VaultIndexer } from "./core/indexer.js";
-import { startWatcher } from "./core/watcher.js";
 import { GitAdapter } from "./core/git.js";
 import { MCP_TOOL_NAMES, runMcpServer } from "./mcp/server.js";
+import { createApiServer } from "./api/server.js";
+import { VaultRuntime } from "./mcp/service.js";
+import { initializeWorkspaceManifest, loadWorkspaceConfig, removeWorkspaceRepository } from "./core/workspace.js";
+import { WorkspaceIndexer } from "./core/workspace-indexer.js";
+import { setupClaudeWorkspaceConfig } from "./core/claude-workspace.js";
 
 type CliOptions = {
   command: string;
   positionals: string[];
   vault?: string;
+  workspace?: string;
+  include: string[];
   dryRun: boolean;
   check: boolean;
   port?: number;
@@ -22,6 +28,8 @@ function parseCli(args: string[]): CliOptions {
   const [command = "help", ...rest] = args;
   const positionals: string[] = [];
   let vault: string | undefined;
+  let workspace: string | undefined;
+  const include: string[] = [];
   let port: number | undefined;
   let dryRun = false;
   let check = false;
@@ -29,6 +37,8 @@ function parseCli(args: string[]): CliOptions {
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
     if (arg === "--vault") vault = rest[++index];
+    else if (arg === "--workspace") workspace = rest[++index];
+    else if (arg === "--include") include.push(...(rest[++index] ?? "").split(",").map((item) => item.trim()).filter(Boolean));
     else if (arg === "--port") port = Number(rest[++index]);
     else if (arg === "--dry-run") dryRun = true;
     else if (arg === "--check") check = true;
@@ -36,12 +46,12 @@ function parseCli(args: string[]): CliOptions {
     else positionals.push(arg);
   }
 
-  return { command, positionals, vault, dryRun, check, port };
+  return { command, positionals, vault, workspace, include, dryRun, check, port };
 }
 
 function vaultArgument(options: CliOptions): string {
-  const value = options.vault ?? process.env.CORTEX_VAULT_ROOT;
-  if (!value) throw new Error("A vault is required. Pass --vault <path> or set CORTEX_VAULT_ROOT.");
+  const value = options.vault ?? process.env.CORTEX_VAULT_ROOT ?? process.env.CLAUDE_PROJECT_DIR;
+  if (!value) throw new Error("A vault is required. Pass --vault <path>, set CORTEX_VAULT_ROOT, or run from a Claude project with CLAUDE_PROJECT_DIR.");
   return resolve(value);
 }
 
@@ -50,36 +60,21 @@ function print(value: unknown): void {
 }
 
 function help(): void {
-  console.log(`Cortex Phase 2\n\nCommands:\n  dev [--vault <path>] [--port <port>]\n  parse <file>\n  index --vault <path>\n  vault:init <path>\n  vault:check --vault <path>\n  migrate --vault <path> [--dry-run]\n  mcp --vault <path> [--check]\n  git:status --vault <path>\n  git:history --vault <path> <note-path>\n  git:diff --vault <path> <note-path> [revision]\n  git:restore --vault <path> <note-path> <revision>`);
+  console.log(`Cortex Phase 3\n\nCommands:\n  dev [--vault <path>] [--workspace <path>] [--port <port>]\n  parse <file>\n  index --vault <path> [--workspace <path>]\n  vault:init <path>\n  vault:check --vault <path>\n  migrate --vault <path> [--dry-run]\n  mcp --vault <path> [--workspace <path>] [--check]\n  workspace:init --vault <path> --workspace <path> [--include <repo,repo>]\n  workspace:check --vault <path>\n  workspace:remove-repository --vault <path> <repository-id>\n  workspace:setup-claude --vault <path> --workspace <path>\n  git:status --vault <path>\n  git:history --vault <path> <note-path>\n  git:diff --vault <path> <note-path> [revision]\n  git:restore --vault <path> <note-path> <revision>`);
 }
 
 async function runDev(options: CliOptions): Promise<void> {
   const vaultRoot = requireGitVault(vaultArgument(options));
-  const indexer = new VaultIndexer(vaultRoot);
-  let lastReport = indexer.fullRebuild();
-  const watcher = await startWatcher(vaultRoot, async (events) => {
-    lastReport = indexer.incrementalRebuild(events.map((event) => event.path));
-  });
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: options.port ?? 0,
-    fetch(request) {
-      const url = new URL(request.url);
-      if (url.pathname === "/health") {
-        return Response.json({ status: "ok", phase: 1, vaultRoot, index: lastReport });
-      }
-      return new Response("Not found", { status: 404 });
-    },
-  });
+  const runtime = await VaultRuntime.start(vaultRoot, { workspaceRoot: options.workspace });
+  const uiDist = resolve(dirname(fileURLToPath(import.meta.url)), "..", "ui", "dist");
+  const server = createApiServer(runtime, options.port ?? 4170, uiDist);
   const shutdown = async () => {
-    await watcher.stop();
-    await watcher.flushSnapshot();
     server.stop();
-    indexer.close();
+    await runtime.close();
   };
   process.once("SIGINT", () => void shutdown().then(() => process.exit(0)));
   process.once("SIGTERM", () => void shutdown().then(() => process.exit(0)));
-  console.log(JSON.stringify({ status: "ready", phase: 1, vaultRoot, url: `http://${server.hostname}:${server.port}`, index: lastReport }));
+  console.log(JSON.stringify({ status: "ready", phase: 3, vaultRoot, url: String("http://") + server.hostname + ":" + server.port, index: runtime.indexer.store.counts(), workspace: runtime.workspaceStatus() }));
 }
 
 function runParse(options: CliOptions): void {
@@ -90,14 +85,48 @@ function runParse(options: CliOptions): void {
 }
 
 function runIndex(options: CliOptions): void {
-  const indexer = new VaultIndexer(vaultArgument(options));
+  const vaultRoot = vaultArgument(options);
+  const indexer = new VaultIndexer(vaultRoot);
   try {
     const report = indexer.fullRebuild();
-    print(report);
-    if (report.diagnostics.some((item) => item.severity === "error")) process.exitCode = 1;
+    let workspaceReport;
+    if (options.workspace || process.env.CORTEX_WORKSPACE_ROOT || existsSync(resolve(vaultRoot, "workspace.yaml"))) {
+      const workspace = loadWorkspaceConfig(vaultRoot, options.workspace);
+      const workspaceIndexer = new WorkspaceIndexer(indexer.store, workspace);
+      workspaceReport = workspaceIndexer.fullRebuild();
+    }
+    print(workspaceReport ? { ...report, workspace: workspaceReport } : report);
+    if (report.diagnostics.some((item) => item.severity === "error") || workspaceReport?.diagnostics.some((item) => item.severity === "error")) process.exitCode = 1;
   } finally {
     indexer.close();
   }
+}
+
+function runWorkspaceInit(options: CliOptions): void {
+  const vaultRoot = vaultArgument(options);
+  if (!options.workspace) throw new Error("Usage: bun run workspace:init -- --vault <path> --workspace <path> [--include <repo,repo>]");
+  const workspace = initializeWorkspaceManifest(vaultRoot, options.workspace, options.include);
+  print({ workspaceRoot: workspace.workspaceRoot, repositories: workspace.repositories, diagnostics: workspace.diagnostics });
+}
+
+function runWorkspaceCheck(options: CliOptions): void {
+  const vaultRoot = vaultArgument(options);
+  const workspace = loadWorkspaceConfig(vaultRoot, options.workspace);
+  print({ workspaceRoot: workspace.workspaceRoot, workspaceExists: workspace.workspaceExists, repositories: workspace.repositories, diagnostics: workspace.diagnostics });
+  if (workspace.diagnostics.some((item) => item.severity === "error")) process.exitCode = 1;
+}
+
+function runWorkspaceRemoveRepository(options: CliOptions): void {
+  const vaultRoot = vaultArgument(options);
+  const repositoryId = options.positionals[0];
+  if (!repositoryId) throw new Error("Usage: bun run workspace:remove-repository -- --vault <path> <repository-id>");
+  print({ manifest: removeWorkspaceRepository(vaultRoot, repositoryId) });
+}
+
+function runWorkspaceSetupClaude(options: CliOptions): void {
+  const vaultRoot = requireGitVault(vaultArgument(options));
+  const workspace = loadWorkspaceConfig(vaultRoot, options.workspace);
+  print(setupClaudeWorkspaceConfig(vaultRoot, workspace.workspaceRoot));
 }
 
 function runCheck(options: CliOptions): void {
@@ -179,6 +208,18 @@ async function main(): Promise<void> {
     case "migrate":
       runMigrate(options);
       return;
+    case "workspace:init":
+      runWorkspaceInit(options);
+      return;
+    case "workspace:check":
+      runWorkspaceCheck(options);
+      return;
+    case "workspace:remove-repository":
+      runWorkspaceRemoveRepository(options);
+      return;
+    case "workspace:setup-claude":
+      runWorkspaceSetupClaude(options);
+      return;
     case "git:status":
     case "git:history":
     case "git:diff":
@@ -188,9 +229,9 @@ async function main(): Promise<void> {
     case "mcp":
       if (options.check) {
         const vaultRoot = requireGitVault(vaultArgument(options));
-        print({ status: "ready", phase: 2, transport: "stdio", vaultRoot, tools: MCP_TOOL_NAMES });
+        print({ status: "ready", phase: 3, transport: "stdio", vaultRoot, tools: MCP_TOOL_NAMES });
       } else {
-        await runMcpServer(vaultArgument(options));
+        await runMcpServer(vaultArgument(options), { workspaceRoot: options.workspace });
       }
       return;
     default:

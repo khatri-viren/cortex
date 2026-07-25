@@ -102,9 +102,24 @@ describe("Git adapter", () => {
     expect(() => adapter.restore(notePath, "HEAD")).toThrow("dirty");
     git(vault, "add", notePath);
     git(vault, "commit", "-m", "change");
-    expect(adapter.history(notePath).length).toBeGreaterThanOrEqual(2);
+    const history = adapter.history(notePath);
+    expect(history.length).toBeGreaterThanOrEqual(2);
+
+    // Git terminates its last record with a newline; every parsed commit must be real.
+    expect(history.every((commit) => Boolean(commit.hash && commit.author && commit.date && commit.subject))).toBe(true);
+
     adapter.restore(notePath, "HEAD~1");
     expect(readFileSync(absolutePath, "utf8")).toBe(base);
+  });
+
+  test("returns no commits for a path that git does not track", () => {
+    const vault = tempVault();
+    git(vault, "config", "user.name", "Cortex Test");
+    git(vault, "config", "user.email", "cortex@example.test");
+    git(vault, "add", ".");
+    git(vault, "commit", "-m", "base");
+    writeFileSync(join(vault, "untracked.md"), "# Untracked\n");
+    expect(new GitAdapter(vault).history("untracked.md")).toEqual([]);
   });
 });
 

@@ -102,7 +102,11 @@ export function parseFrontmatter(text: string): FrontmatterParseResult {
           diagnostics.push(error("invalid-applies-to-relation", `'applies_to[${index}].relation' is not supported.`));
           continue;
         }
-        appliesTo.push({ target: item.target, relation: item.relation as AppliesTo["relation"] });
+        if (item.repository !== undefined && (typeof item.repository !== "string" || item.repository.trim().length === 0)) {
+          diagnostics.push(error("invalid-applies-to-repository", `'applies_to[${index}].repository' must be a non-empty string.`));
+          continue;
+        }
+        appliesTo.push({ target: item.target, relation: item.relation as AppliesTo["relation"], ...(item.repository ? { repository: item.repository as string } : {}) });
       }
     }
   }
@@ -154,7 +158,9 @@ export function serializeFrontmatter(frontmatter: NoteFrontmatter): string {
   };
   data.aliases = frontmatter.aliases;
   data.tags = frontmatter.tags;
-  if (frontmatter.applies_to.length > 0) data.applies_to = frontmatter.applies_to;
+  if (frontmatter.applies_to.length > 0) {
+    data.applies_to = frontmatter.applies_to.map((item) => (item.repository ? { repository: item.repository, target: item.target, relation: item.relation } : { target: item.target, relation: item.relation }));
+  }
   Object.assign(data, frontmatter.extra);
   return `---\n${stringifyYaml(data).trimEnd()}\n---\n`;
 }

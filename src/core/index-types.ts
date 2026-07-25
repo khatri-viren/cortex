@@ -44,3 +44,20 @@ export type GraphBuild = {
   edges: GraphEdge[];
   diagnostics: Diagnostic[];
 };
+
+export type WorkspaceRepositoryRecord = {
+  repositoryId: string;
+  path: string;
+  status: "ready" | "missing" | "stale";
+  lastIndexedAt?: string;
+};
+
+export type WorkspaceIndexReport = {
+  mode: "full" | "incremental";
+  repositories: string[];
+  fileCount: number;
+  graphNodeCount: number;
+  graphEdgeCount: number;
+  diagnostics: Diagnostic[];
+  durationMs: number;
+};

@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMcpServer } from "../src/mcp/server.js";
+import { createMcpServer, MCP_TOOL_NAMES } from "../src/mcp/server.js";
 import { McpVaultService } from "../src/mcp/service.js";
 import { initVault } from "../src/core/vault.js";
 
@@ -43,7 +43,7 @@ describe("MCP server", () => {
     try {
       const tools = await mcp.client.listTools();
       expect(tools.tools.map((tool) => tool.name)).toContain("replace_note");
-      expect(tools.tools).toHaveLength(15);
+      expect(tools.tools).toHaveLength(MCP_TOOL_NAMES.length);
 
       const noteResult = await mcp.client.callTool({ name: "get_note", arguments: { note: "project-map.md" } });
       const note = structured(noteResult);

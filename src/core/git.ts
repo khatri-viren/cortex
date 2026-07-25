@@ -54,10 +54,16 @@ export class GitAdapter {
 
   history(path: string, limit = 20): GitCommit[] {
     const output = runGit(this.vaultRoot, ["log", `-${limit}`, "--follow", "--format=%H%x1f%an%x1f%aI%x1f%s%x1e", "--", path]);
-    return output.split("\x1e").filter(Boolean).map((record) => {
-      const [hash, author, date, subject] = record.replace(/\n$/, "").split("\x1f");
-      return { hash, author, date, subject };
-    });
+    // Git terminates the final record with a newline, which would otherwise survive
+    // the Boolean filter and parse into a phantom commit with empty fields.
+    return output
+      .split("\x1e")
+      .map((record) => record.replace(/^\n/, "").replace(/\n$/, ""))
+      .filter(Boolean)
+      .map((record) => {
+        const [hash, author, date, subject] = record.split("\x1f");
+        return { hash, author, date, subject };
+      });
   }
 
   diff(path: string, revision?: string): string {

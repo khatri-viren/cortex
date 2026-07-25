@@ -20,6 +20,10 @@ export const MCP_TOOL_NAMES = [
   "get_diff",
   "restore_note",
   "vault_check",
+  "workspace_status",
+  "get_repo_history",
+  "get_repo_diff",
+  "restore_repo_path",
 ] as const;
 
 type ToolPayload = Record<string, unknown>;
@@ -121,10 +125,10 @@ export function createMcpServer(service: McpVaultService): McpServer {
     type: z.enum(["note", "map", "table"]),
     aliases: z.array(z.string()).optional(),
     tags: z.array(z.string()).optional(),
-    applies_to: z.array(z.object({ target: z.string(), relation: z.enum(["documents", "owns", "implements", "depends_on", "related_to"]) })).optional(),
+    applies_to: z.array(z.object({ target: z.string(), relation: z.enum(["documents", "owns", "implements", "depends_on", "related_to"]), repository: z.string().optional() })).optional(),
     body: z.string().optional(),
     path: z.string().optional(),
-  }, async (args) => service.createNote(args as { title: string; type: NoteType; aliases?: string[]; tags?: string[]; applies_to?: Array<{ target: string; relation: "documents" | "owns" | "implements" | "depends_on" | "related_to" }>; body?: string; path?: string }));
+  }, async (args) => service.createNote(args as { title: string; type: NoteType; aliases?: string[]; tags?: string[]; applies_to?: Array<{ target: string; relation: "documents" | "owns" | "implements" | "depends_on" | "related_to"; repository?: string }>; body?: string; path?: string }));
 
   registerTool(server, "get_history", "Return Git commits affecting a note.", {
     note: z.string().min(1),
@@ -143,11 +147,32 @@ export function createMcpServer(service: McpVaultService): McpServer {
 
   registerTool(server, "vault_check", "Return vault diagnostics, index counts, and Git status.", {}, () => service.vaultCheck());
 
+  registerTool(server, "workspace_status", "Return workspace mode status, discovered repositories, and workspace diagnostics.", {}, () => service.workspaceStatus());
+
+  registerTool(server, "get_repo_history", "Return Git commits affecting a path within a discovered workspace repository.", {
+    repository: z.string().min(1),
+    path: z.string().min(1),
+    limit: z.number().int().positive().max(100).optional(),
+  }, (args) => service.getRepoHistory(args.repository, args.path, args.limit));
+
+  registerTool(server, "get_repo_diff", "Return the working-tree or revision diff for a path within a discovered workspace repository.", {
+    repository: z.string().min(1),
+    path: z.string().min(1),
+    revision: z.string().optional(),
+  }, (args) => service.getRepoDiff(args.repository, args.path, args.revision));
+
+  registerTool(server, "restore_repo_path", "Restore a clean path within a workspace repository from Git. Requires confirm: true and refuses when the repository is dirty.", {
+    repository: z.string().min(1),
+    path: z.string().min(1),
+    revision: z.string().min(1),
+    confirm: z.boolean(),
+  }, async (args) => service.restoreRepoPath(args.repository, args.path, args.revision, args.confirm));
+
   return server;
 }
 
-export async function runMcpServer(vaultRoot: string): Promise<void> {
-  const service = await McpVaultService.start(vaultRoot);
+export async function runMcpServer(vaultRoot: string, options?: { workspaceRoot?: string }): Promise<void> {
+  const service = await McpVaultService.start(vaultRoot, options);
   const server = createMcpServer(service);
   const transport = new StdioServerTransport();
   let closed = false;
