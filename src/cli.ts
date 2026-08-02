@@ -12,6 +12,8 @@ import { VaultRuntime } from "./mcp/service.js";
 import { initializeWorkspaceManifest, loadWorkspaceConfig, removeWorkspaceRepository } from "./core/workspace.js";
 import { WorkspaceIndexer } from "./core/workspace-indexer.js";
 import { setupClaudeWorkspaceConfig } from "./core/claude-workspace.js";
+import { logger } from "./logger.js";
+import type { Diagnostic } from "./core/types.js";
 
 type CliOptions = {
   command: string;
@@ -63,6 +65,21 @@ function help(): void {
   console.log(`Cortex Phase 3\n\nCommands:\n  dev [--vault <path>] [--workspace <path>] [--port <port>]\n  parse <file>\n  index --vault <path> [--workspace <path>]\n  vault:init <path>\n  vault:check --vault <path>\n  migrate --vault <path> [--dry-run]\n  mcp --vault <path> [--workspace <path>] [--check]\n  workspace:init --vault <path> --workspace <path> [--include <repo,repo>]\n  workspace:check --vault <path>\n  workspace:remove-repository --vault <path> <repository-id>\n  workspace:setup-claude --vault <path> --workspace <path>\n  git:status --vault <path>\n  git:history --vault <path> <note-path>\n  git:diff --vault <path> <note-path> [revision]\n  git:restore --vault <path> <note-path> <revision>`);
 }
 
+function logDiagnosticsSummary(diagnostics: Diagnostic[]): void {
+  const byCode = new Map<string, Diagnostic[]>();
+  for (const diagnostic of diagnostics) {
+    const group = byCode.get(diagnostic.code) ?? [];
+    group.push(diagnostic);
+    byCode.set(diagnostic.code, group);
+  }
+  for (const [code, group] of byCode) {
+    const severity = group[0].severity;
+    const examples = group.slice(0, 3).map((d) => d.filePath).filter(Boolean);
+    const suffix = group.length > examples.length ? `, +${group.length - examples.length} more` : "";
+    logger[severity === "error" ? "error" : "warn"](`${code} (${group.length}): ${examples.join(", ")}${suffix}`);
+  }
+}
+
 async function runDev(options: CliOptions): Promise<void> {
   const vaultRoot = requireGitVault(vaultArgument(options));
   const runtime = await VaultRuntime.start(vaultRoot, { workspaceRoot: options.workspace });
@@ -74,7 +91,19 @@ async function runDev(options: CliOptions): Promise<void> {
   };
   process.once("SIGINT", () => void shutdown().then(() => process.exit(0)));
   process.once("SIGTERM", () => void shutdown().then(() => process.exit(0)));
-  console.log(JSON.stringify({ status: "ready", phase: 3, vaultRoot, url: String("http://") + server.hostname + ":" + server.port, index: runtime.indexer.store.counts(), workspace: runtime.workspaceStatus() }));
+
+  const url = String("http://") + server.hostname + ":" + server.port;
+  const counts = runtime.indexer.store.counts();
+  const workspace = runtime.workspaceStatus();
+  logger.info(`Cortex ready at ${url} (vault: ${vaultRoot})`);
+  logger.info(`Indexed ${counts.noteCount} notes, ${counts.sectionCount} sections, ${counts.graphNodeCount} graph nodes`);
+  if (workspace.active) {
+    const byStatus = new Map<string, number>();
+    for (const repo of workspace.repositories) byStatus.set(repo.status, (byStatus.get(repo.status) ?? 0) + 1);
+    const summary = [...byStatus].map(([status, count]) => `${count} ${status}`).join(", ");
+    logger.info(`Workspace: ${workspace.repositories.length} repositories (${summary})`);
+    logDiagnosticsSummary(workspace.diagnostics);
+  }
 }
 
 function runParse(options: CliOptions): void {

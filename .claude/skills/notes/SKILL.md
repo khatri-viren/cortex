@@ -22,6 +22,20 @@ Markdown in the code repo, and before leaving a plan only in the conversation.
 - Treat note UUIDs, `id`, and `created_at` as immutable.
 - Keep note links and `applies_to` targets valid when changing note metadata.
 
+## Wikilinks
+
+- `[[Target]]` resolves against the target note's `title` or an `aliases` entry — **not**
+  its filename — with one exception: a target matching the note's own filename stem
+  (e.g. `[[phase-1-indexing-engine]]` for `notes/phase-1-indexing-engine.md`) always
+  resolves too, even without a matching alias.
+- Prefer linking with the exact title (`[[Engine Notes]]`), since that's what's shown to
+  readers. If you write a filename-style slug instead, it still resolves via the fallback
+  above — but only for that note's *own* filename, so a slug that doesn't match the
+  target's actual filename or title/aliases will not resolve.
+- A wikilink that doesn't resolve is a silent, warning-level `unresolved-wikilink`
+  diagnostic, not a hard error — check `vault_check` after adding links, don't assume a
+  link worked just because nothing complained while writing it.
+
 ## Updating notes
 
 - Use `patch_section` for an existing marked section and pass its current revision.

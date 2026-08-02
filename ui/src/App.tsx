@@ -112,7 +112,7 @@ function App() {
   }, [notes, query]);
 
   useEffect(() => {
-    listNotes().then((result) => {
+    listNotes(undefined, 100).then((result) => {
       setNotes(result.notes);
       if (result.notes[0]) setSelected(result.notes[0].path);
     }).catch((cause: unknown) => setStatus(cause instanceof Error ? cause.message : String(cause)));

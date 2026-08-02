@@ -1,0 +1,32 @@
+[
+  {
+    "id": "locate-markdown-parser",
+    "prompt": "Locate the Markdown parsing implementation in this repository and its structural helpers for parsing sections and wikilinks. Report the file path and the names of the key functions.",
+    "expected_facts": ["src/core/markdown\\.ts", "parseMarkdown"]
+  },
+  {
+    "id": "trace-incremental-indexing",
+    "prompt": "Explain how a file change on disk becomes an incremental index update in this repository. Name the specific files involved in watching for changes and triggering a rebuild.",
+    "expected_facts": ["src/core/indexer\\.ts", "src/core/watcher\\.ts"]
+  },
+  {
+    "id": "find-git-restore-flow",
+    "prompt": "Locate the Git restore behavior in this repository and the reindex path that runs after a restore. Report the file(s) involved.",
+    "expected_facts": ["src/core/git\\.ts"]
+  },
+  {
+    "id": "find-mcp-entrypoint",
+    "prompt": "Locate the MCP server entrypoint in this repository and where its tools are registered. Report the file path.",
+    "expected_facts": ["src/mcp/server\\.ts"]
+  },
+  {
+    "id": "vault-only-decision",
+    "prompt": "Why did this project choose Bun as the backend runtime instead of Rust, and under what condition would the team revisit that decision?",
+    "expected_facts": ["Bun", "Rust"]
+  },
+  {
+    "id": "control-package-version",
+    "prompt": "Read package.json in the repository root and report the exact version range string listed for the 'typescript' devDependency.",
+    "expected_facts": ["\\^5\\.8\\.0"]
+  }
+]

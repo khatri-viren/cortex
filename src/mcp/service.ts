@@ -543,13 +543,15 @@ export class VaultRuntime {
   search(query: string, limit?: number): { hits: Array<{ note_id: string; title: string; path: string; snippet: string }>; truncated: boolean } {
     const normalized = query.trim();
     if (!normalized) throw new ServiceError("INVALID_INPUT", "Search query cannot be empty.");
-    const terms = normalized.split(/\s+/).map((term) => `"${term.replaceAll('"', '""')}"`).join(" AND ");
+    const words = normalized.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    if (!words.length) throw new ServiceError("INVALID_INPUT", "Search query cannot be empty.");
+    const terms = words.map((term) => `"${term.replaceAll('"', '""')}"`).join(" AND ");
     const rows = this.indexer.store.db.query<{ note_id: string; title: string; path: string; snippet: string }, [string, number]>("SELECT notes_fts.note_id, notes_fts.title, notes.path, snippet(notes_fts, 2, '', '', '...', 24) as snippet FROM notes_fts JOIN notes ON notes.note_id = notes_fts.note_id WHERE notes_fts MATCH ?1 LIMIT ?2").all(terms, clamp(limit, 20, MAX_SEARCH_LIMIT));
     return { hits: rows, truncated: rows.length >= clamp(limit, 20, MAX_SEARCH_LIMIT) };
   }
 
   listNotes(prefix?: string, tag?: string, limit?: number): { notes: NoteRecord[]; truncated: boolean } {
-    const rows = this.indexer.store.db.query<{ note_id: string; path: string; title: string; type: NoteType; created_at: string; updated_at: string }, []>("SELECT note_id, path, title, type, created_at, updated_at FROM notes ORDER BY title").all();
+    const rows = this.indexer.store.db.query<{ note_id: string; path: string; title: string; type: NoteType; created_at: string; updated_at: string }, []>("SELECT note_id, path, title, type, created_at, updated_at FROM notes ORDER BY updated_at DESC").all();
     const filtered = rows.filter((row) => (!prefix || row.path.startsWith(prefix) || row.title.toLocaleLowerCase().startsWith(prefix.toLocaleLowerCase())) && (!tag || this.indexer.store.db.query<{ count: number }, [string, string]>("SELECT COUNT(*) as count FROM note_tags WHERE note_id = ?1 AND tag = ?2").get(row.note_id, tag)?.count === 1));
     const limitValue = clamp(limit, 20, MAX_LIST_LIMIT);
     return { notes: filtered.slice(0, limitValue).map((row) => this.noteRow(row.note_id)), truncated: filtered.length > limitValue };

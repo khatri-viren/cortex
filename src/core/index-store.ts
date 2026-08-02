@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import { Database, constants } from "bun:sqlite";
 import type { Diagnostic, ParsedNote } from "./types.js";
 import type { FileKind, GraphBuild, IndexedMarkdown } from "./index-types.js";
@@ -377,10 +377,16 @@ export class IndexStore {
   }
 
   resolveLinks(): void {
-    const titleRows = this.db.query<{ note_id: string; title: string }, []>("SELECT note_id, title FROM notes").all();
+    const titleRows = this.db.query<{ note_id: string; title: string; path: string }, []>("SELECT note_id, title, path FROM notes").all();
     const aliases = this.db.query<{ note_id: string; alias: string }, []>("SELECT note_id, alias FROM note_aliases").all();
     const targets = new Map<string, string>();
-    for (const row of titleRows) targets.set(row.title.toLocaleLowerCase(), row.note_id);
+    for (const row of titleRows) {
+      // Same filename-stem fallback as scanVault's diagnostics scan, so a link that
+      // resolves cleanly (no warning) also resolves in the actual graph, not just the
+      // diagnostics check.
+      targets.set(basename(row.path, ".md").toLocaleLowerCase(), row.note_id);
+      targets.set(row.title.toLocaleLowerCase(), row.note_id);
+    }
     for (const row of aliases) targets.set(row.alias.toLocaleLowerCase(), row.note_id);
     const links = this.db.query<{ row_id: number; target_title: string }, []>("SELECT row_id, target_title FROM links").all();
     for (const link of links) {

@@ -5,7 +5,7 @@ import { ServiceError, VaultRuntime, type VaultChangeEvent } from "../mcp/servic
 
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
-  "access-control-allow-origin": "http://127.0.0.1:5173",
+  "access-control-allow-origin": "http://127.0.0.1:5175",
 };
 
 type JsonObject = Record<string, unknown>;
@@ -83,7 +83,7 @@ function eventStream(runtime: VaultRuntime): Response {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-cache",
       connection: "keep-alive",
-      "access-control-allow-origin": "http://127.0.0.1:5173",
+      "access-control-allow-origin": "http://127.0.0.1:5175",
     },
   });
 }

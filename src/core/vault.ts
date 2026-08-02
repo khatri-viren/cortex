@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { parseMarkdown } from "./markdown.js";
@@ -41,6 +41,10 @@ export function scanVault(vaultRoot: string): VaultScan {
   const knownTitles = new Map<string, string>();
   for (const note of notes) {
     if (!note.frontmatter) continue;
+    // A note's own filename stem always resolves, even without a matching alias:
+    // wikilinks are commonly authored as filename-style slugs, and requiring an
+    // explicit alias for every note to make that work is an easy trap to fall into.
+    if (note.filePath) knownTitles.set(basename(note.filePath, ".md").toLocaleLowerCase(), note.filePath);
     const values = [note.frontmatter.title, ...note.frontmatter.aliases];
     for (const value of values) knownTitles.set(value.toLocaleLowerCase(), note.filePath ?? "");
   }

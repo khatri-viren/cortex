@@ -29,9 +29,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return payload as T;
 }
 
-export function listNotes(prefix?: string): Promise<ListNotesResponse> {
-  const query = prefix ? "?prefix=" + encodeURIComponent(prefix) : "";
-  return request<ListNotesResponse>("/api/notes" + query);
+export function listNotes(prefix?: string, limit?: number): Promise<ListNotesResponse> {
+  const params = new URLSearchParams();
+  if (prefix) params.set("prefix", prefix);
+  if (limit) params.set("limit", String(limit));
+  const query = params.toString();
+  return request<ListNotesResponse>("/api/notes" + (query ? "?" + query : ""));
 }
 
 export function searchNotes(query: string): Promise<SearchResponse> {

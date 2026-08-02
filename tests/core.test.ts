@@ -120,6 +120,16 @@ describe("identities and vaults", () => {
     expect(scan.diagnostics.some((item) => item.code === "invalid-applies-to-target")).toBe(true);
   });
 
+  test("resolves a wikilink written as the target's filename stem, without a matching alias", () => {
+    const root = initVault(join(temporaryDirectory(), "vault"));
+    const target = createFrontmatter({ title: "Something Else Entirely" });
+    writeFileSync(join(root, "notes", "my-target-note.md"), `${serializeFrontmatter(target)}# Something Else Entirely\n\nBody.\n`);
+    const linker = createFrontmatter({ title: "Linker Note" });
+    writeFileSync(join(root, "linker.md"), `${serializeFrontmatter(linker)}# Linker Note\n\n[[my-target-note]]\n`);
+    const scan = scanVault(root);
+    expect(scan.diagnostics.some((item) => item.code === "unresolved-wikilink")).toBe(false);
+  });
+
   test("does not flag attachment targets that belong to a workspace repository", () => {
     const root = initVault(join(temporaryDirectory(), "vault"));
     const frontmatter = createFrontmatter({
