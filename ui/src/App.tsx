@@ -83,6 +83,8 @@ function ContextSidebarTrigger() {
   );
 }
 
+const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+
 function App() {
   const [route, navigate] = useRoute();
   const [notes, setNotes] = useState<NoteSummary[]>([]);
@@ -207,6 +209,17 @@ function App() {
     navigate("notes");
   }
 
+  function switchVault() {
+    if (isDirty) {
+      const discard = window.confirm("You have unsaved changes. Discard them and switch vaults?");
+      if (!discard) return;
+    }
+    // Navigating back to the app's own origin returns to the Tauri shell's
+    // vault picker; the sidecar for this vault is disposed there before the
+    // next one starts (see "Desktop V2 Multi-Vault UX Contract", D2-09).
+    window.location.href = "tauri://localhost/";
+  }
+
   async function keepMine() {
     if (!source || !conflict) return;
     try {
@@ -265,6 +278,11 @@ function App() {
           {route === "notes" && (
             <Button size="sm" onClick={() => void save()} disabled={!isDirty || !source}>
               Save
+            </Button>
+          )}
+          {isTauri && (
+            <Button variant="ghost" size="sm" onClick={switchVault}>
+              Switch vault
             </Button>
           )}
           <ThemeToggle />
