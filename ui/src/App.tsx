@@ -383,7 +383,7 @@ function App() {
                   </div>
                   <div className="min-h-0 flex-1">
                     {source ? (
-                      <Editor value={draft} mode={mode} onChange={setDraft} linkTargets={notes.map((note) => note.title)} notePath={activeNotePath} notes={notes} onOpenNote={openPath} />
+                      <Editor value={draft} mode={mode} onChange={setDraft} linkTargets={notes.map((note) => note.title)} notePath={activeNotePath} notes={notes} onOpenNote={openPath} sections={source.sections} />
                     ) : (
                       <Empty className="h-full">
                         <EmptyHeader>

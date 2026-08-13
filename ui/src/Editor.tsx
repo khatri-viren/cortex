@@ -1,5 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
-import { AtomicCodeMirrorEditor, wikiLinks } from "@atomic-editor/editor";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  AtomicCodeMirrorEditor,
+  wikiLinks,
+  type AtomicCodeMirrorEditorHandle,
+} from "@atomic-editor/editor";
 import {
   autocompletion,
   type CompletionContext,
@@ -19,6 +23,8 @@ import {
   lineNumbers,
 } from "@codemirror/view";
 import type { NoteSummary } from "./api";
+import type { ApiSection } from "../../src/api/contracts";
+import { SectionOutline } from "./components/section-outline";
 
 // Only the vault's actually-used fence languages get a grammar; matches
 // @atomic-editor/editor's own code-languages.ts entries so more can be
@@ -75,6 +81,7 @@ type EditorProps = {
   notePath?: string;
   notes?: NoteSummary[];
   onOpenNote?: (path: string) => void;
+  sections?: ApiSection[];
 };
 
 export function Editor({
@@ -85,8 +92,20 @@ export function Editor({
   notePath,
   notes = [],
   onOpenNote,
+  sections = [],
 }: EditorProps) {
   const view = useRef<EditorView | null>(null);
+  const editorHandleRef = useRef<AtomicCodeMirrorEditorHandle | null>(null);
+  const readingHostRef = useRef<HTMLDivElement | null>(null);
+  const [activeSectionIndex, setActiveSectionIndex] = useState(0);
+
+  const outlineSections = useMemo(
+    () =>
+      sections
+        .filter((section) => section.level <= 2)
+        .sort((a, b) => a.startLine - b.startLine),
+    [sections],
+  );
   const onChangeRef = useRef(onChange);
   const linkTargetsRef = useRef(linkTargets);
   const notesRef = useRef(notes);
@@ -185,19 +204,70 @@ export function Editor({
     [],
   );
 
+  useEffect(() => {
+    setActiveSectionIndex(0);
+    if (mode !== "reading" || outlineSections.length < 2) return;
+    const host = readingHostRef.current;
+    if (!host) return;
+    const totalLines = value.split("\n").length;
+
+    function updateActive(scroller: HTMLElement) {
+      const maxScroll = scroller.scrollHeight - scroller.clientHeight;
+      const fraction = maxScroll > 0 ? scroller.scrollTop / maxScroll : 0;
+      const approxLine = 1 + fraction * (totalLines - 1);
+      let next = 0;
+      for (let i = 0; i < outlineSections.length; i += 1) {
+        if (outlineSections[i].startLine <= approxLine) next = i;
+        else break;
+      }
+      setActiveSectionIndex(next);
+    }
+
+    let frame = 0;
+    function onScroll(event: Event) {
+      const target = event.target;
+      if (!(target instanceof HTMLElement) || !target.classList.contains("cm-scroller")) return;
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        updateActive(target);
+      });
+    }
+
+    host.addEventListener("scroll", onScroll, true);
+    return () => {
+      host.removeEventListener("scroll", onScroll, true);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [mode, outlineSections, value]);
+
+  const jumpToSection = useCallback((section: ApiSection, index: number) => {
+    setActiveSectionIndex(index);
+    editorHandleRef.current?.revealText(section.heading);
+  }, []);
+
   if (mode === "reading") {
     return (
-      <div
-        className="atomic-editor-host h-full min-h-[440px] overflow-auto max-[700px]:min-h-[420px]"
-        aria-label="Markdown editor"
-      >
-        <AtomicCodeMirrorEditor
-          documentId={notePath}
-          markdownSource={value}
-          readOnly
-          codeLanguages={CODE_LANGUAGES}
-          onMarkdownChange={onChange}
-          extensions={readingExtensions}
+      <div className="flex h-full min-h-[440px] max-[700px]:min-h-[420px]">
+        <div
+          ref={readingHostRef}
+          className="atomic-editor-host h-full min-w-0 flex-1 overflow-auto"
+          aria-label="Markdown editor"
+        >
+          <AtomicCodeMirrorEditor
+            documentId={notePath}
+            markdownSource={value}
+            readOnly
+            codeLanguages={CODE_LANGUAGES}
+            onMarkdownChange={onChange}
+            extensions={readingExtensions}
+            editorHandleRef={editorHandleRef}
+          />
+        </div>
+        <SectionOutline
+          sections={outlineSections}
+          activeIndex={activeSectionIndex}
+          onJump={jumpToSection}
         />
       </div>
     );
