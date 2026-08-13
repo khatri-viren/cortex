@@ -65,7 +65,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ThemeToggle } from "@/components/theme-toggle";
 
-type Mode = "source" | "reading";
+type Mode = "source" | "reading" | "live";
 type Panel = "context" | "git";
 type Route = "notes" | "graph";
 
@@ -176,6 +176,13 @@ function App() {
   const [diff, setDiff] = useState("");
   const [workspaceStatus, setWorkspaceStatus] = useState<ApiWorkspaceStatus>();
   const [noteCount, setNoteCount] = useState<number>();
+  // Bumped whenever `draft`/`base` are replaced by something other than the
+  // user's own typing (external reload, reconcile merge, conflict
+  // resolution, revision restore) — AtomicCodeMirrorEditor's markdownSource
+  // is mount-time only, so Editor keys its reading-mode documentId on this
+  // to force the rendered pane to pick up the new content instead of going
+  // stale (see Editor.tsx's contentRevision prop).
+  const [contentRevision, setContentRevision] = useState(0);
 
   const isDirty = draft !== base;
   const currentTitle = source?.note.title ?? "Select a note";
@@ -274,6 +281,7 @@ function App() {
           setSource(next);
           setDraft(next.markdown);
           setBase(next.markdown);
+          setContentRevision((revision) => revision + 1);
           setStatus("Reloaded external change");
         }).catch(() => setStatus("External change detected; reload failed"));
         return;
@@ -284,6 +292,7 @@ function App() {
           setDraft(result.markdown);
           setBase(result.remote_markdown);
           setSource((current) => current ? { ...current, note: { ...current.note, content_hash: result.remote_hash }, markdown: result.remote_markdown } : current);
+          setContentRevision((revision) => revision + 1);
           setStatus("Merged external changes; review and save");
         } else {
           setConflict({ remote: result.remote_markdown, hash: result.remote_hash, sections: result.conflicts });
@@ -328,6 +337,11 @@ function App() {
     }
   }
 
+  function confirmDiscard(message: string): boolean {
+    if (!isDirty) return true;
+    return window.confirm(message);
+  }
+
   function pushNavHistory(path: string) {
     setNavHistory((current) => {
       if (current.stack[current.index] === path) return current;
@@ -336,7 +350,8 @@ function App() {
     });
   }
 
-  function openPath(path: string, opts?: { skipHistory?: boolean }) {
+  function openPath(path: string, opts?: { skipHistory?: boolean; skipConfirm?: boolean }) {
+    if (!opts?.skipConfirm && path !== selected && !confirmDiscard("You have unsaved changes. Discard them and switch notes?")) return;
     setSelected(path);
     setTabs((current) => (current.includes(path) ? current : [...current, path]));
     setRecents((current) => [path, ...current.filter((existing) => existing !== path)].slice(0, RECENTS_LIMIT));
@@ -347,6 +362,7 @@ function App() {
 
   function closeTab(path: string, event: MouseEvent) {
     event.stopPropagation();
+    if (path === selected && !confirmDiscard("You have unsaved changes. Discard them and close this tab?")) return;
     setTabs((current) => {
       const index = current.indexOf(path);
       const next = current.filter((existing) => existing !== path);
@@ -358,22 +374,23 @@ function App() {
   function goBack() {
     if (!canGoBack) return;
     const index = navHistory.index - 1;
+    const target = navHistory.stack[index];
+    if (target !== selected && !confirmDiscard("You have unsaved changes. Discard them and go back?")) return;
     setNavHistory({ ...navHistory, index });
-    openPath(navHistory.stack[index], { skipHistory: true });
+    openPath(target, { skipHistory: true, skipConfirm: true });
   }
 
   function goForward() {
     if (!canGoForward) return;
     const index = navHistory.index + 1;
+    const target = navHistory.stack[index];
+    if (target !== selected && !confirmDiscard("You have unsaved changes. Discard them and go forward?")) return;
     setNavHistory({ ...navHistory, index });
-    openPath(navHistory.stack[index], { skipHistory: true });
+    openPath(target, { skipHistory: true, skipConfirm: true });
   }
 
   function switchVault() {
-    if (isDirty) {
-      const discard = window.confirm("You have unsaved changes. Discard them and switch vaults?");
-      if (!discard) return;
-    }
+    if (!confirmDiscard("You have unsaved changes. Discard them and switch vaults?")) return;
     // Navigating back to the app's own origin returns to the Tauri shell's
     // vault picker; the sidecar for this vault is disposed there before the
     // next one starts (see "Desktop V2 Multi-Vault UX Contract", D2-09).
@@ -404,6 +421,7 @@ function App() {
       setSource(next);
       setDraft(next.markdown);
       setBase(next.markdown);
+      setContentRevision((revision) => revision + 1);
       setStatus("Restored " + selectedRevision.slice(0, 7));
     } catch (cause: unknown) {
       setStatus(cause instanceof Error ? cause.message : String(cause));
@@ -651,6 +669,7 @@ function App() {
                             <TabsList>
                               <TabsTrigger value="source">Source</TabsTrigger>
                               <TabsTrigger value="reading">Reading</TabsTrigger>
+                              <TabsTrigger value="live">Live</TabsTrigger>
                             </TabsList>
                           </Tabs>
                           <ContextSidebarTrigger />
@@ -672,7 +691,7 @@ function App() {
                     </div>
                     <div className="min-h-0 flex-1">
                       {source ? (
-                        <Editor value={draft} mode={mode} onChange={setDraft} linkTargets={notes.map((note) => note.title)} notePath={activeNotePath} notes={notes} onOpenNote={openPath} sections={source.sections} />
+                        <Editor value={draft} mode={mode} onChange={setDraft} linkTargets={notes.map((note) => note.title)} notePath={activeNotePath} notes={notes} onOpenNote={openPath} sections={source.sections} contentRevision={contentRevision} />
                       ) : (
                         <Empty className="h-full">
                           <EmptyHeader>
@@ -694,7 +713,7 @@ function App() {
                             <Button
                               size="sm"
                               variant="outline"
-                              onClick={() => { setDraft(conflict.remote); setBase(conflict.remote); setConflict(undefined); setStatus("Using external version"); }}
+                              onClick={() => { setDraft(conflict.remote); setBase(conflict.remote); setContentRevision((revision) => revision + 1); setConflict(undefined); setStatus("Using external version"); }}
                             >
                               Take theirs
                             </Button>

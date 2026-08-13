@@ -73,15 +73,33 @@ const sourceTheme = EditorView.theme({
   },
 });
 
+// GitHub-style heading slug, used to resolve same-document `[text](#anchor)`
+// links against `sections` — Cortex's own wikilink model has no heading-anchor
+// syntax (see WIKILINK_RE in src/core/markdown.ts), so this only covers plain
+// Markdown anchor links, not `[[Note#Heading]]`.
+function slugifyHeading(heading: string): string {
+  return heading
+    .toLocaleLowerCase()
+    .trim()
+    .replace(/[^\w\s-]/g, "")
+    .replace(/\s+/g, "-");
+}
+
 type EditorProps = {
   value: string;
-  mode: "source" | "reading";
+  mode: "source" | "reading" | "live";
   onChange: (value: string) => void;
   linkTargets?: string[];
   notePath?: string;
   notes?: NoteSummary[];
   onOpenNote?: (path: string) => void;
   sections?: ApiSection[];
+  // Bumped by the caller whenever `value` was replaced by something other
+  // than this editor's own onChange (external reload, reconcile, conflict
+  // resolution, revision restore). AtomicCodeMirrorEditor's `markdownSource`
+  // is mount-time only, so those cases need a `documentId` change to force
+  // the reading pane to pick up the new content instead of going stale.
+  contentRevision?: number;
 };
 
 export function Editor({
@@ -93,6 +111,7 @@ export function Editor({
   notes = [],
   onOpenNote,
   sections = [],
+  contentRevision = 0,
 }: EditorProps) {
   const view = useRef<EditorView | null>(null);
   const editorHandleRef = useRef<AtomicCodeMirrorEditorHandle | null>(null);
@@ -206,7 +225,7 @@ export function Editor({
 
   useEffect(() => {
     setActiveSectionIndex(0);
-    if (mode !== "reading" || outlineSections.length < 2) return;
+    if (mode === "source" || outlineSections.length < 2) return;
     const host = readingHostRef.current;
     if (!host) return;
     const totalLines = value.split("\n").length;
@@ -241,12 +260,37 @@ export function Editor({
     };
   }, [mode, outlineSections, value]);
 
+  // Plain heading text collides with any earlier prose that happens to
+  // repeat it (e.g. a link labeled the same as its own target heading), so
+  // revealText's first-match search needs the "## " marker to disambiguate
+  // from body text — confirmed via a real reveal-jumping-to-the-wrong-spot
+  // failure while stress-testing a note whose intro links to its own
+  // "Jump Target" heading using that exact phrase.
+  function revealQueryFor(section: ApiSection): string {
+    return "#".repeat(section.level) + " " + section.heading;
+  }
+
   const jumpToSection = useCallback((section: ApiSection, index: number) => {
     setActiveSectionIndex(index);
-    editorHandleRef.current?.revealText(section.heading);
+    editorHandleRef.current?.revealText(revealQueryFor(section));
   }, []);
 
-  if (mode === "reading") {
+  const sectionsRef = useRef(sections);
+  sectionsRef.current = sections;
+
+  const handleLinkClick = useCallback((url: string) => {
+    if (url.startsWith("#")) {
+      const anchor = url.slice(1);
+      const target = sectionsRef.current.find((section) => slugifyHeading(section.heading) === anchor);
+      if (target) {
+        editorHandleRef.current?.revealText(revealQueryFor(target));
+        return;
+      }
+    }
+    window.open(url, "_blank", "noopener,noreferrer");
+  }, []);
+
+  if (mode !== "source") {
     return (
       <div className="flex h-full min-h-[440px] max-[700px]:min-h-[420px]">
         <div
@@ -255,11 +299,12 @@ export function Editor({
           aria-label="Markdown editor"
         >
           <AtomicCodeMirrorEditor
-            documentId={notePath}
+            documentId={notePath ? notePath + ":" + contentRevision : notePath}
             markdownSource={value}
-            readOnly
+            readOnly={mode === "reading"}
             codeLanguages={CODE_LANGUAGES}
             onMarkdownChange={onChange}
+            onLinkClick={handleLinkClick}
             extensions={readingExtensions}
             editorHandleRef={editorHandleRef}
           />
