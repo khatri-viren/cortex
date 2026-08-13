@@ -21,7 +21,7 @@ async function openVault(id) {
   try {
     const opened = await invoke("open_vault", { id })
     setStatus(`Ready on port ${opened.port}. Loading…`)
-    window.location.href = `http://127.0.0.1:${opened.port}/`
+    window.location.href = `http://127.0.0.1:${opened.port}/?vault=${encodeURIComponent(opened.vaultId)}`
   } catch (err) {
     setBusy(false)
     setStatus(String(err), true)

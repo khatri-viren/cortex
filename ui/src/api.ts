@@ -5,6 +5,8 @@ export type NoteSummary = {
   path: string;
   title: string;
   type: "note" | "map" | "table";
+  created_at: string;
+  updated_at: string;
   aliases: string[];
   tags: string[];
   content_hash: string;
@@ -16,6 +18,19 @@ type ProjectMapResponse = ApiGraph;
 type ReconcileResponse =
   | { status: "merged"; markdown: string; changedSections: string[]; remote_markdown: string; remote_hash: string }
   | { status: "conflict"; conflicts: string[]; remote_markdown: string; remote_hash: string };
+type HealthResponse = {
+  status: string;
+  phase: number;
+  index: {
+    noteCount: number;
+    sectionCount: number;
+    linkCount: number;
+    tableRowCount: number;
+    graphNodeCount: number;
+    graphEdgeCount: number;
+    diagnosticCount: number;
+  };
+};
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
@@ -55,6 +70,10 @@ export function getContext(node: string): Promise<ApiContext> {
 
 export function getWorkspaceStatus(): Promise<ApiWorkspaceStatus> {
   return request<ApiWorkspaceStatus>("/api/workspace/status");
+}
+
+export function getHealth(): Promise<HealthResponse> {
+  return request<HealthResponse>("/api/health");
 }
 
 export function getRepoHistory(repository: string, path: string): Promise<ApiHistory> {
