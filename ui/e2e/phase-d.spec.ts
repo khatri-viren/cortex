@@ -18,12 +18,23 @@ const STRESS_NOTE = path.join(VAULT_ROOT, "notes/stress-test-note.md");
 // them against each other otherwise, so force this file to run serially.
 test.describe.configure({ mode: "serial" });
 
-async function openNoteByTitle(page: import("@playwright/test").Page, title: string) {
+async function clickNoteRow(page: import("@playwright/test").Page, title: string) {
   const rows = page.getByTestId("note-row");
   await expect(rows.first()).toBeVisible();
   const row = rows.filter({ hasText: title });
   await expect(row).toHaveCount(1);
   await row.first().click();
+}
+
+async function openNoteByTitle(page: import("@playwright/test").Page, title: string) {
+  await clickNoteRow(page, title);
+  // "Markdown editor" is visible as soon as SOME note's editor DOM exists —
+  // it doesn't guarantee the just-clicked note's content has loaded (the
+  // app can briefly still show whatever was previously/initially active).
+  // The h1 title only updates once the correct note's fetch has actually
+  // resolved and been applied, so wait on that instead of the editor label.
+  await expect(page.getByRole("heading", { name: title, exact: true })).toBeVisible();
+  await expect(page.getByLabel("Markdown editor")).toBeVisible();
 }
 
 test.describe.serial("D2-14: rendered-editor stress test", () => {
@@ -46,7 +57,29 @@ test.describe.serial("D2-14: rendered-editor stress test", () => {
     await openNoteByTitle(page, "Stress Test Note");
     await page.getByRole("tab", { name: "Source", exact: true }).click();
     await expect(page.getByLabel("Markdown editor")).toBeVisible();
-    await expect(page.getByText("Section 40", { exact: false }).first()).toBeVisible();
+    // CodeMirror only mounts DOM nodes for the viewport (plus margin) even
+    // in the bare source EditorView, so content this far into a 1300+ line
+    // document needs a scroll before it's actually in the DOM. Assert on
+    // "Jump Target" (the document's final heading, same target the sibling
+    // reading-mode test uses) rather than "Section 40": scrolling to
+    // scrollHeight lands past the Section 40 heading itself (it scrolls out
+    // of CM6's rendered range), even though nearby prose mentioning
+    // "section 40" is visible — "Jump Target" is what's reliably in view.
+    // exact: false because source mode shows the raw "## Jump Target"
+    // markdown, not just the heading text.
+    //
+    // A single jump to scrollHeight is flaky right after a note switch: CM6
+    // estimates heights for unmeasured (off-screen) content, so scrollHeight
+    // itself grows (and the rendered viewport shifts) as more of the
+    // document gets measured, asynchronously, after the scroll. Re-scroll to
+    // the (possibly-updated) max and recheck in a retrying loop until the
+    // target text actually shows up, rather than betting on a fixed number
+    // of attempts settling in time.
+    const sourceScroller = page.locator(".cm-scroller");
+    await expect(async () => {
+      await sourceScroller.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+      await expect(page.getByText("Jump Target", { exact: false }).first()).toBeVisible({ timeout: 500 });
+    }).toPass({ timeout: 10_000 });
     // Save should be a no-op (button disabled) since nothing was edited.
     await expect(page.getByRole("button", { name: "Save" })).toBeDisabled();
     expect(readFileSync(STRESS_NOTE, "utf8")).toBe(onDisk);
@@ -101,14 +134,26 @@ test.describe("D2-15: live editing mode", () => {
     await openNoteByTitle(page, "Stress Test Note");
     await expect(page.getByLabel("Markdown editor")).toBeVisible();
 
+    // CM6 measures line heights for virtualized (off-screen) content
+    // asynchronously, same as the source-mode viewport issue above — right
+    // after mount, setting scrollTop can get nudged shortly after as more
+    // of the document gets measured. Re-assign until it stops drifting, so
+    // `before` reflects a truly settled position rather than a transient one.
     const scroller = page.locator(".cm-scroller");
-    await scroller.evaluate((el) => { el.scrollTop = 5000; });
-    const before = await scroller.evaluate((el) => el.scrollTop);
+    let before = await scroller.evaluate((el) => { el.scrollTop = 5000; return el.scrollTop; });
+    for (let attempt = 0; attempt < 20; attempt++) {
+      await page.waitForTimeout(100);
+      const current = await scroller.evaluate((el) => { el.scrollTop = 5000; return el.scrollTop; });
+      if (current === before) break;
+      before = current;
+    }
     expect(before).toBeGreaterThan(1000);
 
     await page.getByRole("tab", { name: "Live", exact: true }).click();
-    const after = await scroller.evaluate((el) => el.scrollTop);
-    expect(Math.abs(after - before)).toBeLessThan(50);
+    await expect(async () => {
+      const after = await scroller.evaluate((el) => el.scrollTop);
+      expect(Math.abs(after - before)).toBeLessThan(50);
+    }).toPass({ timeout: 5_000 });
   });
 
   test("typing in live mode edits the document and saves", async ({ page }) => {
@@ -190,7 +235,10 @@ test.describe("D2-17: external change, unsaved, and conflict presentation", () =
       dialogSeen = true;
       void dialog.dismiss();
     });
-    await openNoteByTitle(page, "Sample Plan");
+    // Dismissing the dialog cancels the switch, so "Sample Plan" never
+    // actually opens here — use the raw click, not openNoteByTitle (which
+    // would wait forever for a heading change that isn't supposed to happen).
+    await clickNoteRow(page, "Sample Plan");
     await expect.poll(() => dialogSeen).toBe(true);
     // Dismissed: still on the original note, edit intact.
     await expect(page.getByRole("button", { name: "Save" })).toBeEnabled();

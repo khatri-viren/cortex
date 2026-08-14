@@ -100,6 +100,11 @@ type EditorProps = {
   // is mount-time only, so those cases need a `documentId` change to force
   // the reading pane to pick up the new content instead of going stale.
   contentRevision?: number;
+  // Set by the right rail's Outline tab to jump the reading/live pane to a
+  // heading from outside this component. The nonce lets the same section be
+  // requested twice in a row (bumped on every click, even if the section is
+  // unchanged).
+  jumpRequest?: { section: ApiSection; nonce: number };
 };
 
 export function Editor({
@@ -112,6 +117,7 @@ export function Editor({
   onOpenNote,
   sections = [],
   contentRevision = 0,
+  jumpRequest,
 }: EditorProps) {
   const view = useRef<EditorView | null>(null);
   const editorHandleRef = useRef<AtomicCodeMirrorEditorHandle | null>(null);
@@ -129,8 +135,16 @@ export function Editor({
   const linkTargetsRef = useRef(linkTargets);
   const notesRef = useRef(notes);
   const onOpenNoteRef = useRef(onOpenNote);
+  // attachSourceHost is a useCallback with empty deps, memoized once for the
+  // Editor instance's whole lifetime — its closure over `value` would
+  // otherwise be frozen from whichever render first created it, so every
+  // later mount of the source EditorView (one happens on every switch into
+  // Source mode, since that's a separate conditional JSX branch) would seed
+  // the doc with a stale note's content instead of the current one.
+  const valueRef = useRef(value);
   onChangeRef.current = onChange;
   linkTargetsRef.current = linkTargets;
+  valueRef.current = value;
   notesRef.current = notes;
   onOpenNoteRef.current = onOpenNote;
 
@@ -159,7 +173,7 @@ export function Editor({
       return;
     }
     const state = EditorState.create({
-      doc: value,
+      doc: valueRef.current,
       extensions: [
         lineNumbers(),
         highlightSpecialChars(),
@@ -274,6 +288,14 @@ export function Editor({
     setActiveSectionIndex(index);
     editorHandleRef.current?.revealText(revealQueryFor(section));
   }, []);
+
+  useEffect(() => {
+    if (!jumpRequest) return;
+    const index = outlineSections.findIndex((section) => section.startLine === jumpRequest.section.startLine);
+    if (index >= 0) setActiveSectionIndex(index);
+    editorHandleRef.current?.revealText(revealQueryFor(jumpRequest.section));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jumpRequest]);
 
   const sectionsRef = useRef(sections);
   sectionsRef.current = sections;

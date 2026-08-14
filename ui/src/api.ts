@@ -1,4 +1,4 @@
-import type { ApiContext, ApiDiff, ApiGraph, ApiHistory, ApiNoteSource, ApiRepoRestoreResult, ApiWorkspaceStatus } from "../../src/api/contracts";
+import type { ApiContext, ApiDiff, ApiGraph, ApiHistory, ApiNoteSource, ApiRepoRestoreResult, ApiVaultCheck, ApiWorkspaceStatus } from "../../src/api/contracts";
 
 export type NoteSummary = {
   id: string;
@@ -70,6 +70,10 @@ export function getContext(node: string): Promise<ApiContext> {
 
 export function getWorkspaceStatus(): Promise<ApiWorkspaceStatus> {
   return request<ApiWorkspaceStatus>("/api/workspace/status");
+}
+
+export function getVaultCheck(): Promise<ApiVaultCheck> {
+  return request<ApiVaultCheck>("/api/vault-check");
 }
 
 export function getHealth(): Promise<HealthResponse> {

@@ -86,6 +86,7 @@ export type ApiContext = {
   anchor?: ApiGraphNode;
   likely_files?: ApiGraphNode[];
   attached_notes?: ApiGraphNode[];
+  related_nodes?: ApiGraphNode[];
   relationships?: ApiGraphEdge[];
   task_matches?: Array<{ note_id: string; title: string; path: string; snippet: string }>;
   truncated?: boolean;
@@ -101,6 +102,30 @@ export type ApiWorkspaceRepository = {
   path: string;
   status: string;
   lastIndexedAt?: string;
+  gitChangedFileCount?: number;
+};
+
+export type ApiGitStatusEntry = {
+  index: string;
+  worktree: string;
+  path: string;
+  originalPath?: string;
+};
+
+export type ApiVaultCheck = {
+  vaultRoot: string;
+  diagnostics: ApiDiagnostic[];
+  index: {
+    noteCount: number;
+    sectionCount: number;
+    linkCount: number;
+    tableRowCount: number;
+    graphNodeCount: number;
+    graphEdgeCount: number;
+    diagnosticCount: number;
+  };
+  gitStatus: ApiGitStatusEntry[];
+  ok: boolean;
 };
 
 export type ApiWorkspaceStatus = {

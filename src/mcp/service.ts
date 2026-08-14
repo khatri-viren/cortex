@@ -73,7 +73,7 @@ export type WorkspaceStatus = {
   active: boolean;
   workspaceRoot?: string;
   workspaceExists?: boolean;
-  repositories: Array<{ id: string; path: string; status: string; lastIndexedAt?: string }>;
+  repositories: Array<{ id: string; path: string; status: string; lastIndexedAt?: string; gitChangedFileCount?: number }>;
   diagnostics: Diagnostic[];
 };
 
@@ -582,8 +582,26 @@ export class VaultRuntime {
     const graph = this.queryGraphInternal(selector, "neighbors", 2, clamp(limit, 20, MAX_GRAPH_LIMIT));
     const files = graph.nodes.filter((node) => ["file", "module", "test", "configuration"].includes(node.kind)).slice(0, 20);
     const attachedNotes = graph.nodes.filter((node) => node.kind === "note").slice(0, 20);
+    const relatedNodes = graph.nodes.filter((node) => ["project", "repository", "directory", "package"].includes(node.kind)).slice(0, 20);
+    // Only the anchor's own edges are "relationships" for context purposes —
+    // the 2-hop neighborhood also carries edges between unrelated neighbors
+    // (e.g. another note's own backlinks), which is noise here and, being
+    // unbounded, would otherwise dominate trimPayload's byte budget and
+    // starve out the (small, capped) node-lookup buckets above. Also collapse
+    // repeated mentions of the same link between the same two nodes (e.g. a
+    // note wikilinking the anchor from several sections) to one relationship
+    // per connected node, matching "relationship labels, not anonymous
+    // backlinks" — the count of mentions isn't a distinct relationship.
+    const seenRelationships = new Set<string>();
+    const relationships = graph.edges.filter((edge) => {
+      if (edge.fromId !== graph.anchor.nodeId && edge.toId !== graph.anchor.nodeId) return false;
+      const key = `${edge.fromId}|${edge.toId}|${edge.kind}`;
+      if (seenRelationships.has(key)) return false;
+      seenRelationships.add(key);
+      return true;
+    });
     const search = taskHint ? this.search(taskHint, 10).hits : [];
-    const payload = { anchor: graph.anchor, purpose: graph.anchor.metadata, likely_files: files, attached_notes: attachedNotes, relationships: graph.edges, task_matches: search };
+    const payload = { anchor: graph.anchor, purpose: graph.anchor.metadata, likely_files: files, attached_notes: attachedNotes, related_nodes: relatedNodes, relationships, task_matches: search };
     const trimmed = trimPayload(payload);
     return { ...trimmed.value, truncated: trimmed.truncated || graph.truncated };
   }
@@ -622,7 +640,13 @@ export class VaultRuntime {
 
   workspaceStatus(): WorkspaceStatus {
     if (!this.workspace) return { active: false, repositories: [], diagnostics: [] };
-    const repositories = this.indexer.store.workspaceRepositories().map((row) => ({ id: row.repository_id, path: row.path, status: row.status, lastIndexedAt: row.last_indexed_at ?? undefined }));
+    const repositories = this.indexer.store.workspaceRepositories().map((row) => ({
+      id: row.repository_id,
+      path: row.path,
+      status: row.status,
+      lastIndexedAt: row.last_indexed_at ?? undefined,
+      gitChangedFileCount: this.repoGit.get(row.repository_id)?.status().length,
+    }));
     const diagnostics = [
       ...this.workspace.diagnostics.map((diagnostic) => ({ severity: diagnostic.severity, code: diagnostic.code, message: diagnostic.message, filePath: diagnostic.path })),
       ...this.indexer.store.workspaceDiagnostics(),
