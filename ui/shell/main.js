@@ -4,6 +4,19 @@ const listEl = document.getElementById("vault-list")
 const emptyEl = document.getElementById("empty")
 const statusEl = document.getElementById("status")
 const addBtn = document.getElementById("add-vault")
+const preferencesBtn = document.getElementById("preferences")
+const preferencesEl = document.getElementById("preferences-panel")
+const openLastVaultEl = document.getElementById("open-last-vault")
+const showTrayIconEl = document.getElementById("show-tray-icon")
+const savePreferencesBtn = document.getElementById("save-preferences")
+const cancelPreferencesBtn = document.getElementById("cancel-preferences")
+
+let preferences = {
+  schemaVersion: 1,
+  openLastVault: true,
+  showTrayIcon: true,
+  minimizeToTray: false,
+}
 
 function setStatus(message, isError) {
   statusEl.textContent = message ?? ""
@@ -13,6 +26,43 @@ function setStatus(message, isError) {
 function setBusy(busy) {
   addBtn.disabled = busy
   for (const btn of listEl.querySelectorAll("button")) btn.disabled = busy
+}
+
+async function loadPreferences() {
+  preferences = await invoke("get_preferences")
+  openLastVaultEl.checked = preferences.openLastVault
+  showTrayIconEl.checked = preferences.showTrayIcon
+}
+
+function showPreferences() {
+  openLastVaultEl.checked = preferences.openLastVault
+  showTrayIconEl.checked = preferences.showTrayIcon
+  preferencesEl.hidden = false
+  preferencesBtn.setAttribute("aria-expanded", "true")
+}
+
+function hidePreferences() {
+  preferencesEl.hidden = true
+  preferencesBtn.setAttribute("aria-expanded", "false")
+}
+
+async function savePreferences() {
+  savePreferencesBtn.disabled = true
+  try {
+    preferences = await invoke("set_preferences", {
+      preferences: {
+        ...preferences,
+        openLastVault: openLastVaultEl.checked,
+        showTrayIcon: showTrayIconEl.checked,
+      },
+    })
+    hidePreferences()
+    setStatus("Preferences saved")
+  } catch (err) {
+    setStatus(String(err), true)
+  } finally {
+    savePreferencesBtn.disabled = false
+  }
 }
 
 async function openVault(id) {
@@ -92,8 +142,13 @@ async function render() {
 
 async function bootstrap() {
   setStatus("Loading…")
+  try {
+    await loadPreferences()
+  } catch (err) {
+    setStatus(`Could not load preferences: ${String(err)}`, true)
+  }
   const registry = await render()
-  if (registry.activeVaultId && registry.vaults.some((v) => v.id === registry.activeVaultId)) {
+  if (preferences.openLastVault && registry.activeVaultId && registry.vaults.some((v) => v.id === registry.activeVaultId)) {
     await openVault(registry.activeVaultId)
   } else {
     setStatus("")
@@ -116,5 +171,12 @@ addBtn.addEventListener("click", async () => {
     setBusy(false)
   }
 })
+
+preferencesBtn.addEventListener("click", () => {
+  if (preferencesEl.hidden) showPreferences()
+  else hidePreferences()
+})
+savePreferencesBtn.addEventListener("click", () => void savePreferences())
+cancelPreferencesBtn.addEventListener("click", hidePreferences)
 
 bootstrap()

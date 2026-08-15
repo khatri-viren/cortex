@@ -39,6 +39,13 @@
   #status { margin-top: 14px; font-size: 12.5px; color: #a3a3a3; min-height: 1.2em; }
   #status.error { color: #f28b82; }
   #empty { color: #737373; font-size: 12.5px; padding: 10px 2px 16px; }
+  .toolbar { display: flex; gap: 8px; align-items: center; }
+  .toolbar #preferences { margin-left: auto; }
+  #preferences-panel { margin-top: 16px; padding: 12px; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; background: #202020; }
+  #preferences-panel[hidden] { display: none; }
+  .preference { display: flex; gap: 9px; align-items: flex-start; color: #d4d4d4; font-size: 12px; line-height: 1.35; margin: 9px 0; }
+  .preference input { margin-top: 2px; accent-color: #d4e157; }
+  .preference-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 12px; }
 </style>
 </head>
 <body>
@@ -47,7 +54,19 @@
     <p class="hint">Choose a vault to open, or add a new one.</p>
     <div id="empty" hidden>No vaults registered yet.</div>
     <ul id="vault-list"></ul>
-    <button id="add-vault" class="primary">Add vault…</button>
+    <div class="toolbar">
+      <button id="add-vault" class="primary">Add vault…</button>
+      <button id="preferences" class="subtle" aria-expanded="false">Preferences</button>
+    </div>
+    <section id="preferences-panel" aria-label="Preferences" hidden>
+      <strong>Preferences</strong>
+      <label class="preference"><input id="open-last-vault" type="checkbox" /> <span>Open the last active vault when Cortex starts.</span></label>
+      <label class="preference"><input id="show-tray-icon" type="checkbox" /> <span>Show Cortex in the menu bar.</span></label>
+      <div class="preference-actions">
+        <button id="cancel-preferences" class="subtle">Cancel</button>
+        <button id="save-preferences" class="primary">Save</button>
+      </div>
+    </section>
     <div id="status"></div>
   </div>
   <script type="module" src="./main.js"></script>

@@ -1,12 +1,121 @@
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Read};
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+
+pub const SIDECAR_BASENAME: &str = "cortex-sidecar";
+pub const DEFAULT_WINDOW_LABEL: &str = "main";
+/// A cold workspace index can legitimately take longer than the old 20s
+/// ceiling, especially while the machine is under load. The health handshake
+/// still bounds a genuinely broken sidecar, but gives large vaults enough
+/// time to finish their first projection.
+pub const DEFAULT_STARTUP_TIMEOUT_SECS: u64 = 120;
+
+/// Runtime ownership is keyed by Tauri window label. V2 still opens one
+/// active vault per window, but keeping the map here prevents a future
+/// window from sharing or accidentally disposing another window's sidecar.
+pub struct RuntimeRegistry {
+    runtimes: HashMap<String, SidecarHandle>,
+}
+
+impl Default for RuntimeRegistry {
+    fn default() -> Self {
+        Self {
+            runtimes: HashMap::new(),
+        }
+    }
+}
+
+impl RuntimeRegistry {
+    pub fn insert(&mut self, window_label: &str, handle: SidecarHandle) {
+        self.runtimes.insert(window_label.to_string(), handle);
+    }
+
+    pub fn dispose_window(&mut self, window_label: &str) {
+        if let Some(mut handle) = self.runtimes.remove(window_label) {
+            dispose(&mut handle);
+        }
+    }
+
+    pub fn dispose_vault(&mut self, vault_id: &str) {
+        let labels = self
+            .runtimes
+            .iter()
+            .filter(|(_, handle)| handle.vault_id == vault_id)
+            .map(|(label, _)| label.clone())
+            .collect::<Vec<_>>();
+        for label in labels {
+            self.dispose_window(&label);
+        }
+    }
+
+    pub fn dispose_all(&mut self) {
+        let labels = self.runtimes.keys().cloned().collect::<Vec<_>>();
+        for label in labels {
+            self.dispose_window(&label);
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.runtimes.len()
+    }
+}
+
+pub fn window_runtime_key(label: &str) -> String {
+    if label.trim().is_empty() {
+        DEFAULT_WINDOW_LABEL.to_string()
+    } else {
+        label.to_string()
+    }
+}
+
+pub fn packaged_sidecar_path(resource_dir: &Path) -> PathBuf {
+    resource_dir
+        .parent()
+        .unwrap_or(resource_dir)
+        .join("MacOS")
+        .join(SIDECAR_BASENAME)
+}
+
+pub fn packaged_ui_dist(resource_dir: &Path) -> PathBuf {
+    resource_dir.join("dist")
+}
+
+pub fn resolve_packaged_sidecar(resource_dir: &Path) -> Result<PathBuf, String> {
+    let path = packaged_sidecar_path(resource_dir);
+    if path.is_file() {
+        return Ok(path);
+    }
+    Err(format!(
+        "Cortex production sidecar is missing at {}. Rebuild the app with the desktop sidecar step.",
+        path.display()
+    ))
+}
 
 pub struct SidecarHandle {
     pub child: Child,
     pub port: u16,
     pub vault_id: String,
+}
+
+fn drain_child_output<R: Read + Send + 'static>(reader: R, stream: &'static str) {
+    std::thread::spawn(move || {
+        for line in BufReader::new(reader).lines().map_while(Result::ok) {
+            log::info!("sidecar {stream}: {line}");
+        }
+    });
+}
+
+fn attach_output_drainers(child: &mut Child) {
+    if let Some(stdout) = child.stdout.take() {
+        drain_child_output(stdout, "stdout");
+    }
+    if let Some(stderr) = child.stderr.take() {
+        drain_child_output(stderr, "stderr");
+    }
 }
 
 impl Drop for SidecarHandle {
@@ -103,7 +212,28 @@ fn resolve_cli_path() -> Result<PathBuf, String> {
     )
 }
 
-pub fn spawn(vault_path: &str, port: u16) -> Result<Child, String> {
+pub fn spawn(vault_path: &str, port: u16, resource_dir: Option<&Path>) -> Result<Child, String> {
+    if let Some(resource_dir) = resource_dir {
+        let sidecar = resolve_packaged_sidecar(resource_dir)?;
+        let mut child = Command::new(sidecar)
+            .arg("dev")
+            .arg("--vault")
+            .arg(vault_path)
+            .arg("--port")
+            .arg(port.to_string())
+            .env("CORTEX_UI_DIST", packaged_ui_dist(resource_dir))
+            .env("CORTEX_PACKAGED", "1")
+            .current_dir(resource_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to start the packaged Cortex backend: {e}"));
+        if let Ok(child) = &mut child {
+            attach_output_drainers(child);
+        }
+        return child;
+    }
+
     let bun = resolve_bun_path()?;
     let cli = resolve_cli_path()?;
     let repo_root = cli
@@ -111,7 +241,7 @@ pub fn spawn(vault_path: &str, port: u16) -> Result<Child, String> {
         .and_then(|p| p.parent()) // repo root
         .ok_or_else(|| "Could not determine the backend repository root".to_string())?;
 
-    Command::new(bun)
+    let mut child = Command::new(bun)
         .arg("run")
         .arg(&cli)
         .arg("dev")
@@ -123,11 +253,19 @@ pub fn spawn(vault_path: &str, port: u16) -> Result<Child, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to start the Cortex backend: {e}"))
+        .map_err(|e| format!("Failed to start the Cortex backend: {e}"));
+    if let Ok(child) = &mut child {
+        attach_output_drainers(child);
+    }
+    child
 }
 
 /// Poll GET /api/health until it responds 200 or `timeout` elapses.
-pub fn wait_for_health(port: u16, timeout: Duration) -> Result<serde_json::Value, String> {
+pub fn wait_for_health(
+    child: &mut Child,
+    port: u16,
+    timeout: Duration,
+) -> Result<serde_json::Value, String> {
     let url = format!("http://127.0.0.1:{port}/api/health");
     let deadline = Instant::now() + timeout;
     let agent = ureq::AgentBuilder::new()
@@ -136,6 +274,19 @@ pub fn wait_for_health(port: u16, timeout: Duration) -> Result<serde_json::Value
         .build();
 
     loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Err(format!(
+                    "Cortex sidecar exited before reporting healthy on port {port} with status {status}."
+                ));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return Err(format!(
+                    "Could not inspect the Cortex sidecar while waiting for port {port}: {error}"
+                ));
+            }
+        }
         match agent.get(&url).call() {
             Ok(resp) if resp.status() == 200 => {
                 let body: serde_json::Value =
@@ -205,7 +356,8 @@ mod tests {
     /// code path a real user's "Add vault" would hit — not a hand-rolled
     /// fixture that might drift from what `initVault` actually produces.
     fn init_temp_vault() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("cortex-sidecar-test-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("cortex-sidecar-test-{}", uuid::Uuid::new_v4()));
         let bun = resolve_bun_path().expect("bun should be resolvable in the test environment");
         let cli = resolve_cli_path().expect("cli.ts should resolve");
         let status = Command::new(bun)
@@ -235,6 +387,57 @@ mod tests {
         assert_eq!(cli.file_name().unwrap(), "cli.ts");
     }
 
+    #[test]
+    fn packaged_sidecar_path_matches_tauri_target_layout() {
+        let path = packaged_sidecar_path(Path::new("/tmp/cortex-resources"));
+        assert!(path.ends_with(format!("MacOS/{SIDECAR_BASENAME}")));
+    }
+
+    #[test]
+    fn packaged_ui_dist_matches_tauri_resource_target() {
+        let path = packaged_ui_dist(Path::new("/tmp/cortex-resources"));
+        assert!(path.ends_with("dist"));
+    }
+
+    #[test]
+    fn missing_packaged_sidecar_fails_with_rebuild_guidance() {
+        let error =
+            resolve_packaged_sidecar(Path::new("/tmp/cortex-missing-resources")).unwrap_err();
+        assert!(error.contains("production sidecar is missing"));
+        assert!(error.contains("desktop sidecar step"));
+    }
+
+    #[test]
+    fn window_runtime_keys_are_stable_and_default_to_main() {
+        assert_eq!(window_runtime_key(""), DEFAULT_WINDOW_LABEL);
+        assert_eq!(window_runtime_key("main"), "main");
+        assert_eq!(window_runtime_key("notes-window"), "notes-window");
+        assert_eq!(RuntimeRegistry::default().len(), 0);
+    }
+
+    #[test]
+    fn startup_budget_allows_slow_initial_indexes() {
+        assert!(DEFAULT_STARTUP_TIMEOUT_SECS >= 60);
+    }
+
+    #[test]
+    fn health_wait_reports_a_sidecar_that_exits_before_listening() {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("exit 17")
+            .spawn()
+            .expect("test child should spawn");
+        let started = Instant::now();
+        let error = wait_for_health(
+            &mut child,
+            find_free_port().unwrap(),
+            Duration::from_secs(20),
+        )
+        .expect_err("an exited child cannot become healthy");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(error.contains("exited"));
+    }
+
     /// Full lifecycle against a real backend process and a real vault: spawn,
     /// health-check, dispose — and confirm dispose actually terminates the
     /// process rather than just returning. This is the process-level proof
@@ -243,15 +446,19 @@ mod tests {
     fn spawn_health_check_and_dispose_full_lifecycle() {
         let vault = init_temp_vault();
         let port = find_free_port().expect("free port");
-        let child = spawn(vault.to_str().unwrap(), port).expect("spawn should succeed");
+        let child = spawn(vault.to_str().unwrap(), port, None).expect("spawn should succeed");
         let mut handle = SidecarHandle {
             child,
             port,
             vault_id: "test-vault".into(),
         };
 
-        let health = wait_for_health(port, Duration::from_secs(20))
-            .expect("backend should become healthy within 20s");
+        let health = wait_for_health(
+            &mut handle.child,
+            port,
+            Duration::from_secs(DEFAULT_STARTUP_TIMEOUT_SECS),
+        )
+        .expect("backend should become healthy within the startup budget");
         assert_eq!(health.get("status").and_then(|v| v.as_str()), Some("ok"));
 
         assert!(
@@ -279,23 +486,33 @@ mod tests {
         let vault_b = init_temp_vault();
 
         let port_a = find_free_port().unwrap();
-        let child_a = spawn(vault_a.to_str().unwrap(), port_a).expect("spawn a");
+        let child_a = spawn(vault_a.to_str().unwrap(), port_a, None).expect("spawn a");
         let mut handle_a = SidecarHandle {
             child: child_a,
             port: port_a,
             vault_id: "a".into(),
         };
-        wait_for_health(port_a, Duration::from_secs(20)).expect("a healthy");
+        wait_for_health(
+            &mut handle_a.child,
+            port_a,
+            Duration::from_secs(DEFAULT_STARTUP_TIMEOUT_SECS),
+        )
+        .expect("a healthy");
 
         let port_b = find_free_port().unwrap();
         assert_ne!(port_a, port_b);
-        let child_b = spawn(vault_b.to_str().unwrap(), port_b).expect("spawn b");
+        let child_b = spawn(vault_b.to_str().unwrap(), port_b, None).expect("spawn b");
         let mut handle_b = SidecarHandle {
             child: child_b,
             port: port_b,
             vault_id: "b".into(),
         };
-        wait_for_health(port_b, Duration::from_secs(20)).expect("b healthy");
+        wait_for_health(
+            &mut handle_b.child,
+            port_b,
+            Duration::from_secs(DEFAULT_STARTUP_TIMEOUT_SECS),
+        )
+        .expect("b healthy");
 
         assert!(matches!(handle_a.child.try_wait(), Ok(None)));
         assert!(matches!(handle_b.child.try_wait(), Ok(None)));

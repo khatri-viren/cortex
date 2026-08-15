@@ -175,27 +175,25 @@ function GraphNodeContent({ data }: NodeProps & { data: GraphNodeData }) {
       data-focused={data.focused ? "true" : "false"}
       className="relative min-w-0"
       aria-label={`${nodeKindLabel(data.kind)}: ${data.label}`}
-      onClick={(event) => {
-        const action = data.onOpen ?? data.onDrill;
-        if (!action) return;
-        event.stopPropagation();
-        action();
-      }}
+      role="group"
     >
       <Handle type="target" position={Position.Top} />
       <div className="flex items-center gap-1.5">
         <span className="min-w-0 truncate text-[9px] font-semibold tracking-wide text-muted-foreground uppercase">{nodeKindLabel(data.kind)}</span>
         {data.focused && <span className="ml-auto shrink-0 rounded-full bg-primary/15 px-1 text-[9px] text-primary">active</span>}
       </div>
-      <div
-        className="mt-1 flex min-w-0 items-center gap-1.5"
-        onClick={(event) => {
-          if (!data.onOpen) return;
-          event.stopPropagation();
-          data.onOpen();
-        }}
-      >
-        <span className="min-w-0 truncate font-medium" title={data.label}>{data.label}</span>
+      <div className="mt-1 flex min-w-0 items-center gap-1.5">
+        <button
+          type="button"
+          className="min-w-0 flex-1 truncate text-left font-medium"
+          title={data.label}
+          onClick={(event) => {
+            event.stopPropagation();
+            (data.onOpen ?? data.onDrill)?.();
+          }}
+        >
+          {data.label}
+        </button>
         {data.onDrill && (
           <button
             type="button"
@@ -408,24 +406,11 @@ export function GraphPane({ onOpenPath, onOpenCode, onBackToNote, activeNoteLabe
   const partial = graph.truncated || danglingEdgeCount > 0;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex min-h-[64px] flex-wrap items-center justify-between gap-3 border-b px-5 py-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="min-w-0">
-            <span className="block text-[10px] font-semibold tracking-wide text-primary uppercase">Project map</span>
-            <h1 className="mt-1 truncate text-base leading-tight font-semibold">Graph</h1>
-          </div>
-          {onBackToNote && (
-            <Button size="sm" variant="outline" className="shrink-0 gap-1" onClick={onBackToNote}>
-              <ExternalLinkIcon className="size-3.5" />
-              {activeNoteLabel ? "Back to note" : "Back to notes"}
-            </Button>
-          )}
-        </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <Badge variant="secondary">{graphNodes.length} nodes · {validEdges.length} relationships</Badge>
-          <Button size="sm" variant="outline" onClick={fitGraph}>Fit view</Button>
-          <Button size="sm" variant="outline" onClick={resetGraphView}><RotateCcwIcon className="size-3.5" />Reset view</Button>
-        </div>
+      <div className="flex min-h-10 items-center justify-end gap-2 border-b px-3 py-1.5">
+        <Badge variant="secondary">{graphNodes.length} nodes · {validEdges.length} relationships</Badge>
+        <Button size="sm" variant="outline" onClick={fitGraph}>Fit view</Button>
+        <Button size="sm" variant="outline" onClick={resetGraphView}><RotateCcwIcon className="size-3.5" />Reset view</Button>
+        {onBackToNote && <Button size="sm" variant="ghost" className="gap-1" onClick={onBackToNote}><ExternalLinkIcon className="size-3.5" />{activeNoteLabel ? "Back to note" : "Back to notes"}</Button>}
       </div>
       {workspaceStatusLine && <div className="border-b bg-muted/40 px-5 py-1.5 text-[11px] text-muted-foreground">{workspaceStatusLine}</div>}
       <div className="border-b px-3 py-1.5">

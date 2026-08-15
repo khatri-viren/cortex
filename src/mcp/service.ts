@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -9,7 +10,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, extname, relative as relativePath, resolve } from "node:path";
+import { basename, dirname, extname, join, relative as relativePath, resolve } from "node:path";
 import { addMissingSectionMarkers, parseMarkdown } from "../core/markdown.js";
 import { createFrontmatter, serializeFrontmatter } from "../core/frontmatter.js";
 import { repositoryRelativePath, projectNodeId, noteNodeId } from "../core/identity.js";
@@ -18,6 +19,7 @@ import { scanVault, vaultHasExpectedGitIgnore } from "../core/vault.js";
 import { GitAdapter, type GitCommit, type GitStatusEntry } from "../core/git.js";
 import { RUNTIME_DIRECTORY } from "../core/vault.js";
 import type { Diagnostic, NoteFrontmatter, NoteType, Section } from "../core/types.js";
+import type { ApiNoteMetadataPatch, ApiVaultTree, ApiVaultTreeNode } from "../api/contracts.js";
 import type { IndexReport } from "../core/index-types.js";
 import { startWatcher, type WatcherHandle } from "../core/watcher.js";
 import { loadWorkspaceConfig, workspaceManifestPath, repositoryRelativePath as workspaceRepositoryRelativePath, type WorkspaceConfig, type WorkspaceRepository } from "../core/workspace.js";
@@ -434,12 +436,51 @@ export class VaultRuntime {
     return { note, sections: parsed.sections };
   }
 
-  getSource(selector: NoteSelector): { note: NoteRecord; markdown: string; sections: Section[]; diagnostics: Diagnostic[] } {
+  getSource(selector: NoteSelector): { note: NoteRecord; markdown: string; body: string; frontmatter: NoteFrontmatter; sections: Section[]; diagnostics: Diagnostic[] } {
     const note = this.noteRow(selector);
     const absolute = resolve(this.vaultRoot, note.path);
     const markdown = readFileSync(absolute, "utf8");
     const parsed = parseMarkdown(markdown, absolute);
-    return { note, markdown, sections: parsed.sections, diagnostics: parsed.diagnostics };
+    const frontmatter = parsed.frontmatter ?? {
+      id: note.id,
+      title: note.title,
+      type: note.type,
+      created_at: note.created_at,
+      updated_at: note.updated_at,
+      aliases: note.aliases,
+      tags: note.tags,
+      applies_to: [],
+      extra: {},
+    } satisfies NoteFrontmatter;
+    return { note, markdown, body: parsed.body, frontmatter, sections: parsed.sections, diagnostics: parsed.diagnostics };
+  }
+
+  vaultTree(): ApiVaultTree {
+    const noteRows = this.indexer.store.db.query<{ note_id: string; path: string; title: string; type: NoteType; updated_at: string }, []>(
+      "SELECT note_id, path, title, type, updated_at FROM notes",
+    ).all();
+    const notesByPath = new Map(noteRows.map((row) => [row.path, row]));
+    const visit = (directory: string, relativeDirectory: string): ApiVaultTreeNode[] => {
+      const entries = readdirSync(directory, { withFileTypes: true })
+        .filter((entry) => entry.name !== ".git" && entry.name !== RUNTIME_DIRECTORY && entry.name !== "node_modules")
+        .sort((left, right) => {
+          if (left.isDirectory() !== right.isDirectory()) return left.isDirectory() ? -1 : 1;
+          return left.name.localeCompare(right.name);
+        });
+      return entries.map((entry) => {
+        const absolute = join(directory, entry.name);
+        const path = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+          return { kind: "directory", path, name: entry.name, children: visit(absolute, path) } satisfies ApiVaultTreeNode;
+        }
+        const note = notesByPath.get(path);
+        if (note) {
+          return { kind: "note", path, name: entry.name, noteId: note.note_id, title: note.title, type: note.type, updated_at: note.updated_at } satisfies ApiVaultTreeNode;
+        }
+        return { kind: "file", path, name: entry.name, openable: false } satisfies ApiVaultTreeNode;
+      });
+    };
+    return { rootName: basename(this.vaultRoot), children: visit(this.vaultRoot, ""), truncated: false };
   }
 
   getSection(selector: NoteSelector, sectionId?: string, heading?: string): { note: NoteRecord; section: Section; body: string } {
@@ -472,6 +513,10 @@ export class VaultRuntime {
   }
 
   async replaceNote(selector: NoteSelector, expectedHash: string, markdown: string): Promise<WriteResult> {
+    return this.updateNote(selector, expectedHash, { markdown });
+  }
+
+  async updateNote(selector: NoteSelector, expectedHash: string, input: { body?: string; metadata?: ApiNoteMetadataPatch; markdown?: string }): Promise<WriteResult> {
     if (!HASH_RE.test(expectedHash)) throw new ServiceError("INVALID_INPUT", "expected_file_hash must be a SHA-256 hash.");
     return this.writes.run(() => {
       const note = this.noteRow(selector);
@@ -479,11 +524,26 @@ export class VaultRuntime {
       const current = readFileSync(absolute, "utf8");
       const actualHash = hashContent(current);
       if (actualHash !== expectedHash) throw new ServiceError("CONFLICT", "Note file hash is stale.", { expected_file_hash: expectedHash, actual_file_hash: actualHash });
-      const parsed = parseMarkdown(markdown, absolute);
+      if (input.markdown === undefined && input.body === undefined && input.metadata === undefined) {
+        throw new ServiceError("INVALID_INPUT", "A note update must include markdown, body, or metadata.");
+      }
+      const parsed = parseMarkdown(input.markdown ?? current, absolute);
       if (diagnosticsHaveErrors(parsed.diagnostics) || !parsed.frontmatter) throw new ServiceError("INVALID_INPUT", "Replacement Markdown has invalid frontmatter or section metadata.", { diagnostics: parsed.diagnostics });
       if (parsed.frontmatter.id !== note.id || parsed.frontmatter.created_at !== note.created_at) throw new ServiceError("CONFLICT", "id and created_at are immutable.");
-      if (this.workspace) this.validateAppliesTo(parsed.frontmatter.applies_to);
-      const content = serializeFrontmatter({ ...parsed.frontmatter, updated_at: new Date().toISOString() }) + parsed.body;
+      const metadata = input.metadata ?? {};
+      const frontmatter: NoteFrontmatter = {
+        ...parsed.frontmatter,
+        ...(metadata.title === undefined ? {} : { title: metadata.title }),
+        ...(metadata.type === undefined ? {} : { type: metadata.type }),
+        ...(metadata.aliases === undefined ? {} : { aliases: metadata.aliases }),
+        ...(metadata.tags === undefined ? {} : { tags: metadata.tags }),
+        ...(metadata.applies_to === undefined ? {} : { applies_to: metadata.applies_to }),
+        ...(metadata.extra === undefined ? {} : { extra: metadata.extra }),
+        updated_at: new Date().toISOString(),
+      };
+      if (this.workspace) this.validateAppliesTo(frontmatter.applies_to);
+      const body = input.body ?? parsed.body;
+      const content = serializeFrontmatter(frontmatter) + body;
       const result = this.writeAndIndexLocked(note.path, content);
       if (this.workspace) this.refreshWorkspaceAttachments();
       return result;

@@ -6,6 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "desktop:dev": "bunx tauri dev",
+    "desktop:sidecar": "bun run ../scripts/build-sidecar.ts",
+    "desktop:build": "bunx tauri build",
     "lint": "oxlint",
     "preview": "vite preview",
     "e2e": "playwright test"

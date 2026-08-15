@@ -10,3 +10,4 @@ dist/
 *.log
 *.lock
 !ui/src-tauri/Cargo.lock
+ui/src-tauri/binaries/

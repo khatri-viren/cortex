@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "identifier": "dev.cortex.desktop",
   "build": {
+    "beforeDevCommand": "bun run dev",
+    "devUrl": "http://127.0.0.1:5175",
+    "beforeBuildCommand": "bun run build && bun run desktop:sidecar",
     "frontendDist": "../shell"
   },
   "app": {
@@ -17,6 +20,13 @@
         "minWidth": 800,
         "minHeight": 560,
         "resizable": true,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 16,
+          "y": 26
+        },
         "fullscreen": false
       }
     ],
@@ -34,6 +44,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "externalBin": ["binaries/cortex-sidecar"],
+    "resources": {
+      "../dist": "dist"
+    },
     "android": {
       "debugApplicationIdSuffix": ".debug"
     }

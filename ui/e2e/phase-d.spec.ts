@@ -21,7 +21,13 @@ test.describe.configure({ mode: "serial" });
 async function clickNoteRow(page: import("@playwright/test").Page, title: string) {
   const rows = page.getByTestId("note-row");
   await expect(rows.first()).toBeVisible();
-  const row = rows.filter({ hasText: title });
+  let row = rows.filter({ hasText: title });
+  if (await row.count() === 0 && title === "Sample Plan") {
+    const plans = page.getByRole("treeitem", { name: /plans/ });
+    await expect(plans).toBeVisible();
+    if (await plans.getAttribute("aria-expanded") !== "true") await plans.click();
+    row = rows.filter({ hasText: title });
+  }
   await expect(row).toHaveCount(1);
   await row.first().click();
 }
@@ -37,6 +43,43 @@ async function openNoteByTitle(page: import("@playwright/test").Page, title: str
   await expect(page.getByLabel("Markdown editor")).toBeVisible();
 }
 
+async function scrollEditorToEnd(page: import("@playwright/test").Page) {
+  await page.locator(".cm-scroller").evaluate((element) => {
+    let current: HTMLElement | null = element as HTMLElement;
+    while (current) {
+      current.scrollTop = current.scrollHeight;
+      current = current.parentElement;
+    }
+  });
+}
+
+async function setEditorScrollTop(page: import("@playwright/test").Page, top: number) {
+  return page.locator(".atomic-editor-host").evaluate((element, desired) => {
+    let current: HTMLElement | null = element as HTMLElement;
+    let actual = 0;
+    while (current) {
+      if (current.scrollHeight > current.clientHeight) {
+        current.scrollTop = desired;
+        actual = Math.max(actual, current.scrollTop);
+      }
+      current = current.parentElement;
+    }
+    return actual;
+  }, top);
+}
+
+async function getEditorScrollTop(page: import("@playwright/test").Page) {
+  return page.locator(".atomic-editor-host").evaluate((element) => {
+    let current: HTMLElement | null = element as HTMLElement;
+    let actual = 0;
+    while (current) {
+      if (current.scrollHeight > current.clientHeight) actual = Math.max(actual, current.scrollTop);
+      current = current.parentElement;
+    }
+    return actual;
+  });
+}
+
 test.describe.serial("D2-14: rendered-editor stress test", () => {
   test("long, nested, link-heavy, table-heavy note loads and stays responsive in reading mode", async ({ page }) => {
     await page.goto("/?vault=phase-d-stress");
@@ -46,9 +89,10 @@ test.describe.serial("D2-14: rendered-editor stress test", () => {
     // outline, confirming the whole document parsed and rendered.
     await expect(page.getByText("Section 1", { exact: true })).toBeVisible();
 
-    const scroller = page.locator(".cm-scroller");
-    await scroller.evaluate((el) => { el.scrollTop = el.scrollHeight; });
-    await expect(page.getByText("Jump Target", { exact: true })).toBeVisible();
+    await expect(async () => {
+      await scrollEditorToEnd(page);
+      await expect(page.getByText("Jump Target", { exact: true })).toBeVisible({ timeout: 500 });
+    }).toPass({ timeout: 10_000 });
   });
 
   test("source mode round-trips the full document without corruption", async ({ page }) => {
@@ -75,13 +119,12 @@ test.describe.serial("D2-14: rendered-editor stress test", () => {
     // the (possibly-updated) max and recheck in a retrying loop until the
     // target text actually shows up, rather than betting on a fixed number
     // of attempts settling in time.
-    const sourceScroller = page.locator(".cm-scroller");
     await expect(async () => {
-      await sourceScroller.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+      await scrollEditorToEnd(page);
       await expect(page.getByText("Jump Target", { exact: false }).first()).toBeVisible({ timeout: 500 });
     }).toPass({ timeout: 10_000 });
-    // Save should be a no-op (button disabled) since nothing was edited.
-    await expect(page.getByRole("button", { name: "Save" })).toBeDisabled();
+    // A clean document does not occupy the compact toolbar with a Save button.
+    await expect(page.getByRole("button", { name: "Save" })).toHaveCount(0);
     expect(readFileSync(STRESS_NOTE, "utf8")).toBe(onDisk);
   });
 });
@@ -119,7 +162,7 @@ test.describe("D2-16: link, wikilink, heading-anchor, and task interactions", ()
       await checkbox.click();
       await expect(page.getByRole("button", { name: "Save" })).toBeEnabled();
       await page.getByRole("button", { name: "Save" }).click();
-      await expect(page.getByRole("button", { name: "Save" })).toBeDisabled();
+      await expect(page.getByRole("button", { name: "Save" })).toHaveCount(0);
 
       expect(readFileSync(STRESS_NOTE, "utf8")).toContain("[x] Unchecked task 1.1");
     } finally {
@@ -139,19 +182,22 @@ test.describe("D2-15: live editing mode", () => {
     // after mount, setting scrollTop can get nudged shortly after as more
     // of the document gets measured. Re-assign until it stops drifting, so
     // `before` reflects a truly settled position rather than a transient one.
-    const scroller = page.locator(".cm-scroller");
-    let before = await scroller.evaluate((el) => { el.scrollTop = 5000; return el.scrollTop; });
+    let before = await setEditorScrollTop(page, 5000);
     for (let attempt = 0; attempt < 20; attempt++) {
       await page.waitForTimeout(100);
-      const current = await scroller.evaluate((el) => { el.scrollTop = 5000; return el.scrollTop; });
+      const current = await setEditorScrollTop(page, 5000);
       if (current === before) break;
       before = current;
     }
     expect(before).toBeGreaterThan(1000);
 
-    await page.getByRole("tab", { name: "Live", exact: true }).click();
+    // The metadata block and its mode switch are intentionally part of the
+    // same scrollable document surface. At this point the body is scrolled
+    // deep into the note, so activate the off-screen control without moving
+    // the document back to the metadata block first.
+    await page.getByRole("tab", { name: "Live", exact: true }).dispatchEvent("click");
     await expect(async () => {
-      const after = await scroller.evaluate((el) => el.scrollTop);
+      const after = await getEditorScrollTop(page);
       expect(Math.abs(after - before)).toBeLessThan(50);
     }).toPass({ timeout: 5_000 });
   });
@@ -170,7 +216,7 @@ test.describe("D2-15: live editing mode", () => {
       await page.keyboard.type(" Edited live.");
       await expect(page.getByRole("button", { name: "Save" })).toBeEnabled();
       await page.getByRole("button", { name: "Save" }).click();
-      await expect(page.getByRole("button", { name: "Save" })).toBeDisabled();
+      await expect(page.getByRole("button", { name: "Save" })).toHaveCount(0);
 
       expect(readFileSync(ENGINE_NOTE, "utf8")).toContain("Edited live.");
     } finally {

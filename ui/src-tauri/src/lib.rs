@@ -1,3 +1,4 @@
+mod preferences;
 mod sidecar;
 mod vault_registry;
 
@@ -5,15 +6,19 @@ use serde::Serialize;
 use std::process::Child;
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{AppHandle, Manager, RunEvent, State};
+use tauri::menu::{MenuBuilder, MenuItem};
+use tauri::tray::TrayIconBuilder;
+use tauri::{AppHandle, Manager, RunEvent, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
-use sidecar::SidecarHandle;
+use preferences::AppPreferences;
+use sidecar::{RuntimeRegistry, SidecarHandle};
 use vault_registry::{VaultRegistry, VaultRegistryEntry};
 
 struct AppState {
     registry: Mutex<VaultRegistry>,
-    sidecar: Mutex<Option<SidecarHandle>>,
+    runtimes: Mutex<RuntimeRegistry>,
+    preferences: Mutex<AppPreferences>,
 }
 
 #[derive(Serialize)]
@@ -36,11 +41,53 @@ fn find_entry(registry: &VaultRegistry, id: &str) -> Result<VaultRegistryEntry, 
 /// it belongs to. Called before starting a new one so at most one vault
 /// runtime is ever live in this window at a time (V2 baseline: one active
 /// vault per window).
-fn dispose_current_sidecar(state: &AppState) {
-    let mut guard = state.sidecar.lock().expect("sidecar lock poisoned");
-    if let Some(mut handle) = guard.take() {
-        sidecar::dispose(&mut handle);
+fn dispose_current_sidecar(state: &AppState, window_label: &str) {
+    let mut runtimes = state.runtimes.lock().expect("runtime lock poisoned");
+    runtimes.dispose_window(&sidecar::window_runtime_key(window_label));
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
     }
+}
+
+#[tauri::command]
+fn get_preferences(state: State<'_, AppState>) -> Result<AppPreferences, String> {
+    state
+        .preferences
+        .lock()
+        .map(|preferences| preferences.clone())
+        .map_err(|_| "preferences lock poisoned".to_string())
+}
+
+#[tauri::command]
+fn set_preferences(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    preferences: AppPreferences,
+) -> Result<AppPreferences, String> {
+    if preferences.schema_version != preferences::PREFERENCES_SCHEMA_VERSION {
+        return Err("Unsupported Cortex preferences schema version".to_string());
+    }
+    preferences::save(&app, &preferences)?;
+    if let Some(tray) = app.tray_by_id("cortex-tray") {
+        tray.set_visible(preferences.show_tray_icon)
+            .map_err(|e| format!("Could not update tray visibility: {e}"))?;
+    }
+    *state
+        .preferences
+        .lock()
+        .map_err(|_| "preferences lock poisoned".to_string())? = preferences.clone();
+    Ok(preferences)
+}
+
+#[tauri::command]
+fn close_main_window(window: WebviewWindow) -> Result<(), String> {
+    window
+        .close()
+        .map_err(|error| format!("Failed to close the main window: {error}"))
 }
 
 #[tauri::command]
@@ -114,9 +161,11 @@ fn remove_vault(app: AppHandle, state: State<'_, AppState>, id: String) -> Resul
     }
     vault_registry::save(&app, &registry)?;
     drop(registry);
-    if was_active {
-        dispose_current_sidecar(&state);
-    }
+    state
+        .runtimes
+        .lock()
+        .map_err(|_| "runtime lock poisoned".to_string())?
+        .dispose_vault(&id);
     Ok(())
 }
 
@@ -139,6 +188,7 @@ fn reveal_vault(state: State<'_, AppState>, id: String) -> Result<(), String> {
 #[tauri::command]
 async fn open_vault(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<OpenedVault, String> {
@@ -153,14 +203,28 @@ async fn open_vault(
     // Switching vaults: dispose whatever is currently running first so the
     // previous vault's watchers, DB handles, and in-memory graph state can
     // never leak into the new one (D2-09).
-    dispose_current_sidecar(&state);
+    let window_label = sidecar::window_runtime_key(window.label());
+    dispose_current_sidecar(&state, &window_label);
 
     let vault_path = entry.path.clone();
+    let resource_dir = if cfg!(debug_assertions) {
+        None
+    } else {
+        Some(
+            app.path()
+                .resource_dir()
+                .map_err(|e| format!("Failed to resolve the packaged resource directory: {e}"))?,
+        )
+    };
     let spawn_result = tauri::async_runtime::spawn_blocking(
         move || -> Result<(Child, u16, serde_json::Value), String> {
             let port = sidecar::find_free_port()?;
-            let child = sidecar::spawn(&vault_path, port)?;
-            match sidecar::wait_for_health(port, Duration::from_secs(20)) {
+            let mut child = sidecar::spawn(&vault_path, port, resource_dir.as_deref())?;
+            match sidecar::wait_for_health(
+                &mut child,
+                port,
+                Duration::from_secs(sidecar::DEFAULT_STARTUP_TIMEOUT_SECS),
+            ) {
                 Ok(health) => Ok((child, port, health)),
                 Err(e) => {
                     let mut handle = SidecarHandle {
@@ -181,15 +245,18 @@ async fn open_vault(
     let vault_id = entry.id.clone();
 
     {
-        let mut sidecar_guard = state
-            .sidecar
+        let mut runtimes = state
+            .runtimes
             .lock()
-            .map_err(|_| "sidecar lock poisoned".to_string())?;
-        *sidecar_guard = Some(SidecarHandle {
-            child,
-            port,
-            vault_id: vault_id.clone(),
-        });
+            .map_err(|_| "runtime lock poisoned".to_string())?;
+        runtimes.insert(
+            &window_label,
+            SidecarHandle {
+                child,
+                port,
+                vault_id: vault_id.clone(),
+            },
+        );
     }
     log::info!("Vault {vault_id} healthy on port {port}");
 
@@ -226,10 +293,32 @@ pub fn run() {
             }
             let registry = vault_registry::load(&app.handle())
                 .map_err(|e| format!("Failed to load vault registry: {e}"))?;
+            let preferences = preferences::load(&app.handle())
+                .map_err(|e| format!("Failed to load Cortex preferences: {e}"))?;
             app.manage(AppState {
                 registry: Mutex::new(registry),
-                sidecar: Mutex::new(None),
+                runtimes: Mutex::new(RuntimeRegistry::default()),
+                preferences: Mutex::new(preferences.clone()),
             });
+
+            if preferences.show_tray_icon {
+                let show = MenuItem::with_id(app, "show", "Show Cortex", true, None::<&str>)?;
+                let quit = MenuItem::with_id(app, "quit", "Quit Cortex", true, None::<&str>)?;
+                let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
+                let mut tray = TrayIconBuilder::with_id("cortex-tray")
+                    .menu(&menu)
+                    .tooltip("Cortex")
+                    .show_menu_on_left_click(true)
+                    .on_menu_event(|app, event| match event.id.as_ref() {
+                        "show" => show_main_window(app),
+                        "quit" => app.exit(0),
+                        _ => {}
+                    });
+                if let Some(icon) = app.default_window_icon().cloned() {
+                    tray = tray.icon(icon).icon_as_template(true);
+                }
+                tray.build(app)?;
+            }
 
             // A window-driven quit (Cmd+Q, red button) already reaches
             // RunEvent::Exit below and disposes the sidecar. But Force Quit
@@ -252,6 +341,9 @@ pub fn run() {
             remove_vault,
             reveal_vault,
             open_vault,
+            get_preferences,
+            set_preferences,
+            close_main_window,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -260,7 +352,9 @@ pub fn run() {
             // the window it was started for.
             if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {
                 if let Some(state) = app_handle.try_state::<AppState>() {
-                    dispose_current_sidecar(&state);
+                    if let Ok(mut runtimes) = state.runtimes.lock() {
+                        runtimes.dispose_all();
+                    }
                 }
             }
         });

@@ -10,7 +10,13 @@ import { expect, test } from "@playwright/test";
 async function openNoteByTitle(page: import("@playwright/test").Page, title: string) {
   const rows = page.getByTestId("note-row");
   await expect(rows.first()).toBeVisible();
-  const row = rows.filter({ hasText: title });
+  let row = rows.filter({ hasText: title });
+  if (await row.count() === 0 && title === "Sample Plan") {
+    const plans = page.getByRole("treeitem", { name: /plans/ });
+    await expect(plans).toBeVisible();
+    if (await plans.getAttribute("aria-expanded") !== "true") await plans.click();
+    row = rows.filter({ hasText: title });
+  }
   await expect(row).toHaveCount(1);
   await row.first().click();
   // The rail's Context/Git/Diagnostics panels render an empty state until
@@ -18,6 +24,8 @@ async function openNoteByTitle(page: import("@playwright/test").Page, title: str
   // for the editor before interacting with the rail, or a slow fetch under
   // concurrent test workers races the assertion.
   await expect(page.getByLabel("Markdown editor")).toBeVisible();
+  await page.getByLabel("Open inspector").click();
+  await expect(rail(page)).toBeVisible();
 }
 
 function rail(page: import("@playwright/test").Page) {
@@ -100,12 +108,12 @@ test.describe("D2-18: context rail relationship labels and destinations", () => 
     await openNoteByTitle(page, "Engine Notes");
     await rail(page).getByRole("button", { name: "View in graph" }).click();
 
-    await expect(page.getByRole("heading", { name: "Graph" })).toBeVisible();
+    await expect(page.locator(".react-flow")).toBeVisible();
     // The graph pane's layout can take longer than the default 5s under
     // parallel test-worker contention (observed flaky at 4 workers, stable
     // in isolation) — this is real render work, not a hung app, so give it
     // more room rather than serializing the whole file over it.
-    await expect(page.getByRole("navigation").getByText("Engine Notes", { exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("graph-breadcrumbs")).toContainText("Engine Notes", { timeout: 15_000 });
     expect(page.url()).toContain("#/graph/note");
   });
 });
@@ -114,7 +122,9 @@ test.describe("D2-19: outline, Git, and diagnostics panels", () => {
   test("Outline tab lists headings and jumps the reading pane to a clicked one", async ({ page }) => {
     await page.goto("/");
     await openNoteByTitle(page, "Stress Test Note");
+    await page.getByLabel("Close inspector").click();
     await page.getByRole("tab", { name: "Source", exact: true }).click();
+    await page.getByLabel("Open inspector").click();
     await rail(page).getByRole("tab", { name: "Outline" }).click();
 
     const items = page.getByTestId("rail-outline-item");

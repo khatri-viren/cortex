@@ -1,3 +1,5 @@
+import type { NoteFrontmatter } from "../core/types.js";
+
 export type ApiSection = {
   id?: string;
   level: number;
@@ -54,8 +56,56 @@ export type ApiChange = {
 export type ApiNoteSource = {
   note: ApiNote;
   markdown: string;
+  body: string;
+  frontmatter: NoteFrontmatter;
   sections: ApiSection[];
   diagnostics: ApiDiagnostic[];
+};
+
+export type ApiVaultTreeNode =
+  | {
+      kind: "directory";
+      path: string;
+      name: string;
+      children: ApiVaultTreeNode[];
+    }
+  | {
+      kind: "note";
+      path: string;
+      name: string;
+      noteId: string;
+      title: string;
+      type: "note" | "map" | "table";
+      updated_at: string;
+    }
+  | {
+      kind: "file";
+      path: string;
+      name: string;
+      openable: boolean;
+    };
+
+export type ApiVaultTree = {
+  rootName: string;
+  children: ApiVaultTreeNode[];
+  truncated: boolean;
+};
+
+export type ApiNoteMetadataPatch = {
+  title?: string;
+  type?: "note" | "map" | "table";
+  aliases?: string[];
+  tags?: string[];
+  applies_to?: NoteFrontmatter["applies_to"];
+  extra?: Record<string, unknown>;
+};
+
+export type ApiNoteUpdateInput = {
+  note: string;
+  expected_file_hash: string;
+  body?: string;
+  metadata?: ApiNoteMetadataPatch;
+  markdown?: string;
 };
 
 export type ApiGraph = {

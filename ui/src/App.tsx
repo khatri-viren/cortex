@@ -3,26 +3,30 @@ import type { MouseEvent, ReactNode } from "react";
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
-  BookmarkIcon,
-  ClipboardListIcon,
   ClockIcon,
   DatabaseIcon,
+  ChevronsUpDownIcon,
+  FileIcon,
   FileTextIcon,
   FilesIcon,
-  HistoryIcon,
-  ListTodoIcon,
   ListTreeIcon,
   NetworkIcon,
-  NotebookTextIcon,
-  PanelRightIcon,
-  RotateCcwIcon,
+  PlusIcon,
   XIcon,
 } from "lucide-react";
-import type { ApiContext, ApiGraphEdge, ApiGraphNode, ApiHistory, ApiNoteSource, ApiSection, ApiVaultCheck, ApiWorkspaceStatus } from "../../src/api/contracts";
+import type { ApiContext, ApiGraphEdge, ApiGraphNode, ApiHistory, ApiNoteMetadataPatch, ApiNoteSource, ApiSection, ApiVaultCheck, ApiVaultTree, ApiVaultTreeNode, ApiWorkspaceStatus } from "../../src/api/contracts";
+import type { NoteFrontmatter } from "../../src/core/types";
 import { Editor } from "./Editor";
 import { GraphPane } from "./GraphPane";
+import { VaultPicker } from "./VaultPicker";
+import { NoteMetadata } from "./components/note-metadata";
+import { InspectorDrawer } from "./components/inspector-drawer";
+import { VaultTree } from "./components/vault-tree";
+import { closeMainWindow, openRegisteredVault, invoke, type VaultEntry, type VaultRegistry } from "./vault-registry";
+import type { Mode } from "./types";
 import {
   getContext,
+  createNote,
   getDiff,
   getHealth,
   getHistory,
@@ -30,19 +34,18 @@ import {
   getRepoDiff,
   getRepoHistory,
   getVaultCheck,
+  getVaultTree,
   getWorkspaceStatus,
   listNotes,
-  reconcile,
-  replaceNote,
   restoreNote,
   searchNotes,
   subscribeToChanges,
   type NoteSummary,
+  updateNote,
 } from "./api";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Empty,
   EmptyDescription,
@@ -50,10 +53,10 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Sidebar,
   SidebarContent,
+  SidebarFooter,
   SidebarGroup,
   SidebarGroupLabel,
   SidebarHeader,
@@ -63,14 +66,10 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarProvider,
-  SidebarSeparator,
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ThemeToggle } from "@/components/theme-toggle";
 
-type Mode = "source" | "reading" | "live";
 type Panel = "context" | "outline" | "git" | "diagnostics";
 type Route = "notes" | "graph";
 
@@ -93,17 +92,19 @@ function destinationFor(node: ApiGraphNode): ContextDestination | undefined {
 type VaultSession = {
   tabs: string[];
   activeTabPath: string | null;
-  recents: string[];
+  expandedTreePaths: string[];
   contextPanelOpen: boolean;
   panel: Panel;
+  mode: Mode;
 };
 
 const DEFAULT_SESSION: VaultSession = {
   tabs: [],
   activeTabPath: null,
-  recents: [],
-  contextPanelOpen: true,
+  expandedTreePaths: [],
+  contextPanelOpen: false,
   panel: "context",
+  mode: "reading",
 };
 
 const RECENTS_LIMIT = 8;
@@ -138,47 +139,58 @@ function useRoute(): [Route, string | undefined, (next: Route, center?: string) 
   }];
 }
 
-function RailGroup({ label, count, defaultOpen = true, children }: { label: string; count?: number; defaultOpen?: boolean; children: ReactNode }) {
-  return (
-    <Collapsible defaultOpen={defaultOpen}>
-      <SidebarGroup>
-        <SidebarGroupLabel render={<CollapsibleTrigger className="w-full cursor-pointer" />}>
-          {label}
-          {typeof count === "number" && <Badge variant="outline" className="ml-1.5 px-1 py-0 text-[9px] font-normal">{count}</Badge>}
-        </SidebarGroupLabel>
-        <CollapsibleContent>{children}</CollapsibleContent>
-      </SidebarGroup>
-    </Collapsible>
-  );
-}
-
-function RelationshipList({ items, onOpen, emptyLabel }: { items: Array<{ edge: ApiGraphEdge; node: ApiGraphNode }>; onOpen: (node: ApiGraphNode) => void; emptyLabel: string }) {
-  if (items.length === 0) return <p className="px-2 pb-1 text-[11px] leading-normal text-muted-foreground">{emptyLabel}</p>;
-  return (
-    <SidebarMenu>
-      {items.map(({ edge, node }) => (
-        <SidebarMenuItem key={edge.kind + ":" + edge.fromId + ":" + edge.toId}>
-          <SidebarMenuButton disabled={!destinationFor(node)} onClick={() => onOpen(node)} tooltip={node.path ?? node.name}>
-            <span className="truncate">{node.name}</span>
-            {node.path && node.kind !== "note" && <span className="ml-auto shrink-0 truncate text-[10px] text-muted-foreground">{node.kind}</span>}
-          </SidebarMenuButton>
-        </SidebarMenuItem>
-      ))}
-    </SidebarMenu>
-  );
-}
-
-function ContextSidebarTrigger() {
-  const { toggleSidebar } = useSidebar();
-  return (
-    <Button variant="ghost" size="icon-sm" onClick={toggleSidebar}>
-      <PanelRightIcon />
-      <span className="sr-only">Toggle context panel</span>
-    </Button>
-  );
-}
-
 const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+const isTauriDev = isTauri && import.meta.env.DEV;
+const isTauriMac = isTauri && typeof navigator !== "undefined" && navigator.userAgent.includes("Macintosh");
+
+type SidebarToolbarLayout = {
+  sidebarWidth: string;
+  collapsed: boolean;
+};
+
+function SidebarAlignedToolbar({ children }: { children: (layout: SidebarToolbarLayout) => ReactNode }) {
+  const { isMobile, state } = useSidebar();
+  const collapsed = isMobile || state === "collapsed";
+  return <>{children({ sidebarWidth: isMobile ? "0px" : collapsed ? "3.5rem" : "18.75rem", collapsed })}</>;
+}
+
+function WorkspaceViewSwitcher({ route, onNavigate }: { route: Route; onNavigate: (next: Route) => void }) {
+  return (
+    <div
+      data-testid="workspace-view-switcher"
+      role="tablist"
+      aria-label="Workspace view"
+      className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border/70 bg-muted/45 p-px"
+    >
+      <Button
+        type="button"
+        role="tab"
+        aria-selected={route === "notes"}
+        data-testid="nodes-view"
+        variant="ghost"
+        size="sm"
+        className={`h-7 gap-1 rounded-sm px-2 text-[11px] ${route === "notes" ? "bg-background/65 text-foreground shadow-sm hover:bg-background/65" : "text-muted-foreground"}`}
+        onClick={() => onNavigate("notes")}
+      >
+        <ListTreeIcon className="size-3.5" />
+        <span>Nodes</span>
+      </Button>
+      <Button
+        type="button"
+        role="tab"
+        aria-selected={route === "graph"}
+        data-testid="graph-view"
+        variant="ghost"
+        size="sm"
+        className={`h-7 gap-1 rounded-sm px-2 text-[11px] ${route === "graph" ? "bg-background/65 text-foreground shadow-sm hover:bg-background/65" : "text-muted-foreground"}`}
+        onClick={() => onNavigate("graph")}
+      >
+        <NetworkIcon className="size-3.5" />
+        <span>Graph</span>
+      </Button>
+    </div>
+  );
+}
 
 // Per-vault session isolation (Desktop V2 Multi-Vault UX Contract): the
 // Tauri shell appends ?vault=<id> when it navigates into a vault's sidecar.
@@ -197,27 +209,27 @@ function loadVaultSession(): VaultSession {
     return {
       tabs: Array.isArray(parsed.tabs) ? parsed.tabs : DEFAULT_SESSION.tabs,
       activeTabPath: typeof parsed.activeTabPath === "string" ? parsed.activeTabPath : null,
-      recents: Array.isArray(parsed.recents) ? parsed.recents : DEFAULT_SESSION.recents,
-      contextPanelOpen: typeof parsed.contextPanelOpen === "boolean" ? parsed.contextPanelOpen : true,
+      expandedTreePaths: Array.isArray(parsed.expandedTreePaths) ? parsed.expandedTreePaths.filter((path): path is string => typeof path === "string") : DEFAULT_SESSION.expandedTreePaths,
+      contextPanelOpen: typeof parsed.contextPanelOpen === "boolean" ? parsed.contextPanelOpen : false,
       panel: parsed.panel === "git" || parsed.panel === "outline" || parsed.panel === "diagnostics" ? parsed.panel : "context",
+      mode: parsed.mode === "source" || parsed.mode === "live" ? parsed.mode : "reading",
     };
   } catch {
     return DEFAULT_SESSION;
   }
 }
 
-function relativeTime(iso: string): string {
-  const diffMs = Date.now() - new Date(iso).getTime();
-  const minutes = Math.round(diffMs / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return minutes + "m ago";
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return hours + "h ago";
-  const days = Math.round(hours / 24);
-  return days + "d ago";
+function cloneMetadata(metadata: NoteFrontmatter): NoteFrontmatter {
+  return {
+    ...metadata,
+    aliases: [...metadata.aliases],
+    tags: [...metadata.tags],
+    applies_to: metadata.applies_to.map((item) => ({ ...item })),
+    extra: { ...metadata.extra },
+  };
 }
 
-function App() {
+function WorkspaceApp() {
   const [route, graphCenter, navigate] = useRoute();
   const [notes, setNotes] = useState<NoteSummary[]>([]);
   const initialSession = useMemo(loadVaultSession, []);
@@ -231,13 +243,20 @@ function App() {
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   const [tabs, setTabs] = useState<string[]>(initialSession.tabs);
-  const [recents, setRecents] = useState<string[]>(initialSession.recents);
   const [contextPanelOpen, setContextPanelOpen] = useState(initialSession.contextPanelOpen);
+  const [expandedTreePaths, setExpandedTreePaths] = useState<Set<string>>(() => new Set(initialSession.expandedTreePaths));
   const [navHistory, setNavHistory] = useState<{ stack: string[]; index: number }>({ stack: [], index: -1 });
   const [source, setSource] = useState<ApiNoteSource>();
   const [draft, setDraft] = useState("");
   const [base, setBase] = useState("");
-  const [mode, setMode] = useState<Mode>("reading");
+  const [metadataDraft, setMetadataDraft] = useState<NoteFrontmatter>();
+  const [baseMetadata, setBaseMetadata] = useState<NoteFrontmatter>();
+  const [mode, setMode] = useState<Mode>(initialSession.mode);
+  const [vaultTree, setVaultTree] = useState<ApiVaultTree>();
+  const [previewPath, setPreviewPath] = useState<string>();
+  const [vaultRegistry, setVaultRegistry] = useState<VaultRegistry>();
+  const [vaultMenuOpen, setVaultMenuOpen] = useState(false);
+  const [vaultMenuStatus, setVaultMenuStatus] = useState("");
   const [panel, setPanel] = useState<Panel>(initialSession.panel);
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Array<{ title: string; path: string; snippet: string }>>([]);
@@ -267,22 +286,13 @@ function App() {
   // stale (see Editor.tsx's contentRevision prop).
   const [contentRevision, setContentRevision] = useState(0);
 
-  const isDirty = draft !== base;
-  const currentTitle = source?.note.title ?? "Select a note";
+  const isDirty = draft !== base || JSON.stringify(metadataDraft) !== JSON.stringify(baseMetadata);
+  const currentTitle = metadataDraft?.title ?? source?.note.title ?? "Select a note";
   const activeNotePath = source?.note.path;
 
-  const visibleNotes = useMemo(() => {
-    if (!query) return notes;
-    const lowered = query.toLocaleLowerCase();
-    return notes.filter((note) => note.title.toLocaleLowerCase().includes(lowered) || note.path.toLocaleLowerCase().includes(lowered));
-  }, [notes, query]);
-
-  const planNotes = useMemo(() => notes.filter((note) => note.tags.includes("plan")), [notes]);
-  const taskNotes = useMemo(() => notes.filter((note) => note.tags.includes("tasks")), [notes]);
-  const referenceNotes = useMemo(() => notes.filter((note) => note.tags.includes("reference")), [notes]);
   const recentNotes = useMemo(
-    () => recents.map((path) => notes.find((note) => note.path === path)).filter((note): note is NoteSummary => Boolean(note)),
-    [recents, notes],
+    () => notes.slice(0, RECENTS_LIMIT),
+    [notes],
   );
   const openTabs = useMemo(
     () => tabs.map((path) => ({ path, title: notes.find((note) => note.path === path)?.title ?? path })),
@@ -339,12 +349,32 @@ function App() {
     getVaultCheck().then(setVaultCheck).catch(() => undefined);
   }
 
+  function applySource(next: ApiNoteSource, bumpContentRevision = false) {
+    const nextMetadata = cloneMetadata(next.frontmatter);
+    setSource(next);
+    setDraft(next.body);
+    setBase(next.body);
+    setMetadataDraft(nextMetadata);
+    setBaseMetadata(cloneMetadata(nextMetadata));
+    setConflict(undefined);
+    setPreviewPath(undefined);
+    if (bumpContentRevision) setContentRevision((revision) => revision + 1);
+  }
+
   useEffect(() => {
     listNotes(undefined, 100).then((result) => {
       setNotes(result.notes);
       setSelected((current) => (current && result.notes.some((note) => note.path === current) ? current : result.notes[0]?.path));
       setTabs((current) => current.filter((path) => result.notes.some((note) => note.path === path)));
     }).catch((cause: unknown) => setStatus(cause instanceof Error ? cause.message : String(cause)));
+    getVaultTree().then((tree) => {
+      setVaultTree(tree);
+      setExpandedTreePaths((current) => {
+        if (current.size > 0) return current;
+        return new Set(tree.children.filter((node) => node.kind === "directory" && node.name === "notes").map((node) => node.path));
+      });
+    }).catch(() => setVaultTree(undefined));
+    if (isTauri) invoke<VaultRegistry>("list_vaults").then(setVaultRegistry).catch(() => setVaultRegistry(undefined));
     refreshWorkspaceSignals();
   }, []);
 
@@ -360,14 +390,14 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const payload: VaultSession = { tabs, activeTabPath: selected ?? null, recents, contextPanelOpen, panel };
+    const payload: VaultSession = { tabs, activeTabPath: selected ?? null, expandedTreePaths: [...expandedTreePaths], contextPanelOpen, panel, mode };
     try {
       localStorage.setItem(sessionStorageKey, JSON.stringify(payload));
     } catch {
       // Storage can be unavailable (private browsing, quota); session
       // restore is a convenience, not a correctness requirement.
     }
-  }, [tabs, selected, recents, contextPanelOpen, panel]);
+  }, [tabs, selected, expandedTreePaths, contextPanelOpen, panel, mode]);
 
   useEffect(() => {
     if (!selected) return;
@@ -379,10 +409,7 @@ function App() {
       // superseded response even when it resolves before this effect's own
       // (deferred, passive) cleanup runs — see the comment on selectedRef.
       if (stale || selectedRef.current !== requested) return;
-      setSource(next);
-      setDraft(next.markdown);
-      setBase(next.markdown);
-      setConflict(undefined);
+      applySource(next);
       setStatus("Saved");
       setContext(undefined);
       setHistory(undefined);
@@ -402,34 +429,23 @@ function App() {
     return subscribeToChanges((events) => {
       if (events.length > 0) {
         listNotes(undefined, 100).then((result) => setNotes(result.notes)).catch(() => undefined);
+        getVaultTree().then(setVaultTree).catch(() => undefined);
         refreshWorkspaceSignals();
       }
       if (!activeNotePath || !events.some((event) => event.path === activeNotePath)) return;
       if (!isDirty) {
         getNoteSource(activeNotePath).then((next) => {
-          setSource(next);
-          setDraft(next.markdown);
-          setBase(next.markdown);
-          setContentRevision((revision) => revision + 1);
+          applySource(next, true);
           setStatus("Reloaded external change");
         }).catch(() => setStatus("External change detected; reload failed"));
         return;
       }
-      if (!source) return;
-      reconcile(source.note.path, base, draft).then((result) => {
-        if (result.status === "merged") {
-          setDraft(result.markdown);
-          setBase(result.remote_markdown);
-          setSource((current) => current ? { ...current, note: { ...current.note, content_hash: result.remote_hash }, markdown: result.remote_markdown } : current);
-          setContentRevision((revision) => revision + 1);
-          setStatus("Merged external changes; review and save");
-        } else {
-          setConflict({ remote: result.remote_markdown, hash: result.remote_hash, sections: result.conflicts });
-          setStatus("Conflict requires review");
-        }
-      }).catch(() => setStatus("External change detected; reconciliation failed"));
+      getNoteSource(activeNotePath).then((next) => {
+        setConflict({ remote: next.markdown, hash: next.note.content_hash, sections: next.sections.map((section) => section.heading) });
+        setStatus("Conflict requires review");
+      }).catch(() => setStatus("External change detected; reload failed"));
     });
-  }, [activeNotePath, base, draft, isDirty, source]);
+  }, [activeNotePath, isDirty]);
 
   useEffect(() => {
     if (!source || !selectedRevision) {
@@ -466,6 +482,7 @@ function App() {
   function openCode(node: ApiGraphNode, destination: { repository: string; path: string }) {
     setCodeTarget({ repository: destination.repository, path: destination.path, name: node.name });
     setPanel("git");
+    setContextPanelOpen(true);
   }
 
   function openGraphCode(node: ApiGraphNode) {
@@ -503,16 +520,20 @@ function App() {
   }, [query]);
 
   async function save() {
-    if (!source || !isDirty) return;
+    if (!source || !metadataDraft || !isDirty) return;
     setStatus("Saving...");
     try {
-      await replaceNote(source.note.path, source.note.content_hash, draft);
-      const next = await getNoteSource(source.note.path);
-      setSource(next);
-      setDraft(next.markdown);
-      setBase(next.markdown);
+      const metadata: ApiNoteMetadataPatch = {
+        title: metadataDraft.title,
+        type: metadataDraft.type,
+        aliases: metadataDraft.aliases,
+        tags: metadataDraft.tags,
+        applies_to: metadataDraft.applies_to,
+        extra: metadataDraft.extra,
+      };
+      const next = await updateNote(source.note.path, source.note.content_hash, draft, metadata);
+      applySource(next);
       setStatus("Saved");
-      setConflict(undefined);
     } catch (cause) {
       setStatus(cause instanceof Error ? cause.message : String(cause));
     }
@@ -535,22 +556,38 @@ function App() {
     if (!opts?.skipConfirm && path !== selected && !confirmDiscard("You have unsaved changes. Discard them and switch notes?")) return;
     setSelected(path);
     setTabs((current) => (current.includes(path) ? current : [...current, path]));
-    setRecents((current) => [path, ...current.filter((existing) => existing !== path)].slice(0, RECENTS_LIMIT));
     setPanel("context");
+    setPreviewPath(undefined);
     if (!opts?.skipHistory) pushNavHistory(path);
     navigate("notes");
   }
 
-  function closeTab(path: string, event: MouseEvent) {
-    event.stopPropagation();
+  function closeTab(path: string, event?: Pick<MouseEvent, "stopPropagation">, options?: { closeWindowWhenLast?: boolean }) {
+    event?.stopPropagation();
     if (path === selected && !confirmDiscard("You have unsaved changes. Discard them and close this tab?")) return;
-    setTabs((current) => {
-      const index = current.indexOf(path);
-      const next = current.filter((existing) => existing !== path);
-      if (selected === path) setSelected(next[index] ?? next[index - 1]);
-      return next;
-    });
+    const index = tabs.indexOf(path);
+    const next = tabs.filter((existing) => existing !== path);
+    if (options?.closeWindowWhenLast && next.length === 0) {
+      void closeMainWindow();
+      return;
+    }
+    if (selected === path) setSelected(next[index] ?? next[index - 1]);
+    setTabs(next);
   }
+
+  useEffect(() => {
+    const onWindowShortcut = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "w" || event.defaultPrevented) return;
+      event.preventDefault();
+      if (selected) {
+        closeTab(selected, undefined, { closeWindowWhenLast: true });
+      } else {
+        void closeMainWindow();
+      }
+    };
+    window.addEventListener("keydown", onWindowShortcut);
+    return () => window.removeEventListener("keydown", onWindowShortcut);
+  }, [selected, tabs, isDirty]);
 
   function goBack() {
     if (!canGoBack) return;
@@ -570,23 +607,28 @@ function App() {
     openPath(target, { skipHistory: true, skipConfirm: true });
   }
 
-  function switchVault() {
+  async function switchVault(id: string) {
     if (!confirmDiscard("You have unsaved changes. Discard them and switch vaults?")) return;
-    // Navigating back to the app's own origin returns to the Tauri shell's
-    // vault picker; the sidecar for this vault is disposed there before the
-    // next one starts (see "Desktop V2 Multi-Vault UX Contract", D2-09).
-    window.location.href = "tauri://localhost/";
+    setVaultMenuStatus("Starting vault runtime…");
+    try {
+      await openRegisteredVault(id);
+    } catch (cause) {
+      setVaultMenuStatus(String(cause));
+    }
   }
 
   async function keepMine() {
-    if (!source || !conflict) return;
+    if (!source || !conflict || !metadataDraft) return;
     try {
-      await replaceNote(source.note.path, conflict.hash, draft);
-      const next = await getNoteSource(source.note.path);
-      setSource(next);
-      setDraft(next.markdown);
-      setBase(next.markdown);
-      setConflict(undefined);
+      const next = await updateNote(source.note.path, conflict.hash, draft, {
+        title: metadataDraft.title,
+        type: metadataDraft.type,
+        aliases: metadataDraft.aliases,
+        tags: metadataDraft.tags,
+        applies_to: metadataDraft.applies_to,
+        extra: metadataDraft.extra,
+      });
+      applySource(next);
       setStatus("Kept local version");
     } catch (cause: unknown) {
       setStatus(cause instanceof Error ? cause.message : String(cause));
@@ -599,555 +641,159 @@ function App() {
     try {
       await restoreNote(source.note.path, selectedRevision);
       const next = await getNoteSource(source.note.path);
-      setSource(next);
-      setDraft(next.markdown);
-      setBase(next.markdown);
-      setContentRevision((revision) => revision + 1);
+      applySource(next, true);
       setStatus("Restored " + selectedRevision.slice(0, 7));
     } catch (cause: unknown) {
       setStatus(cause instanceof Error ? cause.message : String(cause));
     }
   }
 
+  function toggleTreePath(path: string) {
+    setExpandedTreePaths((current) => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }
+
+  function openTreeNode(node: Extract<ApiVaultTreeNode, { kind: "note" | "file" }>) {
+    if (node.kind === "note") {
+      openPath(node.path);
+      return;
+    }
+    setPreviewPath(node.path);
+    setStatus("This vault file is not an indexed note");
+  }
+
+  async function addVaultFromMenu() {
+    setVaultMenuStatus("Choose a vault folder…");
+    try {
+      const entry = await invoke<VaultEntry | null>("add_vault_via_dialog");
+      if (entry) await openRegisteredVault(entry.id);
+      else setVaultMenuStatus("");
+    } catch (cause) {
+      setVaultMenuStatus(String(cause));
+    }
+  }
+
+  async function revealVault(id: string) {
+    try {
+      await invoke("reveal_vault", { id });
+    } catch (cause) {
+      setVaultMenuStatus(String(cause));
+    }
+  }
+
+  async function createNewNote() {
+    if (!confirmDiscard("You have unsaved changes. Discard them and create a note?")) return;
+    const title = window.prompt("Note title");
+    if (!title?.trim()) return;
+    try {
+      const created = await createNote({ title: title.trim() });
+      const [notesResult, treeResult] = await Promise.all([listNotes(undefined, 100), getVaultTree()]);
+      setNotes(notesResult.notes);
+      setVaultTree(treeResult);
+      openPath(created.path, { skipConfirm: true });
+    } catch (cause) {
+      setStatus(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  async function takeTheirs() {
+    if (!activeNotePath) return;
+    try {
+      const next = await getNoteSource(activeNotePath);
+      applySource(next, true);
+      setStatus("Using external version");
+    } catch (cause) {
+      setStatus(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  const activeVaultId = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("vault") : null;
+  const activeVault = vaultRegistry?.vaults.find((vault) => vault.id === activeVaultId);
+  const vaultName = activeVault?.name ?? vaultTree?.rootName ?? "Vault";
+
   return (
-    <div className="flex h-screen flex-col overflow-hidden">
-      <header className="flex h-[52px] shrink-0 items-center gap-4 border-b bg-card px-4">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="grid size-7 shrink-0 place-items-center rounded-md bg-primary text-sm font-bold text-primary-foreground">C</span>
-          <div className="hidden leading-tight sm:block">
-            <strong className="block text-sm font-semibold">Cortex</strong>
-            <span className="block text-[10px] tracking-wide text-muted-foreground uppercase">Project notes</span>
-          </div>
-        </div>
-        <nav className="flex items-center gap-1">
-          <Button variant={route === "notes" ? "secondary" : "ghost"} size="sm" onClick={() => navigate("notes")}>
-            <NotebookTextIcon />
-            Notes
-          </Button>
-          <Button variant={route === "graph" ? "secondary" : "ghost"} size="sm" onClick={() => navigate("graph")}>
-            <NetworkIcon />
-            Graph
-          </Button>
-        </nav>
-        <div className="ml-auto flex items-center gap-3">
-          <Badge variant="outline" className="max-w-[200px] gap-1.5 text-muted-foreground">
-            <span className={"size-1.5 rounded-full " + (isDirty ? "bg-foreground/60" : "bg-primary")} />
-            <span className="truncate">{status}</span>
-          </Badge>
-          {route === "notes" && (
-            <Button size="sm" onClick={() => void save()} disabled={!isDirty || !source}>
-              Save
-            </Button>
+    <div className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background">
+      <SidebarProvider defaultOpen className="!min-h-0 h-full flex-1 flex-col overflow-hidden [contain:layout]">
+        <SidebarAlignedToolbar>
+          {({ sidebarWidth, collapsed }) => (
+            <header className={`relative z-30 h-[52px] w-full shrink-0 overflow-hidden bg-background ${collapsed ? "flex items-center" : "grid"}`} style={collapsed ? undefined : { gridTemplateColumns: `${sidebarWidth} minmax(0, 1fr)` }}>
+              <div className={`flex shrink-0 items-center gap-2 bg-sidebar ${collapsed ? "" : "min-w-0 border-r border-sidebar-border"} ${isTauriMac ? "pl-24 pr-3" : "px-3"}`}>
+                <SidebarTrigger
+                  aria-label="Toggle sidebar"
+                  size="icon-lg"
+                  className="size-8 rounded-md text-foreground/70 hover:bg-muted/70 hover:text-foreground [&_svg]:size-4"
+                />
+                <WorkspaceViewSwitcher route={route} onNavigate={navigate} />
+              </div>
+              <div className="flex min-w-0 flex-1 items-center gap-2 px-3">
+                <Button variant="ghost" size="icon-sm" aria-label="Back" disabled={!canGoBack} onClick={goBack}><ArrowLeftIcon /></Button>
+                <Button variant="ghost" size="icon-sm" aria-label="Forward" disabled={!canGoForward} onClick={goForward}><ArrowRightIcon /></Button>
+                <div className="cortex-tabs-scroll ml-3 flex min-w-0 flex-1 items-center gap-2 overflow-x-auto overscroll-x-contain" role="tablist" aria-label="Open notes">
+                  {openTabs.map((tab) => (
+                    <div key={tab.path} data-active-tab={selected === tab.path ? "true" : "false"} className={"group flex max-w-[220px] shrink-0 items-center text-xs transition-colors " + (selected === tab.path ? "rounded-md bg-muted/50 font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}>
+                      <button type="button" role="tab" aria-selected={selected === tab.path} data-testid="open-tab" onClick={() => openPath(tab.path)} className="min-w-0 flex-1 truncate px-1 py-1.5 text-left">{tab.title}</button>
+                      <button type="button" aria-label={`Close ${tab.title}`} onClick={(event) => closeTab(tab.path, event)} className="rounded px-1 py-1.5 opacity-0 hover:bg-muted group-hover:opacity-100"><XIcon className="size-3" /></button>
+                    </div>
+                  ))}
+                </div>
+                {isDirty && <Button size="sm" className="shrink-0" onClick={() => void save()} disabled={!source}>Save</Button>}
+                <Button variant="ghost" size="icon-sm" className="shrink-0" aria-label="New note" onClick={() => void createNewNote()}><PlusIcon /></Button>
+                <span className="sr-only" aria-live="polite">{status}</span>
+              </div>
+            </header>
           )}
-          {isTauri && (
-            <Button variant="ghost" size="sm" onClick={switchVault}>
-              Switch vault
-            </Button>
-          )}
-          <ThemeToggle />
-        </div>
-      </header>
+        </SidebarAlignedToolbar>
 
-      {route === "graph" && (
-        <section className="flex min-h-0 flex-1 flex-col bg-background">
-          <GraphPane
-            onOpenPath={openPath}
-            onOpenCode={openGraphCode}
-            onBackToNote={() => navigate("notes")}
-            activeNoteLabel={source?.note.title}
-            initialCenter={graphCenter}
-            initialCenterLabel={currentTitle}
-          />
-        </section>
-      )}
-
-      {route === "notes" && (
-        <SidebarProvider className="min-h-0 flex-1 [contain:layout]">
-          <Sidebar collapsible="icon">
+        <div className="flex min-h-0 w-full flex-1">
+          <Sidebar collapsible="icon" className="!top-[52px] !h-[calc(100svh-52px)]">
             <SidebarHeader className="gap-2.5">
-              <SidebarMenu>
-                <SidebarMenuItem>
-                  <SidebarMenuButton size="lg" className="pointer-events-none">
-                    <NotebookTextIcon />
-                    <span className="font-medium group-data-[collapsible=icon]:hidden">All notes</span>
-                    <Badge variant="secondary" className="ml-auto group-data-[collapsible=icon]:hidden">{notes.length}</Badge>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              </SidebarMenu>
-              <SidebarInput
-                placeholder="Search notes"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                className="group-data-[collapsible=icon]:hidden"
-              />
+              <SidebarInput placeholder="Search" aria-label="Search notes" value={query} onChange={(event) => setQuery(event.target.value)} />
+              {searchResults.length > 0 && <SidebarGroup><SidebarGroupLabel>Search results</SidebarGroupLabel><SidebarMenu>{searchResults.map((result) => <SidebarMenuItem key={result.path}><SidebarMenuButton size="lg" data-testid="search-result" onClick={() => openPath(result.path)}><FileTextIcon /><div className="flex min-w-0 flex-col items-start gap-0.5 group-data-[collapsible=icon]:hidden"><span className="truncate font-medium">{result.title}</span><span className="truncate text-[10px] text-muted-foreground">{result.snippet}</span></div></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu></SidebarGroup>}
             </SidebarHeader>
             <SidebarContent>
-              {searchResults.length > 0 && (
-                <SidebarGroup>
-                  <SidebarGroupLabel>Search results</SidebarGroupLabel>
-                  <SidebarMenu>
-                    {searchResults.map((result) => (
-                      <SidebarMenuItem key={result.path}>
-                        <SidebarMenuButton size="lg" data-testid="search-result" onClick={() => openPath(result.path)}>
-                          <FileTextIcon />
-                          <div className="flex min-w-0 flex-col items-start gap-0.5 group-data-[collapsible=icon]:hidden">
-                            <span className="truncate font-medium">{result.title}</span>
-                            <span className="truncate text-[10px] text-muted-foreground">{result.snippet}</span>
-                          </div>
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
-                    ))}
-                  </SidebarMenu>
-                </SidebarGroup>
-              )}
-              {recentNotes.length > 0 && (
-                <SidebarGroup>
-                  <SidebarGroupLabel>
-                    <ClockIcon className="mr-1 size-3" />
-                    Recents
-                  </SidebarGroupLabel>
-                  <SidebarMenu>
-                    {recentNotes.map((note) => (
-                      <SidebarMenuItem key={"recent:" + note.path}>
-                        <SidebarMenuButton
-                          size="sm"
-                          isActive={selected === note.path}
-                          tooltip={note.title}
-                          onClick={() => openPath(note.path)}
-                        >
-                          <FileTextIcon />
-                          <span className="truncate group-data-[collapsible=icon]:hidden">{note.title}</span>
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
-                    ))}
-                  </SidebarMenu>
-                </SidebarGroup>
-              )}
-              {planNotes.length > 0 && (
-                <SidebarGroup>
-                  <SidebarGroupLabel>
-                    <ClipboardListIcon className="mr-1 size-3" />
-                    Plans
-                  </SidebarGroupLabel>
-                  <SidebarMenu>
-                    {planNotes.map((note) => (
-                      <SidebarMenuItem key={"plan:" + note.path}>
-                        <SidebarMenuButton size="sm" isActive={selected === note.path} tooltip={note.title} onClick={() => openPath(note.path)}>
-                          <FileTextIcon />
-                          <span className="truncate group-data-[collapsible=icon]:hidden">{note.title}</span>
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
-                    ))}
-                  </SidebarMenu>
-                </SidebarGroup>
-              )}
-              {taskNotes.length > 0 && (
-                <SidebarGroup>
-                  <SidebarGroupLabel>
-                    <ListTodoIcon className="mr-1 size-3" />
-                    Tasks
-                  </SidebarGroupLabel>
-                  <SidebarMenu>
-                    {taskNotes.map((note) => (
-                      <SidebarMenuItem key={"task:" + note.path}>
-                        <SidebarMenuButton size="sm" isActive={selected === note.path} tooltip={note.title} onClick={() => openPath(note.path)}>
-                          <FileTextIcon />
-                          <span className="truncate group-data-[collapsible=icon]:hidden">{note.title}</span>
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
-                    ))}
-                  </SidebarMenu>
-                </SidebarGroup>
-              )}
-              {referenceNotes.length > 0 && (
-                <SidebarGroup>
-                  <SidebarGroupLabel>
-                    <BookmarkIcon className="mr-1 size-3" />
-                    References
-                  </SidebarGroupLabel>
-                  <SidebarMenu>
-                    {referenceNotes.map((note) => (
-                      <SidebarMenuItem key={"reference:" + note.path}>
-                        <SidebarMenuButton size="sm" isActive={selected === note.path} tooltip={note.title} onClick={() => openPath(note.path)}>
-                          <FileTextIcon />
-                          <span className="truncate group-data-[collapsible=icon]:hidden">{note.title}</span>
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
-                    ))}
-                  </SidebarMenu>
-                </SidebarGroup>
-              )}
               <SidebarGroup>
-                <SidebarGroupLabel>Notes</SidebarGroupLabel>
-                <SidebarMenu>
-                  {visibleNotes.map((note) => (
-                    <SidebarMenuItem key={note.path}>
-                      <SidebarMenuButton
-                        size="lg"
-                        data-testid="note-row"
-                        isActive={selected === note.path}
-                        tooltip={note.title}
-                        onClick={() => openPath(note.path)}
-                      >
-                        <FileTextIcon />
-                        <div className="flex min-w-0 flex-col items-start gap-0.5 group-data-[collapsible=icon]:hidden">
-                          <span className="truncate font-medium">{note.title}</span>
-                          <span className="truncate text-[10px] text-muted-foreground">{note.path}</span>
-                        </div>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  ))}
-                </SidebarMenu>
+                <SidebarGroupLabel><ClockIcon className="mr-1 size-3" />Recents</SidebarGroupLabel>
+                <SidebarMenu>{recentNotes.map((note) => <SidebarMenuItem key={`recent:${note.path}`}><SidebarMenuButton data-testid="recent-row" size="sm" isActive={selected === note.path} tooltip={note.title} onClick={() => openPath(note.path)}><FileTextIcon /><span className="truncate group-data-[collapsible=icon]:hidden">{note.title}</span></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu>
+              </SidebarGroup>
+              <SidebarGroup>
+                <SidebarGroupLabel>Everything <Badge variant="outline" className="ml-1.5 px-1 py-0 text-[9px] font-normal group-data-[collapsible=icon]:hidden">{notes.length}</Badge></SidebarGroupLabel>
+                {vaultTree ? <VaultTree nodes={vaultTree.children} selectedPath={selected} expandedPaths={expandedTreePaths} onToggle={toggleTreePath} onOpen={openTreeNode} /> : <p className="px-2 text-[11px] text-muted-foreground group-data-[collapsible=icon]:hidden">Loading files…</p>}
               </SidebarGroup>
             </SidebarContent>
+            <SidebarFooter className="relative p-3">
+              <button type="button" aria-label="Switch vault" data-testid="vault-switcher" onClick={() => { setVaultMenuOpen((open) => !open); setVaultMenuStatus(""); }} className="flex min-w-0 items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground">
+                <ChevronsUpDownIcon data-testid="vault-switcher-glyph" className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                <span className="min-w-0 flex-1 truncate group-data-[collapsible=icon]:hidden">{vaultName}</span>
+              </button>
+              {vaultMenuOpen && isTauri && <div className="absolute right-2 bottom-[calc(100%+8px)] left-2 z-40 rounded-lg border bg-popover p-1.5 shadow-xl"><div className="px-2 py-1.5 text-[10px] font-semibold tracking-wide text-muted-foreground uppercase">Switch vault</div>{(vaultRegistry?.vaults ?? []).map((vault) => <div key={vault.id} className="flex items-center gap-1"><button type="button" className="min-w-0 flex-1 truncate rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted" onClick={() => void switchVault(vault.id)}>{vault.id === activeVaultId ? "✓ " : ""}{vault.name}</button><button type="button" aria-label={`Reveal ${vault.name}`} className="rounded-md px-1.5 py-1 text-[10px] text-muted-foreground hover:bg-muted" onClick={() => void revealVault(vault.id)}>↗</button></div>)}<button type="button" className="mt-1 w-full rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => void addVaultFromMenu()}>+ Add vault…</button>{vaultMenuStatus && <p className="px-2 py-1 text-[10px] text-muted-foreground">{vaultMenuStatus}</p>}</div>}
+            </SidebarFooter>
           </Sidebar>
 
-          <SidebarInset data-testid="workspace" className="min-w-0">
-            <div className="flex min-h-0 flex-1 flex-col">
-              <SidebarProvider className="min-h-0 flex-1" open={contextPanelOpen} onOpenChange={setContextPanelOpen}>
-                <div className="flex min-h-0 flex-1">
-                  <div className="flex min-w-0 flex-1 flex-col bg-background">
-                    {openTabs.length > 0 && (
-                      <div className="flex shrink-0 items-center gap-1 border-b bg-muted/30 px-2 py-1">
-                        <Button variant="ghost" size="icon-sm" disabled={!canGoBack} onClick={goBack}>
-                          <ArrowLeftIcon />
-                          <span className="sr-only">Back</span>
-                        </Button>
-                        <Button variant="ghost" size="icon-sm" disabled={!canGoForward} onClick={goForward}>
-                          <ArrowRightIcon />
-                          <span className="sr-only">Forward</span>
-                        </Button>
-                        <div className="ml-1 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-                          {openTabs.map((tab) => (
-                            <button
-                              key={tab.path}
-                              type="button"
-                              data-testid="open-tab"
-                              onClick={() => openPath(tab.path)}
-                              className={
-                                "group flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1 text-xs " +
-                                (selected === tab.path ? "bg-background font-medium text-foreground shadow-sm" : "text-muted-foreground hover:bg-background/60")
-                              }
-                            >
-                              <span className="max-w-[140px] truncate">{tab.title}</span>
-                              <span
-                                role="button"
-                                aria-label={"Close " + tab.title}
-                                onClick={(event) => closeTab(tab.path, event)}
-                                className="rounded-sm opacity-0 group-hover:opacity-100 hover:bg-muted"
-                              >
-                                <XIcon className="size-3" />
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    <div className="flex min-h-[64px] flex-col justify-center gap-1.5 border-b px-5 py-3">
-                      <div className="flex items-center justify-between gap-4">
-                        <div className="flex min-w-0 items-center gap-3">
-                          <SidebarTrigger />
-                          <div className="min-w-0">
-                            <span className="block text-[10px] font-semibold tracking-wide text-primary uppercase">{source?.note.type ?? "note"}</span>
-                            <h1 className="truncate text-base leading-tight font-semibold">{currentTitle}</h1>
-                          </div>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-2">
-                          <Tabs value={mode} onValueChange={(value) => setMode(value as Mode)}>
-                            <TabsList>
-                              <TabsTrigger value="source">Source</TabsTrigger>
-                              <TabsTrigger value="reading">Reading</TabsTrigger>
-                              <TabsTrigger value="live">Live</TabsTrigger>
-                            </TabsList>
-                          </Tabs>
-                          <ContextSidebarTrigger />
-                        </div>
-                      </div>
-                      {source && (
-                        <div className="flex flex-wrap items-center gap-1.5 pl-8 text-[11px] text-muted-foreground">
-                          {source.note.tags.map((tag) => (
-                            <Badge key={tag} variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">{tag}</Badge>
-                          ))}
-                          {source.note.aliases.map((alias) => (
-                            <Badge key={alias} variant="outline" className="px-1.5 py-0 text-[10px] font-normal text-muted-foreground">{alias}</Badge>
-                          ))}
-                          <span>Updated {relativeTime(source.note.updated_at)}</span>
-                          <span>·</span>
-                          <span>{context?.likely_files?.length ?? 0} connected files</span>
-                        </div>
-                      )}
-                    </div>
-                    <div className="min-h-0 flex-1">
-                      {source ? (
-                        <Editor value={draft} mode={mode} onChange={setDraft} linkTargets={notes.map((note) => note.title)} notePath={activeNotePath} notes={notes} onOpenNote={openPath} sections={source.sections} contentRevision={contentRevision} jumpRequest={jumpRequest} />
-                      ) : (
-                        <Empty className="h-full">
-                          <EmptyHeader>
-                            <EmptyMedia variant="icon">
-                              <FileTextIcon />
-                            </EmptyMedia>
-                            <EmptyTitle>Choose a note</EmptyTitle>
-                            <EmptyDescription>The indexed Markdown workspace will appear here.</EmptyDescription>
-                          </EmptyHeader>
-                        </Empty>
-                      )}
-                    </div>
-                    {conflict && (
-                      <Alert variant="destructive" className="m-3 shrink-0">
-                        <AlertTitle>External edit needs your decision</AlertTitle>
-                        <AlertDescription>
-                          <p>Conflicts: {conflict.sections.join(", ")}</p>
-                          <div className="mt-2 flex gap-2">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => { setDraft(conflict.remote); setBase(conflict.remote); setContentRevision((revision) => revision + 1); setConflict(undefined); setStatus("Using external version"); }}
-                            >
-                              Take theirs
-                            </Button>
-                            <Button size="sm" variant="outline" onClick={() => void keepMine()}>
-                              Keep mine
-                            </Button>
-                          </div>
-                        </AlertDescription>
-                      </Alert>
-                    )}
-                  </div>
-
-                  <Sidebar side="right" collapsible="offcanvas" data-testid="context-rail">
-                    <SidebarHeader>
-                      <Tabs value={panel} onValueChange={(value) => setPanel(value as Panel)}>
-                        <TabsList className="w-full">
-                          <TabsTrigger value="context" className="flex-1">Context</TabsTrigger>
-                          <TabsTrigger value="outline" className="flex-1">Outline</TabsTrigger>
-                          <TabsTrigger value="git" className="flex-1">Git</TabsTrigger>
-                          <TabsTrigger value="diagnostics" className="flex-1">Diagnostics</TabsTrigger>
-                        </TabsList>
-                      </Tabs>
-                    </SidebarHeader>
-                    <SidebarContent>
-                      {panel === "context" && (
-                        !source ? (
-                          <Empty className="h-full">
-                            <EmptyHeader>
-                              <EmptyMedia variant="icon">
-                                <NetworkIcon />
-                              </EmptyMedia>
-                              <EmptyDescription>Select a note to see how it connects to the rest of the vault.</EmptyDescription>
-                            </EmptyHeader>
-                          </Empty>
-                        ) : (
-                          <>
-                            <div className="flex items-center justify-between gap-2 px-2 pt-1 pb-2">
-                              <code className="min-w-0 truncate font-mono text-[11px] text-muted-foreground" title={source.note.path}>{source.note.path}</code>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="shrink-0 gap-1"
-                                disabled={!context?.anchor}
-                                onClick={() => context?.anchor && viewInGraph(context.anchor.nodeId)}
-                              >
-                                <NetworkIcon className="size-3.5" />
-                                View in graph
-                              </Button>
-                            </div>
-                            <SidebarSeparator />
-                            <RailGroup label="Repository">
-                              {workspaceStatus?.active ? (
-                                workspaceStatus.repositories.length ? (
-                                  <SidebarMenu>
-                                    {workspaceStatus.repositories.map((repository) => (
-                                      <SidebarMenuItem key={repository.id}>
-                                        <div className="flex items-center justify-between gap-2 px-2 py-1">
-                                          <div className="flex min-w-0 flex-col gap-0.5">
-                                            <span className="truncate text-xs font-medium">{repository.id}</span>
-                                            <span className="text-[10px] text-muted-foreground">Index {repository.status}</span>
-                                          </div>
-                                          <Badge variant={repository.gitChangedFileCount ? "outline" : "secondary"} className="shrink-0 text-[10px] font-normal">
-                                            {repository.gitChangedFileCount ?? 0} changed
-                                          </Badge>
-                                        </div>
-                                      </SidebarMenuItem>
-                                    ))}
-                                  </SidebarMenu>
-                                ) : (
-                                  <p className="px-2 pb-1 text-[11px] leading-normal text-muted-foreground">No repositories discovered in this workspace.</p>
-                                )
-                              ) : (
-                                <div className="flex items-center justify-between gap-2 px-2 py-1">
-                                  <span className="text-xs font-medium">This vault</span>
-                                  <Badge variant={vaultCheck?.gitStatus.length ? "outline" : "secondary"} className="shrink-0 text-[10px] font-normal">
-                                    {vaultCheck?.gitStatus.length ?? 0} changed
-                                  </Badge>
-                                </div>
-                              )}
-                            </RailGroup>
-                            <SidebarSeparator />
-                            <RailGroup label="Implements" count={relationshipGroups.implementsItems.length}>
-                              <RelationshipList items={relationshipGroups.implementsItems} onOpen={openContextItem} emptyLabel="Doesn't implement any connected source modules." />
-                            </RailGroup>
-                            <SidebarSeparator />
-                            <RailGroup label="Related notes" count={relationshipGroups.relatedItems.length}>
-                              <RelationshipList items={relationshipGroups.relatedItems} onOpen={openContextItem} emptyLabel="No linked decisions, plans, tasks, or references." />
-                            </RailGroup>
-                            <SidebarSeparator />
-                            <RailGroup label="Owned by" count={relationshipGroups.ownedByItems.length}>
-                              <RelationshipList items={relationshipGroups.ownedByItems} onOpen={openContextItem} emptyLabel="No project or repository ownership recorded." />
-                            </RailGroup>
-                          </>
-                        )
-                      )}
-                      {panel === "outline" && (
-                        !source ? (
-                          <Empty className="h-full">
-                            <EmptyHeader>
-                              <EmptyMedia variant="icon">
-                                <ListTreeIcon />
-                              </EmptyMedia>
-                              <EmptyDescription>Select a note to see its section outline.</EmptyDescription>
-                            </EmptyHeader>
-                          </Empty>
-                        ) : outlineSections.length === 0 ? (
-                          <p className="px-2 pt-1 text-[11px] leading-normal text-muted-foreground">This note has no marked headings.</p>
-                        ) : (
-                          <SidebarGroup className="pb-6">
-                            <SidebarMenu>
-                              {outlineSections.map((section, index) => (
-                                <SidebarMenuItem key={section.startLine + ":" + index}>
-                                  <SidebarMenuButton
-                                    data-testid="rail-outline-item"
-                                    style={{ paddingLeft: 8 + (section.level - 1) * 12 }}
-                                    onClick={() => requestJump(section)}
-                                  >
-                                    <span className="truncate">{section.heading}</span>
-                                  </SidebarMenuButton>
-                                </SidebarMenuItem>
-                              ))}
-                            </SidebarMenu>
-                          </SidebarGroup>
-                        )
-                      )}
-                      {panel === "git" && (
-                        !source ? (
-                          <Empty className="h-full">
-                            <EmptyHeader>
-                              <EmptyMedia variant="icon">
-                                <HistoryIcon />
-                              </EmptyMedia>
-                              <EmptyDescription>Select a note to inspect its Git history and diff.</EmptyDescription>
-                            </EmptyHeader>
-                          </Empty>
-                        ) : (
-                          <>
-                            {codeTarget && (
-                              <div className="flex items-center justify-between gap-2 border-b bg-muted/30 px-2 py-1.5">
-                                <span className="min-w-0 truncate text-[11px] text-muted-foreground">
-                                  Showing <strong className="text-foreground">{codeTarget.name}</strong> in {codeTarget.repository}
-                                </span>
-                                <Button size="sm" variant="ghost" className="shrink-0" onClick={() => setCodeTarget(undefined)}>
-                                  Back to note
-                                </Button>
-                              </div>
-                            )}
-                            <SidebarGroup>
-                              <div className="flex items-center justify-between">
-                                <SidebarGroupLabel className="px-0">History</SidebarGroupLabel>
-                                {!codeTarget && (
-                                  <Button size="icon-sm" variant="ghost" disabled={!selectedRevision} onClick={() => void restoreSelected()}>
-                                    <RotateCcwIcon />
-                                    <span className="sr-only">Restore</span>
-                                  </Button>
-                                )}
-                              </div>
-                              <SidebarMenu>
-                                {(codeTarget ? codeHistory?.commits : history?.commits)?.length ? (
-                                  (codeTarget ? codeHistory! : history!).commits.map((commit) => (
-                                    <SidebarMenuItem key={commit.hash}>
-                                      <SidebarMenuButton
-                                        size="lg"
-                                        isActive={(codeTarget ? codeSelectedRevision : selectedRevision) === commit.hash}
-                                        onClick={() => (codeTarget ? setCodeSelectedRevision(commit.hash) : setSelectedRevision(commit.hash))}
-                                      >
-                                        <div className="flex min-w-0 flex-col items-start gap-0.5">
-                                          <span className="truncate font-medium">{commit.subject}</span>
-                                          <span className="truncate text-[10px] text-muted-foreground">{commit.hash.slice(0, 8)} · {new Date(commit.date).toLocaleDateString()}</span>
-                                        </div>
-                                      </SidebarMenuButton>
-                                    </SidebarMenuItem>
-                                  ))
-                                ) : (
-                                  <p className="px-2 text-[10px] text-muted-foreground">No committed history for this {codeTarget ? "file" : "note"}.</p>
-                                )}
-                              </SidebarMenu>
-                            </SidebarGroup>
-                            <SidebarSeparator />
-                            <SidebarGroup>
-                              <SidebarGroupLabel>Diff</SidebarGroupLabel>
-                              <ScrollArea className="mx-2 mb-2 max-h-[280px] rounded-md border bg-muted/40">
-                                <pre className="p-2.5 font-mono text-[10px] leading-relaxed break-words whitespace-pre-wrap text-foreground">{(codeTarget ? codeDiff : diff) || "Select a revision"}</pre>
-                              </ScrollArea>
-                            </SidebarGroup>
-                          </>
-                        )
-                      )}
-                      {panel === "diagnostics" && (
-                        <>
-                          <RailGroup label="This note" count={source?.diagnostics.length ?? 0}>
-                            <div className="grid gap-1.5 px-2 pb-1">
-                              {source?.diagnostics.length ? (
-                                source.diagnostics.map((item, index) => (
-                                  <Alert key={item.code + index} variant="destructive">
-                                    <AlertDescription>{item.severity}: {item.message}</AlertDescription>
-                                  </Alert>
-                                ))
-                              ) : (
-                                <p className="text-[11px] leading-normal text-muted-foreground">No diagnostics for the selected note.</p>
-                              )}
-                            </div>
-                          </RailGroup>
-                          <SidebarSeparator />
-                          <RailGroup label="Vault" count={vaultCheck?.diagnostics.length ?? 0}>
-                            <div className="grid gap-1.5 px-2 pb-1">
-                              {vaultCheck?.diagnostics.length ? (
-                                vaultCheck.diagnostics.map((item, index) => (
-                                  <Alert key={item.code + index} variant={item.severity === "error" ? "destructive" : "default"}>
-                                    <AlertDescription>
-                                      {item.severity}: {item.message}
-                                      {item.filePath && <span className="mt-0.5 block truncate font-mono text-[10px] opacity-80">{item.filePath}</span>}
-                                    </AlertDescription>
-                                  </Alert>
-                                ))
-                              ) : (
-                                <p className="text-[11px] leading-normal text-muted-foreground">{vaultCheck ? "No vault-wide diagnostics." : "Loading…"}</p>
-                              )}
-                            </div>
-                          </RailGroup>
-                        </>
-                      )}
-                    </SidebarContent>
-                  </Sidebar>
-                </div>
-              </SidebarProvider>
-              <footer className="flex h-7 shrink-0 items-center gap-3 border-t bg-card px-4 text-[11px] text-muted-foreground">
-                <span className="flex items-center gap-1">
-                  <FilesIcon className="size-3" />
-                  {noteCount ?? notes.length} notes
-                </span>
-                <span className="flex items-center gap-1">
-                  <DatabaseIcon className="size-3" />
-                  {workspaceStatus?.repositories.length ?? 0} repositories
-                </span>
-                <span className={"ml-auto flex items-center gap-1.5" + (isStale ? " text-warning" : "")}>
-                  <span className={"size-1.5 rounded-full " + (isStale ? "bg-warning" : "bg-primary")} />
-                  {isStale ? "Index rebuilding…" : "Index current"}
-                </span>
-              </footer>
-            </div>
+          <SidebarInset data-testid="workspace" className="relative min-w-0">
+            {route === "graph" ? <section className="flex min-h-0 flex-1 flex-col bg-background"><GraphPane onOpenPath={openPath} onOpenCode={openGraphCode} onBackToNote={() => navigate("notes")} activeNoteLabel={source?.note.title} initialCenter={graphCenter} initialCenterLabel={currentTitle} /></section> : <div className="flex min-h-0 flex-1 flex-col">
+              <div className="min-h-0 flex-1 overflow-auto overscroll-contain">
+                {source && metadataDraft ? <NoteMetadata metadata={metadataDraft} mode={mode} dirty={isDirty} notePath={activeNotePath} connectedFiles={context?.likely_files?.length ?? 0} onChange={setMetadataDraft} onModeChange={setMode} onToggleInspector={() => setContextPanelOpen(true)} /> : previewPath ? <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileIcon /></EmptyMedia><EmptyTitle>File preview unavailable</EmptyTitle><EmptyDescription>{previewPath} is not an indexed Markdown note.</EmptyDescription></EmptyHeader></Empty> : <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileTextIcon /></EmptyMedia><EmptyTitle>Choose a note</EmptyTitle><EmptyDescription>The indexed Markdown workspace will appear here.</EmptyDescription></EmptyHeader></Empty>}
+                {source && <div className="min-h-[440px] border-t border-border/60"><Editor value={draft} mode={mode} onChange={setDraft} linkTargets={notes.map((note) => note.title)} notePath={activeNotePath} notes={notes} onOpenNote={openPath} sections={source.sections} contentRevision={contentRevision} jumpRequest={jumpRequest} /></div>}
+              </div>
+              {conflict && <Alert variant="destructive" className="m-3 shrink-0"><AlertTitle>External edit needs your decision</AlertTitle><AlertDescription><p>Conflicts: {conflict.sections.join(", ")}</p><div className="mt-2 flex gap-2"><Button size="sm" variant="outline" onClick={() => void takeTheirs()}>Take theirs</Button><Button size="sm" variant="outline" onClick={() => void keepMine()}>Keep mine</Button></div></AlertDescription></Alert>}
+              <footer data-testid="workspace-status-footer" className="relative z-20 flex h-8 shrink-0 items-center gap-3 bg-background/92 px-4 text-[11px] text-muted-foreground backdrop-blur-md before:pointer-events-none before:absolute before:inset-x-0 before:-top-10 before:h-10 before:bg-gradient-to-b before:from-transparent before:via-background/65 before:to-background before:backdrop-blur-[2px] before:content-['']"><span className="relative z-10 flex items-center gap-1"><FilesIcon className="size-3" />{noteCount ?? notes.length} notes</span><span className="relative z-10 flex items-center gap-1"><DatabaseIcon className="size-3" />{workspaceStatus?.repositories.length ?? 0} repositories</span><span className={"relative z-10 ml-auto flex items-center gap-1.5" + (isStale ? " text-warning" : "")}><span className={"size-1.5 rounded-full " + (isStale ? "bg-warning" : "bg-primary")} />{isStale ? "Index rebuilding…" : "Index current"}</span></footer>
+            </div>}
+            <InspectorDrawer open={contextPanelOpen} panel={panel} source={source} context={context} workspaceStatus={workspaceStatus} vaultCheck={vaultCheck} relationshipGroups={relationshipGroups} history={history} selectedRevision={selectedRevision} diff={diff} codeTarget={codeTarget} codeHistory={codeHistory} codeSelectedRevision={codeSelectedRevision} codeDiff={codeDiff} outlineSections={outlineSections} onClose={() => setContextPanelOpen(false)} onPanelChange={setPanel} onOpenContextItem={openContextItem} onViewInGraph={() => context?.anchor && viewInGraph(context.anchor.nodeId)} onRequestJump={requestJump} onSelectRevision={setSelectedRevision} onSelectCodeRevision={setCodeSelectedRevision} onBackToNote={() => setCodeTarget(undefined)} onRestore={() => void restoreSelected()} />
           </SidebarInset>
-        </SidebarProvider>
-      )}
+        </div>
+      </SidebarProvider>
     </div>
   );
+}
+
+function App() {
+  const hasSelectedVault = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("vault");
+  if (isTauriDev && !hasSelectedVault) return <VaultPicker />;
+  return <WorkspaceApp />;
 }
 
 export default App;

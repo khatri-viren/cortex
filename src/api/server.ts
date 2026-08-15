@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { reconcileMarkdown } from "../core/reconcile.js";
 import { ServiceError, VaultRuntime, type VaultChangeEvent } from "../mcp/service.js";
+import type { ApiNoteUpdateInput } from "./contracts.js";
 
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
@@ -57,6 +58,10 @@ function contentType(path: string): string {
   if (path.endsWith(".js")) return "text/javascript; charset=utf-8";
   if (path.endsWith(".css")) return "text/css; charset=utf-8";
   if (path.endsWith(".svg")) return "image/svg+xml";
+  if (path.endsWith(".png")) return "image/png";
+  if (path.endsWith(".ico")) return "image/x-icon";
+  if (path.endsWith(".woff2")) return "font/woff2";
+  if (path.endsWith(".json")) return "application/json; charset=utf-8";
   return "application/octet-stream";
 }
 
@@ -100,6 +105,7 @@ export function createApiServer(runtime: VaultRuntime, port: number, uiDist?: st
         if (url.pathname === "/events" && request.method === "GET") return eventStream(runtime);
         if (url.pathname === "/api/health" && request.method === "GET") return json({ status: "ok", phase: 3, index: runtime.indexer.store.counts() });
         if (url.pathname === "/api/notes" && request.method === "GET") return json(runtime.listNotes(url.searchParams.get("prefix") ?? undefined, url.searchParams.get("tag") ?? undefined, numberParam(url, "limit")));
+        if (url.pathname === "/api/vault/tree" && request.method === "GET") return json(runtime.vaultTree());
         if (url.pathname === "/api/note" && request.method === "GET") {
           const selector = url.searchParams.get("selector");
           if (!selector) throw new ServiceError("INVALID_INPUT", "Query parameter 'selector' is required.");
@@ -157,7 +163,14 @@ export function createApiServer(runtime: VaultRuntime, port: number, uiDist?: st
         }
         if (url.pathname === "/api/note" && request.method === "PUT") {
           const input = await body(request);
-          return json(await runtime.replaceNote(requiredString(input, "note"), requiredString(input, "expected_file_hash"), requiredString(input, "markdown")));
+          const update = input as Partial<ApiNoteUpdateInput>;
+          const note = requiredString(input, "note");
+          const expectedHash = requiredString(input, "expected_file_hash");
+          const markdown = typeof update.markdown === "string" ? update.markdown : undefined;
+          const bodyText = typeof update.body === "string" ? update.body : undefined;
+          const metadata = update.metadata && typeof update.metadata === "object" ? update.metadata : undefined;
+          await runtime.updateNote(note, expectedHash, { markdown, body: bodyText, metadata });
+          return json(runtime.getSource(note));
         }
         if (url.pathname === "/api/restore" && request.method === "POST") {
           const input = await body(request);

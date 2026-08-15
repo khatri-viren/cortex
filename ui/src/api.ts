@@ -1,4 +1,5 @@
-import type { ApiContext, ApiDiff, ApiGraph, ApiHistory, ApiNoteSource, ApiRepoRestoreResult, ApiVaultCheck, ApiWorkspaceStatus } from "../../src/api/contracts";
+import type { ApiContext, ApiDiff, ApiGraph, ApiHistory, ApiNoteMetadataPatch, ApiNoteSource, ApiRepoRestoreResult, ApiVaultCheck, ApiVaultTree, ApiWorkspaceStatus } from "../../src/api/contracts";
+import { getApiOrigin } from "./runtime";
 
 export type NoteSummary = {
   id: string;
@@ -33,15 +34,16 @@ type HealthResponse = {
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
-  const payload: unknown = await response.json().catch(() => ({}));
+  const origin = typeof window === "undefined" ? "" : getApiOrigin(window.location.search);
+  const response = await fetch(origin + path, { headers: { "content-type": "application/json" }, ...init });
   if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => ({}));
     const message = payload && typeof payload === "object" && "error" in payload
       ? String((payload as { error?: { message?: string } }).error?.message ?? response.statusText)
       : response.statusText;
     throw new Error(message);
   }
-  return payload as T;
+  return await response.json() as T;
 }
 
 export function listNotes(prefix?: string, limit?: number): Promise<ListNotesResponse> {
@@ -52,8 +54,19 @@ export function listNotes(prefix?: string, limit?: number): Promise<ListNotesRes
   return request<ListNotesResponse>("/api/notes" + (query ? "?" + query : ""));
 }
 
+export function getVaultTree(): Promise<ApiVaultTree> {
+  return request<ApiVaultTree>("/api/vault/tree");
+}
+
 export function searchNotes(query: string): Promise<SearchResponse> {
   return request<SearchResponse>("/api/search?query=" + encodeURIComponent(query) + "&limit=20");
+}
+
+export function createNote(input: { title: string; type?: "note" | "map" | "table"; path?: string }): Promise<{ path: string; id: string }> {
+  return request<{ path: string; id: string }>("/api/notes", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 export function getNoteSource(selector: string): Promise<ApiNoteSource> {
@@ -112,10 +125,22 @@ export function restoreNote(note: string, revision: string): Promise<unknown> {
   });
 }
 
-export function replaceNote(note: string, expectedFileHash: string, markdown: string): Promise<unknown> {
+export function replaceNote(note: string, expectedFileHash: string, markdown: string): Promise<ApiNoteSource> {
   return request("/api/note", {
     method: "PUT",
     body: JSON.stringify({ note, expected_file_hash: expectedFileHash, markdown }),
+  });
+}
+
+export function updateNote(
+  note: string,
+  expectedFileHash: string,
+  body: string,
+  metadata: ApiNoteMetadataPatch,
+): Promise<ApiNoteSource> {
+  return request<ApiNoteSource>("/api/note", {
+    method: "PUT",
+    body: JSON.stringify({ note, expected_file_hash: expectedFileHash, body, metadata }),
   });
 }
 
@@ -127,7 +152,8 @@ export function reconcile(note: string, baseMarkdown: string, localMarkdown: str
 }
 
 export function subscribeToChanges(onChange: (events: Array<{ type: string; path: string; repository?: string }>) => void): () => void {
-  const source = new EventSource("/events");
+  const origin = typeof window === "undefined" ? "" : getApiOrigin(window.location.search);
+  const source = new EventSource(origin + "/events");
   const handle = (event: MessageEvent<string>) => {
     try {
       const payload = JSON.parse(event.data) as { events?: Array<{ type: string; path: string; repository?: string }> };
