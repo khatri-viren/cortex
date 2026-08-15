@@ -34,6 +34,11 @@ describe("Phase 1 indexer", () => {
     expect((indexer.store.db.query("SELECT COUNT(*) as count FROM graph_edges WHERE kind = 'imports'").get() as { count: number }).count).toBe(1);
     expect((indexer.store.db.query("SELECT COUNT(*) as count FROM graph_edges WHERE kind = 'depends_on'").get() as { count: number }).count).toBeGreaterThanOrEqual(2);
     expect((indexer.store.db.query("SELECT COUNT(*) as count FROM graph_edges WHERE kind = 'tested_by'").get() as { count: number }).count).toBe(1);
+    expect(indexer.store.noteByPath("notes/engine.md")).toMatchObject({ path: "notes/engine.md", title: "Engine Notes" });
+    expect(indexer.store.noteById(indexer.store.noteByPath("notes/engine.md")!.id)?.aliases).toContain("Backend Notes");
+    expect(indexer.store.searchNotes("backend", 20).hits.some((hit) => hit.path === "notes/engine.md")).toBe(true);
+    expect(indexer.store.graphNodeIdByPath("src.ts")).toBe("file:src.ts");
+    expect(indexer.store.fileHash("notes/engine.md")).toMatch(/^[0-9a-f]{64}$/);
     indexer.close();
   });
 

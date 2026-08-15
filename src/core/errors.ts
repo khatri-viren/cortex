@@ -1,0 +1,20 @@
+export type ServiceErrorCode =
+  | "INVALID_INPUT"
+  | "NOT_FOUND"
+  | "CONFLICT"
+  | "AMBIGUOUS_SECTION"
+  | "GIT_DIRTY"
+  | "INDEX_SYNC_FAILED"
+  | "VAULT_INVALID";
+
+export class ServiceError extends Error {
+  readonly code: ServiceErrorCode;
+  readonly details?: Record<string, unknown>;
+
+  constructor(code: ServiceErrorCode, message: string, details?: Record<string, unknown>) {
+    super(message);
+    this.name = "ServiceError";
+    this.code = code;
+    this.details = details;
+  }
+}

@@ -10,7 +10,7 @@ const SECTION_MARKER_RE = /^\s*<!--\s*cortex:section\s+id="(sec-[0-9a-f]{8}-[0-9
 const HEADING_RE = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
 const WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
 
-function lineLocation(lines: string[], lineIndex: number, characterIndex: number, lineOffset: number): SourceLocation {
+function lineLocation(lineIndex: number, characterIndex: number, lineOffset: number): SourceLocation {
   return { line: lineIndex + 1 + lineOffset, column: characterIndex + 1 };
 }
 
@@ -67,7 +67,7 @@ function parseWikilinks(body: string, lineOffset: number): Wikilink[] {
         target: target.trim(),
         section: section?.trim() || undefined,
         display: display?.trim() || undefined,
-        location: lineLocation(lines, lineIndex, start, lineOffset),
+        location: lineLocation(lineIndex, start, lineOffset),
       });
     }
   });
@@ -162,6 +162,83 @@ export function parseMarkdown(text: string, filePath?: string): ParsedNote {
     diagnostics,
     body: parsedFrontmatter.body,
   };
+}
+
+export type SectionSelector = {
+  id?: string;
+  heading?: string;
+};
+
+export type SectionRange = {
+  lines: string[];
+  start: number;
+  end: number;
+  marker: number;
+  bodyStart: number;
+};
+
+/** Return all sections matching an ID or case-insensitive heading selector. */
+export function findSections(parsed: ParsedNote, selector: SectionSelector): Section[] {
+  if (selector.id) return parsed.sections.filter((section) => section.id === selector.id);
+  if (selector.heading === undefined) return [];
+  const heading = selector.heading.toLocaleLowerCase();
+  return parsed.sections.filter((section) => section.heading.toLocaleLowerCase() === heading);
+}
+
+/**
+ * Locate the canonical writable range for a parsed section.
+ *
+ * Section.endLine comes from parseSections, which ends a section at the next
+ * heading of the same or lower level. Keeping the range calculation here means
+ * patching and reconciliation use the same hierarchy-aware document model.
+ */
+export function locateSection(text: string, section: Section, directBody = false): SectionRange | undefined {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const start = Math.max(0, section.startLine - 1);
+  const hierarchicalEnd = Math.min(Math.max(start, section.endLine), lines.length);
+  const directEnd = lines.slice(start + 1, hierarchicalEnd).findIndex((line) => HEADING_RE.test(line));
+  const end = directBody && directEnd >= 0 ? start + 1 + directEnd : hierarchicalEnd;
+  const markerOffset = lines.slice(start + 1, hierarchicalEnd).findIndex((line) => SECTION_MARKER_RE.test(line));
+  if (markerOffset < 0) return undefined;
+  const marker = start + 1 + markerOffset;
+  return { lines, start, end, marker, bodyStart: marker + 1 };
+}
+
+/** Extract a section body using the canonical marker and hierarchy-aware range. */
+export function getSectionBody(text: string, section: Section, trim = false, directBody = false): string | undefined {
+  const range = locateSection(text, section, directBody);
+  if (!range) return undefined;
+  const body = range.lines.slice(range.bodyStart, range.end).join("\n");
+  return trim ? body.replace(/^\n+|\n+$/g, "") : body;
+}
+
+/** Extract only the content owned directly by a section, excluding child headings. */
+export function getSectionDirectBody(text: string, section: Section, trim = false): string | undefined {
+  return getSectionBody(text, section, trim, true);
+}
+
+/**
+ * Replace a section body while preserving the marker and all content outside
+ * the section. A section ID or parsed Section may be supplied; an ID is
+ * resolved against the current document so sequential replacements remain
+ * safe after earlier changes.
+ */
+export function replaceSectionBody(text: string, section: Section | string, body: string, directBody = false): string {
+  const parsed = parseMarkdown(text);
+  const resolved = typeof section === "string"
+    ? parsed.sections.find((candidate) => candidate.id === section)
+    : parsed.sections.find((candidate) => candidate.id === section.id);
+  if (!resolved) return text;
+  const range = locateSection(text, resolved, directBody);
+  if (!range) return text;
+  const normalizedBody = body.replace(/\r\n/g, "\n");
+  const replacement = normalizedBody.length === 0 ? [] : normalizedBody.split("\n");
+  return [...range.lines.slice(0, range.bodyStart), ...replacement, ...range.lines.slice(range.end)].join("\n");
+}
+
+/** Replace only a section's direct body, preserving nested child sections. */
+export function replaceSectionDirectBody(text: string, section: Section | string, body: string): string {
+  return replaceSectionBody(text, section, body, true);
 }
 
 export function addMissingSectionMarkers(body: string): { body: string; added: string[] } {

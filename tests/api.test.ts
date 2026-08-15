@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createApiServer } from "../src/api/server.js";
 import { reconcileMarkdown } from "../src/core/reconcile.js";
 import { initVault } from "../src/core/vault.js";
-import { VaultRuntime } from "../src/mcp/service.js";
+import { VaultRuntime } from "../src/core/runtime.js";
 
 function temporaryVault(): string {
   return initVault(join(mkdtempSync(join(tmpdir(), "cortex-phase3-api-")), "vault"));
@@ -30,6 +30,7 @@ describe("Phase 3 local API", () => {
       const health = await fetch(base + "/api/health");
       expect(health.status).toBe(200);
       expect((await health.json()).phase).toBe(3);
+      expect((await (await fetch(base + "/api/health")).json()).workspace.phase).toBe("disabled");
 
       const source = await fetch(base + "/api/note?selector=project-map.md&source=true");
       expect(source.status).toBe(200);

@@ -1,4 +1,4 @@
-import type { ApiContext, ApiDiff, ApiGraph, ApiHistory, ApiNoteMetadataPatch, ApiNoteSource, ApiRepoRestoreResult, ApiVaultCheck, ApiVaultTree, ApiWorkspaceStatus } from "../../src/api/contracts";
+import type { ApiContext, ApiDiff, ApiGraph, ApiHealth, ApiHistory, ApiNoteMetadataPatch, ApiNoteSource, ApiRepoRestoreResult, ApiVaultCheck, ApiVaultTree, ApiWorkspaceStatus } from "../../src/api/contracts";
 import { getApiOrigin } from "./runtime";
 
 export type NoteSummary = {
@@ -19,20 +19,6 @@ type ProjectMapResponse = ApiGraph;
 type ReconcileResponse =
   | { status: "merged"; markdown: string; changedSections: string[]; remote_markdown: string; remote_hash: string }
   | { status: "conflict"; conflicts: string[]; remote_markdown: string; remote_hash: string };
-type HealthResponse = {
-  status: string;
-  phase: number;
-  index: {
-    noteCount: number;
-    sectionCount: number;
-    linkCount: number;
-    tableRowCount: number;
-    graphNodeCount: number;
-    graphEdgeCount: number;
-    diagnosticCount: number;
-  };
-};
-
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const origin = typeof window === "undefined" ? "" : getApiOrigin(window.location.search);
   const response = await fetch(origin + path, { headers: { "content-type": "application/json" }, ...init });
@@ -81,16 +67,16 @@ export function getContext(node: string): Promise<ApiContext> {
   return request<ApiContext>("/api/context?node=" + encodeURIComponent(node) + "&limit=40");
 }
 
-export function getWorkspaceStatus(): Promise<ApiWorkspaceStatus> {
-  return request<ApiWorkspaceStatus>("/api/workspace/status");
+export function getWorkspaceStatus(includeGit = false): Promise<ApiWorkspaceStatus> {
+  return request<ApiWorkspaceStatus>("/api/workspace/status" + (includeGit ? "?include_git=true" : ""));
 }
 
 export function getVaultCheck(): Promise<ApiVaultCheck> {
   return request<ApiVaultCheck>("/api/vault-check");
 }
 
-export function getHealth(): Promise<HealthResponse> {
-  return request<HealthResponse>("/api/health");
+export function getHealth(): Promise<ApiHealth> {
+  return request<ApiHealth>("/api/health");
 }
 
 export function getRepoHistory(repository: string, path: string): Promise<ApiHistory> {

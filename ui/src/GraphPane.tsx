@@ -158,11 +158,14 @@ function layoutByLevel(graph: ApiGraph, graphNodes: ApiGraphNode[]): Map<string,
 function workspaceLine(status?: ApiWorkspaceStatus): string | undefined {
   if (!status) return undefined;
   if (!status.active) return "Vault graph · local index";
-  const ready = status.repositories.filter((repo) => repo.status === "ready");
+  const ready = status.repositories.filter((repo) => status.phase === "current" && repo.status === "ready");
   const stale = status.repositories.filter((repo) => repo.status !== "ready");
   const repositoryWord = ready.length === 1 ? "repository" : "repositories";
   const parts = [`${ready.length} ${repositoryWord}`];
-  if (stale.length > 0) parts.push(`${stale.length} stale`);
+  if (status.phase === "warming") parts.push("warming");
+  else if (status.phase === "rebuilding") parts.push("rebuilding");
+  else if (status.phase === "error") parts.push("error");
+  else if (stale.length > 0) parts.push(`${stale.length} stale`);
   if (status.diagnostics.length > 0) parts.push(`${status.diagnostics.length} diagnostics`);
   return `Workspace index · ${parts.join(" · ")}`;
 }

@@ -2,20 +2,8 @@ import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { requireGitVault } from "./vault.js";
-
-export type GitStatusEntry = {
-  index: string;
-  worktree: string;
-  path: string;
-  originalPath?: string;
-};
-
-export type GitCommit = {
-  hash: string;
-  author: string;
-  date: string;
-  subject: string;
-};
+import type { GitCommit, GitStatusEntry } from "./runtime-types.js";
+export type { GitCommit, GitStatusEntry } from "./runtime-types.js";
 
 function runGit(vaultRoot: string, args: string[]): string {
   const root = requireGitVault(vaultRoot);

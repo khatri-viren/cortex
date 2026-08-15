@@ -14,12 +14,24 @@ export type WatcherHandle = {
   flushSnapshot: () => Promise<void>;
 };
 
-function relevant(event: WatchEvent, root: string): boolean {
-  const relativePath = event.path.slice(root.length).replace(/^[/\\]/, "");
-  return !relativePath.startsWith(`${RUNTIME_DIRECTORY}/`) && !relativePath.startsWith(".git/") && !relativePath.startsWith("node_modules/");
+export type WatcherOptions = {
+  /** Return true for a root-relative path that should be ignored and pruned. */
+  ignorePath?: (relativePath: string) => boolean;
+};
+
+function ignored(relativePath: string, options?: WatcherOptions): boolean {
+  return relativePath === RUNTIME_DIRECTORY || relativePath.startsWith(`${RUNTIME_DIRECTORY}/`) ||
+    relativePath === ".git" || relativePath.startsWith(".git/") ||
+    relativePath === "node_modules" || relativePath.startsWith("node_modules/") ||
+    Boolean(options?.ignorePath?.(relativePath));
 }
 
-function fileSnapshot(root: string): Map<string, string> {
+function relevant(event: WatchEvent, root: string, options?: WatcherOptions): boolean {
+  const relativePath = relative(root, event.path).replaceAll("\\", "/");
+  return !ignored(relativePath, options);
+}
+
+function fileSnapshot(root: string, options?: WatcherOptions): Map<string, string> {
   const snapshot = new Map<string, string>();
   const visit = (directory: string) => {
     let entries;
@@ -30,8 +42,8 @@ function fileSnapshot(root: string): Map<string, string> {
     }
     for (const entry of entries) {
       const absolutePath = join(directory, entry.name);
-      const relativePath = relative(root, absolutePath);
-      if (relativePath === RUNTIME_DIRECTORY || relativePath.startsWith(`${RUNTIME_DIRECTORY}/`) || relativePath === ".git" || relativePath.startsWith(".git/") || relativePath === "node_modules" || relativePath.startsWith("node_modules/")) continue;
+      const relativePath = relative(root, absolutePath).replaceAll("\\", "/");
+      if (ignored(relativePath, options)) continue;
       if (entry.isDirectory()) {
         visit(absolutePath);
         continue;
@@ -52,10 +64,11 @@ function fileSnapshot(root: string): Map<string, string> {
 async function startPollingWatcher(
   vaultRoot: string,
   onEvents: (events: WatchEvent[]) => Promise<void>,
+  options?: WatcherOptions,
 ): Promise<WatcherHandle> {
   const snapshotPath = join(vaultRoot, RUNTIME_DIRECTORY, "watcher.snapshot");
   mkdirSync(join(vaultRoot, RUNTIME_DIRECTORY), { recursive: true });
-  let previous = fileSnapshot(vaultRoot);
+  let previous = fileSnapshot(vaultRoot, options);
   let pending: WatchEvent[] = [];
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -68,13 +81,13 @@ async function startPollingWatcher(
   };
 
   const queue = (events: WatchEvent[]) => {
-    pending.push(...events.filter((event) => relevant(event, vaultRoot)));
+    pending.push(...events.filter((event) => relevant(event, vaultRoot, options)));
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => void flush(), 100);
   };
 
   const interval = setInterval(() => {
-    const current = fileSnapshot(vaultRoot);
+    const current = fileSnapshot(vaultRoot, options);
     const events: WatchEvent[] = [];
     for (const [path, signature] of current) {
       const previousSignature = previous.get(path);
@@ -104,9 +117,10 @@ async function startPollingWatcher(
 export async function startWatcher(
   vaultRoot: string,
   onEvents: (events: WatchEvent[]) => Promise<void>,
+  options?: WatcherOptions,
 ): Promise<WatcherHandle> {
   if (process.env.CORTEX_PACKAGED === "1") {
-    return startPollingWatcher(vaultRoot, onEvents);
+    return startPollingWatcher(vaultRoot, onEvents, options);
   }
 
   const parcelWatcher: ParcelWatcher = await import("@parcel/watcher");
@@ -124,7 +138,7 @@ export async function startWatcher(
   };
 
   const queue = (events: WatchEvent[]) => {
-    pending.push(...events.filter((event) => relevant(event, vaultRoot)));
+    pending.push(...events.filter((event) => relevant(event, vaultRoot, options)));
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => void flush(), 100);
   };

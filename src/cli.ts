@@ -8,7 +8,7 @@ import { VaultIndexer } from "./core/indexer.js";
 import { GitAdapter } from "./core/git.js";
 import { MCP_TOOL_NAMES, runMcpServer } from "./mcp/server.js";
 import { createApiServer } from "./api/server.js";
-import { VaultRuntime } from "./mcp/service.js";
+import { VaultRuntime } from "./core/runtime.js";
 import { initializeWorkspaceManifest, loadWorkspaceConfig, removeWorkspaceRepository } from "./core/workspace.js";
 import { WorkspaceIndexer } from "./core/workspace-indexer.js";
 import { setupClaudeWorkspaceConfig } from "./core/claude-workspace.js";

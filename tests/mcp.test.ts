@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMcpServer, MCP_TOOL_NAMES } from "../src/mcp/server.js";
-import { McpVaultService } from "../src/mcp/service.js";
+import { VaultRuntime } from "../src/core/runtime.js";
 import { initVault } from "../src/core/vault.js";
 
 function temporaryVault(): string {
@@ -15,7 +15,7 @@ function temporaryVault(): string {
 }
 
 async function connectedMcp(vault: string) {
-  const service = await McpVaultService.start(vault);
+  const service = await VaultRuntime.start(vault);
   const server = createMcpServer(service);
   const client = new Client({ name: "cortex-test-client", version: "1.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

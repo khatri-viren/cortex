@@ -267,6 +267,7 @@ function WorkspaceApp() {
   const [selectedRevision, setSelectedRevision] = useState<string>();
   const [diff, setDiff] = useState("");
   const [workspaceStatus, setWorkspaceStatus] = useState<ApiWorkspaceStatus>();
+  const [workspaceGitLoaded, setWorkspaceGitLoaded] = useState(false);
   const [noteCount, setNoteCount] = useState<number>();
   const [vaultCheck, setVaultCheck] = useState<ApiVaultCheck>();
   // Set when a context-rail "Implements"/"Owned by" item resolves to a
@@ -299,6 +300,8 @@ function WorkspaceApp() {
     [tabs, notes],
   );
   const isStale = workspaceStatus?.repositories.some((repository) => repository.status === "stale") ?? false;
+  const isIndexing = workspaceStatus?.phase === "warming" || workspaceStatus?.phase === "rebuilding" || workspaceStatus?.repositories.some((repository) => repository.status === "warming" || repository.status === "rebuilding") || false;
+  const indexError = workspaceStatus?.phase === "error";
   const canGoBack = navHistory.index > 0;
   const canGoForward = navHistory.index < navHistory.stack.length - 1;
 
@@ -344,9 +347,19 @@ function WorkspaceApp() {
   }, [context, contextNodeById]);
 
   function refreshWorkspaceSignals() {
-    getWorkspaceStatus().then(setWorkspaceStatus).catch(() => undefined);
+    getWorkspaceStatus().then((next) => {
+      setWorkspaceStatus((current) => {
+        const previousGitCounts = new Map((current?.repositories ?? []).map((repository) => [repository.id, repository.gitChangedFileCount]));
+        return {
+          ...next,
+          repositories: next.repositories.map((repository) => ({
+            ...repository,
+            gitChangedFileCount: previousGitCounts.get(repository.id),
+          })),
+        };
+      });
+    }).catch(() => undefined);
     getHealth().then((health) => setNoteCount(health.index.noteCount)).catch(() => undefined);
-    getVaultCheck().then(setVaultCheck).catch(() => undefined);
   }
 
   function applySource(next: ApiNoteSource, bumpContentRevision = false) {
@@ -415,23 +428,51 @@ function WorkspaceApp() {
       setHistory(undefined);
       setSelectedRevision(undefined);
       setDiff("");
-      Promise.all([getContext("note:" + next.note.id), getHistory(next.note.path)]).then(([nextContext, nextHistory]) => {
+      getContext("note:" + next.note.id).then((nextContext) => {
         if (stale || selectedRef.current !== requested) return;
         setContext(nextContext);
-        setHistory(nextHistory);
-        setSelectedRevision(nextHistory.commits[0]?.hash);
       }).catch(() => { if (!stale && selectedRef.current === requested) setStatus("Loaded note; context is unavailable"); });
     }).catch((cause: unknown) => { if (!stale && selectedRef.current === requested) setStatus(cause instanceof Error ? cause.message : String(cause)); });
     return () => { stale = true; };
   }, [selected]);
 
   useEffect(() => {
+    if (!source || panel !== "git" || codeTarget) return;
+    let stale = false;
+    getHistory(source.note.path).then((next) => {
+      if (stale) return;
+      setHistory(next);
+      setSelectedRevision(next.commits[0]?.hash);
+    }).catch(() => { if (!stale) setHistory(undefined); });
+    return () => { stale = true; };
+  }, [source, panel, codeTarget]);
+
+  useEffect(() => {
+    if (!contextPanelOpen || panel !== "diagnostics" || vaultCheck) return;
+    let stale = false;
+    getVaultCheck().then((next) => {
+      if (!stale) setVaultCheck(next);
+    }).catch(() => { if (!stale) setVaultCheck(undefined); });
+    return () => { stale = true; };
+  }, [contextPanelOpen, panel, vaultCheck]);
+
+  useEffect(() => {
+    if (!contextPanelOpen || panel !== "context" || !workspaceStatus?.active || workspaceGitLoaded) return;
+    getWorkspaceStatus(true).then((next) => {
+      setWorkspaceStatus(next);
+      setWorkspaceGitLoaded(true);
+    }).catch(() => undefined);
+  }, [contextPanelOpen, panel, workspaceStatus?.active, workspaceGitLoaded]);
+
+  useEffect(() => {
     return subscribeToChanges((events) => {
-      if (events.length > 0) {
+      if (events.some((event) => !event.repository)) {
         listNotes(undefined, 100).then((result) => setNotes(result.notes)).catch(() => undefined);
         getVaultTree().then(setVaultTree).catch(() => undefined);
-        refreshWorkspaceSignals();
       }
+      // Empty batches are emitted when background workspace warming changes
+      // phase; status/health are intentionally cheap enough to refresh here.
+      refreshWorkspaceSignals();
       if (!activeNotePath || !events.some((event) => event.path === activeNotePath)) return;
       if (!isDirty) {
         getNoteSource(activeNotePath).then((next) => {
@@ -448,19 +489,19 @@ function WorkspaceApp() {
   }, [activeNotePath, isDirty]);
 
   useEffect(() => {
-    if (!source || !selectedRevision) {
+    if (panel !== "git" || codeTarget || !source || !selectedRevision) {
       setDiff("");
       return;
     }
     getDiff(source.note.path, selectedRevision).then((result) => setDiff(result.diff)).catch(() => setDiff("Diff unavailable"));
-  }, [source, selectedRevision]);
+  }, [source, selectedRevision, panel, codeTarget]);
 
   useEffect(() => {
     setCodeTarget(undefined);
   }, [selected]);
 
   useEffect(() => {
-    if (!codeTarget) {
+    if (!codeTarget || panel !== "git") {
       setCodeHistory(undefined);
       setCodeSelectedRevision(undefined);
       return;
@@ -469,15 +510,15 @@ function WorkspaceApp() {
       setCodeHistory(next);
       setCodeSelectedRevision(next.commits[0]?.hash);
     }).catch(() => setCodeHistory(undefined));
-  }, [codeTarget]);
+  }, [codeTarget, panel]);
 
   useEffect(() => {
-    if (!codeTarget || !codeSelectedRevision) {
+    if (panel !== "git" || !codeTarget || !codeSelectedRevision) {
       setCodeDiff("");
       return;
     }
     getRepoDiff(codeTarget.repository, codeTarget.path, codeSelectedRevision).then((result) => setCodeDiff(result.diff)).catch(() => setCodeDiff("Diff unavailable"));
-  }, [codeTarget, codeSelectedRevision]);
+  }, [codeTarget, codeSelectedRevision, panel]);
 
   function openCode(node: ApiGraphNode, destination: { repository: string; path: string }) {
     setCodeTarget({ repository: destination.repository, path: destination.path, name: node.name });
@@ -780,7 +821,7 @@ function WorkspaceApp() {
                 {source && <div className="min-h-[440px] border-t border-border/60"><Editor value={draft} mode={mode} onChange={setDraft} linkTargets={notes.map((note) => note.title)} notePath={activeNotePath} notes={notes} onOpenNote={openPath} sections={source.sections} contentRevision={contentRevision} jumpRequest={jumpRequest} /></div>}
               </div>
               {conflict && <Alert variant="destructive" className="m-3 shrink-0"><AlertTitle>External edit needs your decision</AlertTitle><AlertDescription><p>Conflicts: {conflict.sections.join(", ")}</p><div className="mt-2 flex gap-2"><Button size="sm" variant="outline" onClick={() => void takeTheirs()}>Take theirs</Button><Button size="sm" variant="outline" onClick={() => void keepMine()}>Keep mine</Button></div></AlertDescription></Alert>}
-              <footer data-testid="workspace-status-footer" className="relative z-20 flex h-8 shrink-0 items-center gap-3 bg-background/92 px-4 text-[11px] text-muted-foreground backdrop-blur-md before:pointer-events-none before:absolute before:inset-x-0 before:-top-10 before:h-10 before:bg-gradient-to-b before:from-transparent before:via-background/65 before:to-background before:backdrop-blur-[2px] before:content-['']"><span className="relative z-10 flex items-center gap-1"><FilesIcon className="size-3" />{noteCount ?? notes.length} notes</span><span className="relative z-10 flex items-center gap-1"><DatabaseIcon className="size-3" />{workspaceStatus?.repositories.length ?? 0} repositories</span><span className={"relative z-10 ml-auto flex items-center gap-1.5" + (isStale ? " text-warning" : "")}><span className={"size-1.5 rounded-full " + (isStale ? "bg-warning" : "bg-primary")} />{isStale ? "Index rebuilding…" : "Index current"}</span></footer>
+              <footer data-testid="workspace-status-footer" className="relative z-20 flex h-8 shrink-0 items-center gap-3 bg-background/92 px-4 text-[11px] text-muted-foreground backdrop-blur-md before:pointer-events-none before:absolute before:inset-x-0 before:-top-10 before:h-10 before:bg-gradient-to-b before:from-transparent before:via-background/65 before:to-background before:backdrop-blur-[2px] before:content-['']"><span className="relative z-10 flex items-center gap-1"><FilesIcon className="size-3" />{noteCount ?? notes.length} notes</span><span className="relative z-10 flex items-center gap-1"><DatabaseIcon className="size-3" />{workspaceStatus?.repositories.length ?? 0} repositories</span><span className={"relative z-10 ml-auto flex items-center gap-1.5" + ((isStale || isIndexing || indexError) ? " text-warning" : "")}><span className={"size-1.5 rounded-full " + ((isStale || isIndexing || indexError) ? "bg-warning" : "bg-primary")} />{isIndexing ? (workspaceStatus?.phase === "warming" ? "Workspace warming…" : "Index rebuilding…") : indexError ? "Index error" : isStale ? "Index stale" : "Index current"}</span></footer>
             </div>}
             <InspectorDrawer open={contextPanelOpen} panel={panel} source={source} context={context} workspaceStatus={workspaceStatus} vaultCheck={vaultCheck} relationshipGroups={relationshipGroups} history={history} selectedRevision={selectedRevision} diff={diff} codeTarget={codeTarget} codeHistory={codeHistory} codeSelectedRevision={codeSelectedRevision} codeDiff={codeDiff} outlineSections={outlineSections} onClose={() => setContextPanelOpen(false)} onPanelChange={setPanel} onOpenContextItem={openContextItem} onViewInGraph={() => context?.anchor && viewInGraph(context.anchor.nodeId)} onRequestJump={requestJump} onSelectRevision={setSelectedRevision} onSelectCodeRevision={setCodeSelectedRevision} onBackToNote={() => setCodeTarget(undefined)} onRestore={() => void restoreSelected()} />
           </SidebarInset>

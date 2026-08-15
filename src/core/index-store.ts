@@ -1,8 +1,8 @@
 import { mkdirSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { Database, constants } from "bun:sqlite";
-import type { Diagnostic, ParsedNote } from "./types.js";
-import type { FileKind, GraphBuild, IndexedMarkdown } from "./index-types.js";
+import type { Diagnostic, ParsedNote, NoteType } from "./types.js";
+import type { FileKind, GraphBuild, IndexedMarkdown, IndexedNoteHeader, IndexedNoteRecord, IndexSearchResult } from "./index-types.js";
 
 const SCHEMA_VERSION = "1";
 
@@ -154,6 +154,7 @@ CREATE INDEX IF NOT EXISTS idx_workspace_files_repo ON workspace_files(repositor
 `;
 
 export class IndexStore {
+  /** Internal schema escape hatch for low-level projection/index tests only. */
   readonly db: Database;
   readonly vaultRoot: string;
   readonly dbPath: string;
@@ -253,6 +254,73 @@ export class IndexStore {
 
   workspaceDiagnostics(): Diagnostic[] {
     return this.db.query<Diagnostic & { column_number: number | null }, []>("SELECT severity, code, message, path as filePath, line, column_number FROM workspace_diagnostics ORDER BY row_id").all().map((row) => ({ severity: row.severity, code: row.code, message: row.message, filePath: row.filePath, line: row.line ?? undefined, column: row.column_number ?? undefined }));
+  }
+
+  private indexedNote(noteId: string): IndexedNoteRecord | undefined {
+    const row = this.db.query<{
+      id: string;
+      path: string;
+      title: string;
+      type: NoteType;
+      created_at: string;
+      updated_at: string;
+      content_hash: string | null;
+    }, [string]>(
+      "SELECT notes.note_id as id, notes.path, notes.title, notes.type, notes.created_at, notes.updated_at, files.content_hash FROM notes LEFT JOIN files ON files.path = notes.path WHERE notes.note_id = ?1",
+    ).get(noteId);
+    if (!row) return undefined;
+    const aliases = this.db.query<{ alias: string }, [string]>("SELECT alias FROM note_aliases WHERE note_id = ?1 ORDER BY alias").all(noteId).map((item) => item.alias);
+    const tags = this.db.query<{ tag: string }, [string]>("SELECT tag FROM note_tags WHERE note_id = ?1 ORDER BY tag").all(noteId).map((item) => item.tag);
+    return { ...row, content_hash: row.content_hash ?? "", aliases, tags };
+  }
+
+  noteById(noteId: string): IndexedNoteRecord | undefined {
+    return this.indexedNote(noteId);
+  }
+
+  noteByPath(path: string): IndexedNoteRecord | undefined {
+    const row = this.db.query<{ note_id: string }, [string]>("SELECT note_id FROM notes WHERE path = ?1").get(path);
+    return row ? this.indexedNote(row.note_id) : undefined;
+  }
+
+  noteHeaders(): IndexedNoteHeader[] {
+    return this.db.query<IndexedNoteHeader, []>("SELECT note_id, path, title, type, updated_at FROM notes ORDER BY path").all();
+  }
+
+  indexedNotes(options: { prefix?: string; tag?: string; limit: number }): { notes: IndexedNoteRecord[]; truncated: boolean } {
+    const rows = this.db.query<{ note_id: string }, [string | null, string | null, string | null, string | null, number]>(
+      "SELECT notes.note_id FROM notes WHERE (?1 IS NULL OR notes.path LIKE ?2 OR lower(notes.title) LIKE lower(?3)) AND (?4 IS NULL OR EXISTS (SELECT 1 FROM note_tags WHERE note_tags.note_id = notes.note_id AND note_tags.tag = ?4)) ORDER BY notes.updated_at DESC LIMIT ?5",
+    ).all(
+      options.prefix ?? null,
+      options.prefix ? `${options.prefix}%` : null,
+      options.prefix ? `${options.prefix}%` : null,
+      options.tag ?? null,
+      options.limit + 1,
+    );
+    const truncated = rows.length > options.limit;
+    return { notes: rows.slice(0, options.limit).map((row) => this.indexedNote(row.note_id)).filter((row): row is IndexedNoteRecord => Boolean(row)), truncated };
+  }
+
+  searchNotes(query: string, limit: number): IndexSearchResult {
+    const words = query.trim().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    const terms = words.map((term) => `"${term.replaceAll('"', '""')}"`).join(" AND ");
+    if (!terms) return { hits: [], truncated: false };
+    const rows = this.db.query<{ note_id: string; title: string; path: string; snippet: string }, [string, number]>(
+      "SELECT notes_fts.note_id, notes_fts.title, notes.path, snippet(notes_fts, 2, '', '', '...', 24) as snippet FROM notes_fts JOIN notes ON notes.note_id = notes_fts.note_id WHERE notes_fts MATCH ?1 LIMIT ?2",
+    ).all(terms, limit);
+    return { hits: rows, truncated: rows.length >= limit };
+  }
+
+  graphNodeIdByPath(path: string): string | undefined {
+    return this.db.query<{ node_id: string }, [string]>("SELECT node_id FROM graph_nodes WHERE path = ?1").get(path)?.node_id;
+  }
+
+  fileHash(path: string): string | undefined {
+    return this.db.query<{ content_hash: string }, [string]>("SELECT content_hash FROM files WHERE path = ?1").get(path)?.content_hash;
+  }
+
+  graphPaths(): Array<{ path: string; kind: string; name: string }> {
+    return this.db.query<{ path: string; kind: string; name: string }, []>("SELECT path, kind, name FROM graph_nodes WHERE path IS NOT NULL ORDER BY kind, path").all();
   }
 
   linkRepositoriesToProject(repositoryIds: string[]): void {

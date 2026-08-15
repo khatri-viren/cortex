@@ -1,7 +1,9 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { reconcileMarkdown } from "../core/reconcile.js";
-import { ServiceError, VaultRuntime, type VaultChangeEvent } from "../mcp/service.js";
+import { ServiceError } from "../core/errors.js";
+import { VaultRuntime } from "../core/runtime.js";
+import type { VaultChangeEvent } from "../core/runtime-types.js";
 import type { ApiNoteUpdateInput } from "./contracts.js";
 
 const JSON_HEADERS = {
@@ -103,7 +105,7 @@ export function createApiServer(runtime: VaultRuntime, port: number, uiDist?: st
       try {
         if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...JSON_HEADERS, "access-control-allow-methods": "GET,POST,PATCH,PUT,OPTIONS", "access-control-allow-headers": "content-type" } });
         if (url.pathname === "/events" && request.method === "GET") return eventStream(runtime);
-        if (url.pathname === "/api/health" && request.method === "GET") return json({ status: "ok", phase: 3, index: runtime.indexer.store.counts() });
+        if (url.pathname === "/api/health" && request.method === "GET") return json(runtime.health());
         if (url.pathname === "/api/notes" && request.method === "GET") return json(runtime.listNotes(url.searchParams.get("prefix") ?? undefined, url.searchParams.get("tag") ?? undefined, numberParam(url, "limit")));
         if (url.pathname === "/api/vault/tree" && request.method === "GET") return json(runtime.vaultTree());
         if (url.pathname === "/api/note" && request.method === "GET") {
@@ -139,7 +141,7 @@ export function createApiServer(runtime: VaultRuntime, port: number, uiDist?: st
           return json(runtime.diff(selector, url.searchParams.get("revision") ?? undefined));
         }
         if (url.pathname === "/api/vault-check" && request.method === "GET") return json(runtime.vaultCheck());
-        if (url.pathname === "/api/workspace/status" && request.method === "GET") return json(runtime.workspaceStatus());
+        if (url.pathname === "/api/workspace/status" && request.method === "GET") return json(runtime.workspaceStatus(url.searchParams.get("include_git") === "true"));
         if (url.pathname === "/api/workspace/repo-history" && request.method === "GET") {
           const repository = url.searchParams.get("repository");
           const path = url.searchParams.get("path");

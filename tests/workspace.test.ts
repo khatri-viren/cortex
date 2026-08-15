@@ -6,16 +6,18 @@ import { join } from "node:path";
 import { initVault } from "../src/core/vault.js";
 import {
   initializeWorkspaceManifest,
+  isWorkspaceIgnored,
   loadWorkspaceConfig,
   removeWorkspaceRepository,
   repositoryRelativePath,
+  workspaceIgnorePatterns,
   type WorkspaceConfig,
 } from "../src/core/workspace.js";
 import { setupClaudeWorkspaceConfig } from "../src/core/claude-workspace.js";
 import { WorkspaceIndexer, directoryId, fileId } from "../src/core/workspace-indexer.js";
 import { requireAppliesToRepository, resolveWorkspaceAttachments } from "../src/core/workspace-attachments.js";
 import { IndexStore } from "../src/core/index-store.js";
-import { VaultRuntime } from "../src/mcp/service.js";
+import { VaultRuntime } from "../src/core/runtime.js";
 
 function tempVault(): string {
   return initVault(join(mkdtempSync(join(tmpdir(), "cortex-workspace-")), "vault"));
@@ -192,6 +194,33 @@ describe("Workspace configuration", () => {
     expect(() => repositoryRelativePath(config.workspaceRoot, repository, "/etc/passwd")).toThrow();
     expect(() => repositoryRelativePath(config.workspaceRoot, repository, "../../../etc/passwd")).toThrow();
   });
+
+  test("matches and prunes generated output directories at the directory boundary", () => {
+    const vault = tempVault();
+    const workspaceRoot = tempWorkspaceRoot();
+    const repoPath = initRepo(workspaceRoot, "alpha", {
+      "src/index.ts": "export const value = 1;\n",
+      "target/debug/generated.ts": "should not be indexed\n",
+    });
+    const config = initializeWorkspaceManifest(vault, workspaceRoot);
+    const patterns = workspaceIgnorePatterns(config.manifest);
+    const repository = config.repositories[0]!;
+
+    expect(isWorkspaceIgnored("target", ["**/target/**"])).toBe(true);
+    expect(isWorkspaceIgnored("target/debug/generated.ts", patterns)).toBe(true);
+    expect(isWorkspaceIgnored("src/target/debug/generated.ts", patterns)).toBe(true);
+    expect(() => repositoryRelativePath(config.workspaceRoot, repository, "target")).toThrow();
+
+    const store = newStore(vault);
+    try {
+      const report = new WorkspaceIndexer(store, config).fullRebuild();
+      expect(report.fileCount).toBe(1);
+      expect(store.unifiedNode(fileId("alpha", "target/debug/generated.ts"))).toBeUndefined();
+      expect(repoPath).toContain("alpha");
+    } finally {
+      store.close();
+    }
+  });
 });
 
 describe("Workspace indexing", () => {
@@ -350,6 +379,9 @@ describe("VaultRuntime workspace integration", () => {
 
     const runtime = await VaultRuntime.start(vault, { workspaceRoot });
     try {
+      expect(["warming", "current"]).toContain(runtime.health().workspace.phase);
+      await runtime.waitForWorkspace();
+      expect(runtime.health().workspace.phase).toBe("current");
       const status = runtime.workspaceStatus();
       expect(status.active).toBe(true);
       expect(status.workspaceExists).toBe(true);
@@ -368,6 +400,7 @@ describe("VaultRuntime workspace integration", () => {
 
     const runtime = await VaultRuntime.start(vault, { workspaceRoot });
     try {
+      await runtime.waitForWorkspace();
       const history = runtime.getRepoHistory("alpha", "src/index.ts");
       expect(history.commits.length).toBeGreaterThanOrEqual(1);
 
@@ -391,6 +424,7 @@ describe("VaultRuntime workspace integration", () => {
 
     const runtime = await VaultRuntime.start(vault, { workspaceRoot });
     try {
+      await runtime.waitForWorkspace();
       const history = runtime.getRepoHistory("alpha", "src/index.ts");
       const firstHash = history.commits[0]!.hash;
 
@@ -417,6 +451,7 @@ describe("VaultRuntime workspace integration", () => {
 
     const runtime = await VaultRuntime.start(vault, { workspaceRoot });
     try {
+      await runtime.waitForWorkspace();
       await expect(runtime.createNote({
         title: "Missing repository",
         type: "note",
