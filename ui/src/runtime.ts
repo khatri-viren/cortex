@@ -1,5 +1,11 @@
 const LOCALHOST = "127.0.0.1";
 
+export type RuntimeConnection = {
+  origin: string;
+  request: (path: string, init?: RequestInit) => Promise<Response>;
+  events: (path: string) => EventSource;
+};
+
 function validPort(value: string | null): number | undefined {
   if (!value || !/^\d+$/.test(value)) return undefined;
   const port = Number(value);
@@ -17,6 +23,25 @@ function validPort(value: string | null): number | undefined {
 export function getApiOrigin(search: string): string {
   const port = validPort(new URLSearchParams(search).get("port"));
   return port ? `http://${LOCALHOST}:${port}` : "";
+}
+
+let cachedConnection: { search: string; value: RuntimeConnection } | undefined;
+
+/**
+ * Resolve one stable transport contract for the active desktop vault. Page
+ * navigation changes the query string when a vault changes, so a new page
+ * gets a new connection; every request within that page shares this origin.
+ */
+export function getRuntimeConnection(search = typeof window === "undefined" ? "" : window.location.search): RuntimeConnection {
+  if (cachedConnection?.search === search) return cachedConnection.value;
+  const origin = getApiOrigin(search);
+  const value: RuntimeConnection = {
+    origin,
+    request: (path, init) => fetch(origin + path, init),
+    events: (path) => new EventSource(origin + path),
+  };
+  cachedConnection = { search, value };
+  return value;
 }
 
 /** Build a Vite-origin URL for a vault runtime started by Tauri. */

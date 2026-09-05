@@ -171,7 +171,44 @@ Two
       await reader.cancel();
       expect(received).toContain("project-map.md");
       expect(received).not.toContain(vault);
+      const data = received.split("\n").find((line) => line.startsWith("data: "));
+      const changeSet = JSON.parse(data?.slice("data: ".length) ?? "{}") as { sequence?: number; generation?: number; events?: Array<{ scopes?: string[] }> };
+      expect(changeSet.sequence).toBeGreaterThan(0);
+      expect(changeSet.generation).toBeGreaterThan(0);
+      expect(changeSet.events?.[0]?.scopes).toEqual(expect.arrayContaining(["content", "graph"]));
       expect(existsSync(path)).toBe(true);
     });
   }, 10_000);
+
+  test("replays versioned changes and emits one app-owned write event", async () => {
+    await withApi(async (base) => {
+      const source = await (await fetch(base + "/api/note?selector=project-map.md&source=true")).json() as { note: { content_hash: string }; body: string };
+      const update = await fetch(base + "/api/note", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ note: "project-map.md", expected_file_hash: source.note.content_hash, body: source.body + "\nApp-owned event.\n" }),
+      });
+      expect(update.status).toBe(200);
+      const replay = await (await fetch(base + "/api/changes?since=0")).json() as { changes: Array<{ events: Array<{ path: string }> }>; resyncRequired: boolean };
+      expect(replay.resyncRequired).toBe(false);
+      const matching = replay.changes.flatMap((change) => change.events).filter((event) => event.path === "project-map.md");
+      expect(matching).toHaveLength(1);
+
+      const stream = await fetch(base + "/events?since=0");
+      const reader = stream.body!.getReader();
+      const decoder = new TextDecoder();
+      let replayed = "";
+      const deadline = Date.now() + 1000;
+      while (!replayed.includes("project-map.md") && Date.now() < deadline) {
+        const next = await reader.read();
+        if (next.done) break;
+        replayed += decoder.decode(next.value);
+      }
+      await reader.cancel();
+      expect(replayed).toContain("project-map.md");
+
+      const stale = await (await fetch(base + "/api/changes?since=999")).json() as { resyncRequired: boolean };
+      expect(stale.resyncRequired).toBe(true);
+    });
+  });
 });

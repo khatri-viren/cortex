@@ -1,5 +1,5 @@
 import type { ApiContext, ApiDiff, ApiGraph, ApiHealth, ApiHistory, ApiIndexRefreshResult, ApiNoteMetadataPatch, ApiNoteSource, ApiRepoRestoreResult, ApiVaultCheck, ApiVaultTree, ApiWorkspaceStatus } from "../../src/api/contracts";
-import { getApiOrigin } from "./runtime";
+import { getRuntimeConnection } from "./runtime";
 
 export type NoteSummary = {
   id: string;
@@ -20,8 +20,7 @@ type ReconcileResponse =
   | { status: "merged"; markdown: string; changedSections: string[]; remote_markdown: string; remote_hash: string }
   | { status: "conflict"; conflicts: string[]; remote_markdown: string; remote_hash: string };
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const origin = typeof window === "undefined" ? "" : getApiOrigin(window.location.search);
-  const response = await fetch(origin + path, { headers: { "content-type": "application/json" }, ...init });
+  const response = await getRuntimeConnection().request(path, { headers: { "content-type": "application/json" }, ...init });
   if (!response.ok) {
     const payload: unknown = await response.json().catch(() => ({}));
     const message = payload && typeof payload === "object" && "error" in payload
@@ -136,9 +135,10 @@ export function updateNote(
 }
 
 export async function exportNotePdf(note: string, body: string, title: string): Promise<{ blob: Blob; filename: string }> {
-  const origin = typeof window === "undefined" ? "" : getApiOrigin(window.location.search);
+  const connection = getRuntimeConnection();
+  const origin = connection.origin;
   console.info("[PDF-EXPORT] request:start", { note, title, bodyLength: body.length, origin });
-  const response = await fetch(origin + "/api/note/export/pdf", {
+  const response = await connection.request("/api/note/export/pdf", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ note, body, title }),
@@ -166,20 +166,44 @@ export function reconcile(note: string, baseMarkdown: string, localMarkdown: str
   });
 }
 
-export function subscribeToChanges(onChange: (events: Array<{ type: string; path: string; repository?: string }>) => void): () => void {
-  const origin = typeof window === "undefined" ? "" : getApiOrigin(window.location.search);
-  const source = new EventSource(origin + "/events");
-  const handle = (event: MessageEvent<string>) => {
+export type ApiChangeSet = {
+  sequence: number;
+  generation: number;
+  events: Array<{ type: string; path: string; repository?: string; scopes?: string[] }>;
+  resync_required?: boolean;
+};
+
+export function subscribeToChanges(onChange: (changeSet: ApiChangeSet) => void): () => void {
+  let source: EventSource | undefined;
+  let stopped = false;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastSequence = 0;
+  const connect = () => {
+    if (stopped) return;
+    const suffix = lastSequence > 0 ? `?since=${lastSequence}` : "";
+    source = getRuntimeConnection().events("/events" + suffix);
+    source.addEventListener("vault.change", handle);
+    source.onerror = () => {
+      source?.close();
+      if (!stopped && !reconnectTimer) reconnectTimer = setTimeout(() => { reconnectTimer = undefined; connect(); }, 250);
+    };
+  };
+  const handle = (event: Event) => {
     try {
-      const payload = JSON.parse(event.data) as { events?: Array<{ type: string; path: string; repository?: string }> };
-      onChange(payload.events ?? []);
+      const payload = JSON.parse((event as MessageEvent<string>).data) as Partial<ApiChangeSet>;
+      if (!Array.isArray(payload.events) || typeof payload.sequence !== "number" || typeof payload.generation !== "number") return;
+      if (payload.sequence <= lastSequence) return;
+      lastSequence = payload.sequence;
+      onChange({ sequence: payload.sequence, generation: payload.generation, events: payload.events, resync_required: payload.resync_required });
     } catch {
       // A malformed event cannot safely update an open buffer.
     }
   };
-  source.addEventListener("vault.change", handle);
+  connect();
   return () => {
-    source.removeEventListener("vault.change", handle);
-    source.close();
+    stopped = true;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    source?.removeEventListener("vault.change", handle);
+    source?.close();
   };
 }

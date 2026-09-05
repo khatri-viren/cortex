@@ -46,12 +46,23 @@ export type GraphEdgeRecord = {
   metadata: Record<string, unknown>;
 };
 
+export type VaultChangeScope = "content" | "catalog" | "tree" | "graph" | "repository" | "projection";
+
 export type VaultChangeEvent = {
   type: "create" | "update" | "delete";
   path: string;
   content_hash?: string;
   mtime?: string;
   repository?: string;
+  scopes: VaultChangeScope[];
+};
+
+export type VaultChangeSet = {
+  sequence: number;
+  generation: number;
+  events: VaultChangeEvent[];
+  /** Set when a subscriber must refetch current state before applying more events. */
+  resync_required?: boolean;
 };
 
 export type WorkspaceStatus = {

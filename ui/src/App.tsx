@@ -589,7 +589,7 @@ function WorkspaceApp() {
     if (isTauri) {
       const serialized = JSON.stringify(payload);
       sessionSaveQueueRef.current = sessionSaveQueueRef.current
-        .then(() => invoke("save_session", { vaultId: vaultKey, sessionJson: serialized }))
+        .then(() => invoke("save_session", { vaultId: vaultKey, sessionJson: serialized }).then(() => undefined))
         .catch(() => undefined);
     }
   }, [sessionReady, tabs, selected, expandedTreePaths, contextPanelOpen, panel, mode]);
@@ -669,8 +669,16 @@ function WorkspaceApp() {
   }, [contextPanelOpen, panel, workspaceStatus?.active, workspaceGitLoaded]);
 
   useEffect(() => {
-    return subscribeToChanges((events) => {
+    return subscribeToChanges((changeSet) => {
       if (isCreatingNote) return;
+      const events = changeSet.events;
+      if (changeSet.resync_required) {
+        refreshVaultData();
+        refreshWorkspaceSignals();
+        if (activeNotePath && !isDirty) getNoteSource(activeNotePath).then((next) => applySource(next, true)).catch(() => undefined);
+        return;
+      }
+      const scopes = new Set(events.flatMap((event) => event.scopes ?? []));
       const deletedPaths = new Set(events.filter((event) => event.type === "delete").map((event) => event.path));
       if (deletedPaths.size > 0) {
         setTabs((current) => current.filter((path) => !deletedPaths.has(path)));
@@ -678,14 +686,15 @@ function WorkspaceApp() {
           setSelected((current) => current && deletedPaths.has(current) ? undefined : current);
         }
       }
-      if (events.length === 0 || events.some((event) => !event.repository)) refreshVaultData();
-      // Empty batches are emitted when background workspace warming changes
-      // phase; status/health are intentionally cheap enough to refresh here.
-      refreshWorkspaceSignals();
+      // Versioned scopes keep body-only edits from refetching the whole tree
+      // and catalog. Empty batches represent projection status transitions.
+      if (events.length === 0 || scopes.has("catalog") || scopes.has("tree")) refreshVaultData();
+      if (events.length === 0 || scopes.has("projection") || scopes.has("repository")) refreshWorkspaceSignals();
       if (!activeNotePath || !events.some((event) => event.path === activeNotePath)) return;
       if (!isDirty) {
         getNoteSource(activeNotePath).then((next) => {
           applySource(next, true);
+          if (scopes.has("graph")) getContext("note:" + next.note.id).then(setContext).catch(() => undefined);
           setStatus("Reloaded external change");
         }).catch(() => setStatus("External change detected; reload failed"));
         return;

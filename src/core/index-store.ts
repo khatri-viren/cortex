@@ -4,7 +4,8 @@ import { Database, constants } from "bun:sqlite";
 import type { Diagnostic, ParsedNote, NoteType } from "./types.js";
 import type { FileKind, GraphBuild, IndexedMarkdown, IndexedNoteHeader, IndexedNoteRecord, IndexSearchResult } from "./index-types.js";
 
-const SCHEMA_VERSION = "1";
+export const SCHEMA_VERSION = "1";
+export const PROJECTION_VERSION = "1";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -322,6 +323,10 @@ export class IndexStore {
 
   fileHash(path: string): string | undefined {
     return this.db.query<{ content_hash: string }, [string]>("SELECT content_hash FROM files WHERE path = ?1").get(path)?.content_hash;
+  }
+
+  fileSnapshots(): Array<{ path: string; size: number; mtimeMs: number }> {
+    return this.db.query<{ path: string; size: number; mtimeMs: number }, []>("SELECT path, size, mtime_ms as mtimeMs FROM files ORDER BY path").all();
   }
 
   graphPaths(): Array<{ path: string; kind: string; name: string }> {

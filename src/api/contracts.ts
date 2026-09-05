@@ -1,5 +1,5 @@
 import type { Diagnostic, NoteFrontmatter, Section } from "../core/types.js";
-import type { DiffResult, GitCommit, GitStatusEntry, GraphEdgeRecord, GraphNodeRecord, GraphQueryResult, HealthResult, HistoryResult, IndexPhase, IndexRefreshResult, NoteMetadataPatch, NoteRecord, NoteSource, RepositoryRestoreResult, VaultChangeEvent, VaultCheckResult, VaultTree, VaultTreeNode, WorkspaceStatus } from "../core/runtime-types.js";
+import type { DiffResult, GitCommit, GitStatusEntry, GraphEdgeRecord, GraphNodeRecord, GraphQueryResult, HealthResult, HistoryResult, IndexPhase, IndexRefreshResult, NoteMetadataPatch, NoteRecord, NoteSource, RepositoryRestoreResult, VaultChangeEvent, VaultChangeSet, VaultCheckResult, VaultTree, VaultTreeNode, WorkspaceStatus } from "../core/runtime-types.js";
 
 /** Stable HTTP/MCP/UI wire aliases over the protocol-neutral core types. */
 export type ApiSection = Section;
@@ -50,7 +50,10 @@ export type ApiContext = {
 };
 
 export type ApiChangeEvent = {
+  sequence: VaultChangeSet["sequence"];
+  generation: VaultChangeSet["generation"];
   events: ApiChange[];
+  resync_required?: boolean;
 };
 
 export type ApiWorkspaceRepository = WorkspaceStatus["repositories"][number];

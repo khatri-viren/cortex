@@ -5,7 +5,7 @@ import { ServiceError } from "../core/errors.js";
 import { VaultRuntime } from "../core/runtime.js";
 import { exportFilename } from "../core/pdf-export.js";
 import { logger } from "../logger.js";
-import type { VaultChangeEvent } from "../core/runtime-types.js";
+import type { VaultChangeSet } from "../core/runtime-types.js";
 import type { ApiNoteUpdateInput } from "./contracts.js";
 
 const JSON_HEADERS = {
@@ -69,21 +69,46 @@ function contentType(path: string): string {
   return "application/octet-stream";
 }
 
-function eventStream(runtime: VaultRuntime): Response {
+function eventStream(runtime: VaultRuntime, since?: number): Response {
   const encoder = new TextEncoder();
   let unsubscribe: () => void = () => undefined;
+  let controllerRef: ReadableStreamDefaultController<Uint8Array> | undefined;
+  let closed = false;
+  const queue: Uint8Array[] = [];
+  const maxQueue = 128;
+  const encode = (changeSet: VaultChangeSet): Uint8Array => encoder.encode("event: vault.change\ndata: " + JSON.stringify(changeSet) + "\n\n");
+  const flush = () => {
+    if (!controllerRef) return;
+    while (queue.length > 0 && (controllerRef.desiredSize === null || controllerRef.desiredSize > 0)) controllerRef.enqueue(queue.shift()!);
+  };
+  const enqueue = (changeSet: VaultChangeSet) => {
+    if (closed) return;
+    if (queue.length >= maxQueue) {
+      queue.length = 0;
+      queue.push(encode({ sequence: changeSet.sequence, generation: changeSet.generation, events: [], resync_required: true }));
+    } else {
+      queue.push(encode(changeSet));
+    }
+    flush();
+  };
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
+      controllerRef = controller;
       controller.enqueue(encoder.encode("retry: 1000\n\n"));
-      unsubscribe = runtime.subscribe((events: VaultChangeEvent[]) => {
-        try {
-          controller.enqueue(encoder.encode("event: vault.change\ndata: " + JSON.stringify({ events }) + "\n\n"));
-        } catch {
-          unsubscribe();
-        }
-      });
+      if (since !== undefined) {
+        const replay = runtime.changesSince(since);
+        if (replay.resyncRequired) enqueue({ sequence: replay.sequence, generation: replay.generation, events: [], resync_required: true });
+        else for (const changeSet of replay.changes) enqueue(changeSet);
+      }
+      unsubscribe = runtime.subscribe((changeSet: VaultChangeSet) => enqueue(changeSet));
+      flush();
+    },
+    pull() {
+      flush();
     },
     cancel() {
+      closed = true;
+      queue.length = 0;
       unsubscribe();
     },
   });
@@ -106,7 +131,8 @@ export function createApiServer(runtime: VaultRuntime, port: number, uiDist?: st
       const url = new URL(request.url);
       try {
         if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...JSON_HEADERS, "access-control-allow-methods": "GET,POST,PATCH,PUT,OPTIONS", "access-control-allow-headers": "content-type" } });
-        if (url.pathname === "/events" && request.method === "GET") return eventStream(runtime);
+        if (url.pathname === "/events" && request.method === "GET") return eventStream(runtime, numberParam(url, "since"));
+        if (url.pathname === "/api/changes" && request.method === "GET") return json(runtime.changesSince(numberParam(url, "since") ?? 0));
         if (url.pathname === "/api/health" && request.method === "GET") return json(runtime.health());
         if (url.pathname === "/api/index/rebuild" && request.method === "POST") return json(await runtime.rebuildIndex());
         if (url.pathname === "/api/notes" && request.method === "GET") return json(runtime.listNotes(url.searchParams.get("prefix") ?? undefined, url.searchParams.get("tag") ?? undefined, numberParam(url, "limit"), url.searchParams.get("cursor") ?? undefined));

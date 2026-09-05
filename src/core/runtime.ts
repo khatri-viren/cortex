@@ -20,7 +20,7 @@ import { GitAdapter } from "./git.js";
 import { RUNTIME_DIRECTORY } from "./vault.js";
 import type { Diagnostic, NoteFrontmatter, Section } from "./types.js";
 import { ServiceError } from "./errors.js";
-import type { DiffResult, GraphDirection, GraphEdgeRecord, GraphNodeRecord, GraphQueryResult, HealthResult, HistoryResult, IndexPhase, IndexRefreshResult, NoteCreateInput, NoteRecord, NoteSelector, NoteSource, NoteUpdateInput, RepositoryDiffResult, RepositoryHistoryResult, RepositoryRestoreResult, VaultChangeEvent, VaultCheckResult, VaultTree, VaultTreeNode, WorkspaceStatus, WriteResult } from "./runtime-types.js";
+import type { DiffResult, GraphDirection, GraphEdgeRecord, GraphNodeRecord, GraphQueryResult, HealthResult, HistoryResult, IndexPhase, IndexRefreshResult, NoteCreateInput, NoteRecord, NoteSelector, NoteSource, NoteUpdateInput, RepositoryDiffResult, RepositoryHistoryResult, RepositoryRestoreResult, VaultChangeEvent, VaultChangeScope, VaultChangeSet, VaultCheckResult, VaultTree, VaultTreeNode, WorkspaceStatus, WriteResult } from "./runtime-types.js";
 import type { IndexReport } from "./index-types.js";
 import { startWatcher, type WatcherHandle } from "./watcher.js";
 import { isWorkspaceIgnored, loadWorkspaceConfig, workspaceIgnorePatterns, workspaceManifestPath, repositoryRelativePath as workspaceRepositoryRelativePath, type WorkspaceConfig, type WorkspaceRepository } from "./workspace.js";
@@ -34,6 +34,8 @@ const MAX_GRAPH_LIMIT = 100;
 const MAX_CONTEXT_BYTES = 6_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HASH_RE = /^[0-9a-f]{64}$/i;
+const MAX_CHANGE_HISTORY = 128;
+const MAX_PENDING_WRITES = 256;
 
 type NoteListCursor = { updatedAt: string; path: string };
 
@@ -125,11 +127,16 @@ export class VaultRuntime {
   private workspaceTask?: Promise<void>;
   private closing = false;
   private readonly writes = new AsyncMutex();
-  private readonly subscribers = new Set<(events: VaultChangeEvent[]) => void>();
+  private readonly subscribers = new Set<(changeSet: VaultChangeSet) => void>();
+  private readonly changeHistory: VaultChangeSet[] = [];
+  private readonly pendingWrites = new Map<string, string>();
+  private changeSequence = 0;
+  private projectionGeneration = 1;
 
   private constructor(vaultRoot: string, indexer: VaultIndexer) {
     this.vaultRoot = vaultRoot;
     this.indexer = indexer;
+    this.projectionGeneration = Number(indexer.store.getState("projection_generation") ?? "1") || 1;
   }
 
   /** Construct the vault Git adapter only for an operation that needs Git. */
@@ -141,7 +148,8 @@ export class VaultRuntime {
   static async start(vaultRoot: string, options?: { workspaceRoot?: string }): Promise<VaultRuntime> {
     const indexer = new VaultIndexer(vaultRoot);
     try {
-      indexer.fullRebuild();
+      const warm = indexer.warmRead();
+      if (!warm.valid) indexer.fullRebuild();
       const service = new VaultRuntime(indexer.vaultRoot, indexer);
       const workspaceRequested = Boolean(options?.workspaceRoot) || Boolean(process.env.CORTEX_WORKSPACE_ROOT) || existsSync(workspaceManifestPath(service.vaultRoot));
       if (workspaceRequested) await service.startWorkspace(options?.workspaceRoot);
@@ -305,9 +313,22 @@ export class VaultRuntime {
     });
   }
 
-  subscribe(listener: (events: VaultChangeEvent[]) => void): () => void {
+  subscribe(listener: (changeSet: VaultChangeSet) => void): () => void {
     this.subscribers.add(listener);
     return () => this.subscribers.delete(listener);
+  }
+
+  /** Return buffered changes after a sequence, or require a state refetch when the buffer cannot bridge the gap. */
+  changesSince(sequence: number): { changes: VaultChangeSet[]; resyncRequired: boolean; sequence: number; generation: number } {
+    const currentSequence = this.changeSequence;
+    if (!Number.isInteger(sequence) || sequence < 0 || sequence > currentSequence) {
+      return { changes: [], resyncRequired: true, sequence: currentSequence, generation: this.projectionGeneration };
+    }
+    if (sequence === currentSequence) return { changes: [], resyncRequired: false, sequence: currentSequence, generation: this.projectionGeneration };
+    const changes = this.changeHistory.filter((change) => change.sequence > sequence);
+    const first = changes[0];
+    const contiguous = Boolean(first && first.sequence === sequence + 1);
+    return { changes: contiguous ? changes : [], resyncRequired: !contiguous, sequence: currentSequence, generation: this.projectionGeneration };
   }
 
   private normalizeEventPath(path: string, root: string = this.vaultRoot): string {
@@ -318,26 +339,50 @@ export class VaultRuntime {
     return resolve(root, relative);
   }
 
-  private publishChanges(events: Array<{ type: "create" | "update" | "delete"; path: string }>, repositoryId?: string): void {
+  private publishChanges(events: Array<{ type: "create" | "update" | "delete"; path: string; scopes?: VaultChangeScope[] }>, repositoryId?: string): void {
     const root = repositoryId ? this.requireRepository(repositoryId).absolutePath : this.vaultRoot;
-    const changes = events.map((event) => {
+    const changes = events.flatMap((event) => {
       const relative = repositoryRelativePath(root, event.path);
       const repository = repositoryId ? { repository: repositoryId } : {};
-      if (event.type === "delete" || !existsSync(event.path)) return { type: event.type, path: relative, ...repository } satisfies VaultChangeEvent;
+      const scopes: VaultChangeScope[] = repositoryId
+        ? ["repository", "graph"]
+        : event.type === "delete" || event.type === "create"
+          ? ["content", "catalog", "tree", "graph"]
+          : ["content", "graph"];
+      const eventScopes = event.scopes ?? scopes;
+      if (!repositoryId && event.type !== "delete" && this.pendingWrites.get(relative)) {
+        const expectedHash = this.pendingWrites.get(relative);
+        try {
+          if (expectedHash === hashContent(readFileSync(event.path))) {
+            this.pendingWrites.delete(relative);
+            return [];
+          }
+        } catch {
+          // The watcher may race a rename; retain the pending marker until a later event.
+        }
+      }
+      if (event.type === "delete" || !existsSync(event.path)) return { type: event.type, path: relative, scopes: eventScopes, ...repository } satisfies VaultChangeEvent;
       try {
         const stats = statSync(event.path);
         return {
           type: event.type,
           path: relative,
+          scopes: eventScopes,
           content_hash: hashContent(readFileSync(event.path)),
           mtime: new Date(stats.mtimeMs).toISOString(),
           ...repository,
         } satisfies VaultChangeEvent;
       } catch {
-        return { type: event.type, path: relative, ...repository } satisfies VaultChangeEvent;
+        return { type: event.type, path: relative, scopes: eventScopes, ...repository } satisfies VaultChangeEvent;
       }
-    });
-    for (const subscriber of this.subscribers) subscriber(changes);
+    }).flat();
+    if (events.length > 0 && changes.length === 0) return;
+    this.changeSequence += 1;
+    this.projectionGeneration += 1;
+    const changeSet: VaultChangeSet = { sequence: this.changeSequence, generation: this.projectionGeneration, events: changes };
+    this.changeHistory.push(changeSet);
+    if (this.changeHistory.length > MAX_CHANGE_HISTORY) this.changeHistory.splice(0, this.changeHistory.length - MAX_CHANGE_HISTORY);
+    for (const subscriber of this.subscribers) subscriber(changeSet);
   }
 
   private relativePath(input: string, allowMissing = false): { absolute: string; relative: string } {
@@ -512,7 +557,7 @@ export class VaultRuntime {
       const body = replaceSectionBody(original, section, newContent.replace(/\r\n/g, "\n").replace(/^\n+|\n+$/g, ""));
       const updated = { ...parsed.frontmatter!, updated_at: new Date().toISOString() };
       const content = serializeFrontmatter(updated) + parseMarkdown(body).body;
-      return this.writeAndIndexLocked(note.path, content);
+      return this.writeAndIndexLocked(note.path, content, "update", ["content", "graph"]);
     });
   }
 
@@ -548,7 +593,10 @@ export class VaultRuntime {
       if (this.workspace) this.validateAppliesTo(frontmatter.applies_to);
       const body = input.body ?? parsed.body;
       const content = serializeFrontmatter(frontmatter) + body;
-      const result = this.writeAndIndexLocked(note.path, content);
+      const metadataScopes: VaultChangeScope[] = input.metadata
+        ? ["content", "catalog", "tree", "graph"]
+        : ["content", "graph"];
+      const result = this.writeAndIndexLocked(note.path, content, "update", metadataScopes);
       if (this.workspace) this.refreshWorkspaceAttachments();
       return result;
     });
@@ -563,7 +611,7 @@ export class VaultRuntime {
       const relative = input.path ? this.relativePath(input.path, true).relative : this.nextNotePath(slugify(frontmatter.title));
       if (extname(relative).toLocaleLowerCase() !== ".md") throw new ServiceError("INVALID_INPUT", "Notes must use a .md path.");
       if (existsSync(resolve(this.vaultRoot, relative))) throw new ServiceError("CONFLICT", `Note path '${relative}' already exists.`);
-      const result = this.writeAndIndexLocked(relative, content);
+      const result = this.writeAndIndexLocked(relative, content, "create", ["content", "catalog", "tree", "graph"]);
       if (this.workspace) this.refreshWorkspaceAttachments();
       return { ...result, id: frontmatter.id };
     });
@@ -577,7 +625,7 @@ export class VaultRuntime {
     }
   }
 
-  private writeAndIndexLocked(relative: string, content: string): WriteResult {
+  private writeAndIndexLocked(relative: string, content: string, eventType: "create" | "update" = "update", scopes?: VaultChangeScope[]): WriteResult {
     const { absolute } = this.relativePath(relative, true);
     mkdirSync(dirname(absolute), { recursive: true });
     const temporary = `${absolute}.cortex-${randomUUID()}.tmp`;
@@ -594,7 +642,14 @@ export class VaultRuntime {
       throw new ServiceError("INDEX_SYNC_FAILED", `File '${relative}' was written but indexing failed: ${error instanceof Error ? error.message : String(error)}`);
     }
     const stats = statSync(absolute);
-    return { path: relative, mtime: new Date(stats.mtimeMs).toISOString(), content_hash: hashContent(content), index };
+    const contentHash = hashContent(content);
+    this.publishChanges([{ type: eventType, path: absolute, scopes }]);
+    // Mark the accepted bytes after publishing the app-owned event. The
+    // watcher callback runs through the same mutex and will consume this
+    // marker to suppress its echo.
+    this.pendingWrites.set(relative, contentHash);
+    if (this.pendingWrites.size > MAX_PENDING_WRITES) this.pendingWrites.delete(this.pendingWrites.keys().next().value!);
+    return { path: relative, mtime: new Date(stats.mtimeMs).toISOString(), content_hash: contentHash, index };
   }
 
   private nextNotePath(slug: string): string {
@@ -688,6 +743,7 @@ export class VaultRuntime {
       }
       const index = this.indexer.incrementalRebuild([resolve(this.vaultRoot, note.path)]);
       const stats = statSync(resolve(this.vaultRoot, note.path));
+      this.publishChanges([{ type: "update", path: resolve(this.vaultRoot, note.path), scopes: ["content", "catalog", "tree", "graph"] }]);
       return { path: note.path, revision, mtime: new Date(stats.mtimeMs).toISOString(), index };
     });
   }

@@ -67,6 +67,53 @@ describe("Phase 1 indexer", () => {
     indexer.close();
   });
 
+  test("skips duplicate watcher bytes without reparsing or mutating the projection", () => {
+    const vault = tempVault();
+    const notePath = join(vault, "notes", "engine.md");
+    const indexer = new VaultIndexer(vault);
+    indexer.fullRebuild();
+
+    const report = indexer.incrementalRebuild([notePath]);
+    expect(report.work.changedFilesRead).toBe(1);
+    expect(report.work.scanFiles).toBe(0);
+    expect(report.work.scanNotes).toBe(0);
+    expect(report.work.projectionWrites).toBe(0);
+    expect(report.work.projectionDeletes).toBe(0);
+    expect(report.work.graphRebuilds).toBe(0);
+    expect(report.work.linkResolutionRuns).toBe(0);
+    expect(report.work.wikilinkEdgeRefreshes).toBe(0);
+    indexer.close();
+  });
+
+  test("validates a warm projection and falls back on source or generation drift", () => {
+    const vault = tempVault();
+    const notePath = join(vault, "notes", "engine.md");
+    const indexer = new VaultIndexer(vault);
+    indexer.fullRebuild();
+    expect(indexer.warmRead()).toMatchObject({ valid: true, reason: "validated" });
+    writeFileSync(notePath, readFileSync(notePath, "utf8") + "\nWarm read invalidation.\n");
+    expect(indexer.warmRead().valid).toBe(false);
+    indexer.fullRebuild();
+    indexer.store.setState("projection_generation_status", "building");
+    expect(indexer.warmRead()).toMatchObject({ valid: false, reason: "generation-incomplete" });
+    indexer.store.setState("projection_generation_status", "complete");
+    indexer.store.setState("projection_version", "stale");
+    expect(indexer.warmRead()).toMatchObject({ valid: false, reason: "projection-version" });
+    indexer.close();
+  });
+
+  test("reuses a validated projection across indexer restarts", () => {
+    const vault = tempVault();
+    const first = new VaultIndexer(vault);
+    const rebuilt = first.fullRebuild();
+    expect(rebuilt.work.projectionResets).toBe(1);
+    first.close();
+    const restarted = new VaultIndexer(vault);
+    expect(restarted.warmRead()).toMatchObject({ valid: true, reason: "validated" });
+    expect(restarted.store.counts().noteCount).toBe(2);
+    restarted.close();
+  });
+
   test("invalid Markdown is represented by diagnostics and does not remain searchable", () => {
     const vault = tempVault();
     const brokenPath = join(vault, "broken.md");
