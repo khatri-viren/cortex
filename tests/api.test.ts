@@ -6,6 +6,7 @@ import { createApiServer } from "../src/api/server.js";
 import { reconcileMarkdown } from "../src/core/reconcile.js";
 import { initVault } from "../src/core/vault.js";
 import { VaultRuntime } from "../src/core/runtime.js";
+import { pdfRendererExecutablePath } from "../src/core/pdf-export.js";
 
 function temporaryVault(): string {
   return initVault(join(mkdtempSync(join(tmpdir(), "cortex-phase3-api-")), "vault"));
@@ -129,6 +130,33 @@ describe("Phase 3 local API", () => {
       const after = await (await fetch(base + "/api/note?selector=project-map.md&source=true")).json() as { note: { content_hash: string } };
       expect(after.note.content_hash).toBe(before.note.content_hash);
     });
+  });
+
+  test("delivers PDF bytes with a checksum and explicit length", async () => {
+    const executable = pdfRendererExecutablePath();
+    if (!executable) return;
+    const previous = process.env.CORTEX_CHROMIUM_PATH;
+    process.env.CORTEX_CHROMIUM_PATH = executable;
+    try {
+      await withApi(async (base) => {
+        const response = await fetch(base + "/api/note/export/pdf", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ note: "project-map.md", body: "# Export\n\nBounded bytes.", title: "Export" }),
+        });
+        expect(response.status).toBe(200);
+        expect(response.headers.get("content-type")).toContain("application/pdf");
+        expect(response.headers.get("content-length")).toBeTruthy();
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        expect(Number(response.headers.get("content-length"))).toBe(bytes.length);
+        const checksum = await crypto.subtle.digest("SHA-256", bytes);
+        const actual = Array.from(new Uint8Array(checksum), (byte) => byte.toString(16).padStart(2, "0")).join("");
+        expect(response.headers.get("x-cortex-pdf-sha256")).toBe(actual);
+      });
+    } finally {
+      if (previous === undefined) delete process.env.CORTEX_CHROMIUM_PATH;
+      else process.env.CORTEX_CHROMIUM_PATH = previous;
+    }
   });
 
   test("reconciles disjoint sections and reports overlapping conflicts", () => {

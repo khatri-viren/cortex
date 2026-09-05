@@ -6,7 +6,11 @@ export type ServiceErrorCode =
   | "GIT_DIRTY"
   | "INDEX_SYNC_FAILED"
   | "VAULT_INVALID"
-  | "EXPORT_RENDERER_UNAVAILABLE";
+  | "EXPORT_RENDERER_UNAVAILABLE"
+  | "EXPORT_TOO_LARGE"
+  | "EXPORT_QUEUE_FULL"
+  | "EXPORT_CANCELLED"
+  | "EXPORT_DEADLINE_EXCEEDED";
 
 export class ServiceError extends Error {
   readonly code: ServiceErrorCode;

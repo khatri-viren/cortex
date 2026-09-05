@@ -27,7 +27,7 @@ import { startWatcher, type WatcherHandle } from "./watcher.js";
 import { isWorkspaceIgnored, loadWorkspaceConfig, workspaceIgnorePatterns, workspaceManifestPath, repositoryRelativePath as workspaceRepositoryRelativePath, type WorkspaceConfig, type WorkspaceRepository } from "./workspace.js";
 import { WorkspaceIndexer } from "./workspace-indexer.js";
 import { resolveWorkspaceAttachments, requireAppliesToRepository, type NoteAttachmentInput } from "./workspace-attachments.js";
-import { renderMarkdownPdf } from "./pdf-export.js";
+import { PdfExportJobManager, type PdfExportArtifact } from "./pdf-export-jobs.js";
 
 const MAX_SEARCH_LIMIT = 50;
 const MAX_LIST_LIMIT = 100;
@@ -132,6 +132,7 @@ export class VaultRuntime {
   private readonly subscribers = new Set<(changeSet: VaultChangeSet) => void>();
   private readonly changeHistory: VaultChangeSet[] = [];
   private readonly pendingWrites = new Map<string, string>();
+  private readonly pdfExports = new PdfExportJobManager();
   private changeSequence = 0;
   private projectionGeneration = 1;
 
@@ -281,6 +282,7 @@ export class VaultRuntime {
 
   async close(): Promise<void> {
     this.closing = true;
+    this.pdfExports.close();
     await this.watcher?.stop();
     await this.watcher?.flushSnapshot();
     for (const handle of this.repoWatchers.values()) {
@@ -517,13 +519,18 @@ export class VaultRuntime {
     return { note, markdown, body: parsed.body, frontmatter, sections: parsed.sections, diagnostics: parsed.diagnostics };
   }
 
-  async exportPdf(selector: NoteSelector, body?: string, title?: string): Promise<Buffer> {
+  async exportPdf(selector: NoteSelector, body?: string, title?: string, options?: { signal?: AbortSignal; deadlineMs?: number }): Promise<Buffer> {
+    const artifact = await this.exportPdfArtifact(selector, body, title, options);
+    return artifact.pdf;
+  }
+
+  async exportPdfArtifact(selector: NoteSelector, body?: string, title?: string, options?: { signal?: AbortSignal; deadlineMs?: number }): Promise<PdfExportArtifact> {
     const note = this.noteRow(selector);
     const absolute = resolve(this.vaultRoot, note.path);
     const source = body === undefined || title === undefined ? this.getSource(selector) : undefined;
     const exportBody = body ?? source?.body ?? "";
     const exportTitle = (title ?? source?.frontmatter.title ?? note.title).trim();
-    return renderMarkdownPdf({ notePath: absolute, title: exportTitle, body: exportBody, vaultRoot: this.vaultRoot });
+    return this.pdfExports.submit({ notePath: absolute, title: exportTitle, body: exportBody, vaultRoot: this.vaultRoot }, options);
   }
 
   vaultTree(): VaultTree {

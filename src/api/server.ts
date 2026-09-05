@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { reconcileMarkdown } from "../core/reconcile.js";
@@ -15,13 +16,17 @@ const JSON_HEADERS = {
 
 type JsonObject = Record<string, unknown>;
 
+function stableId(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
 function json(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), { status, headers: JSON_HEADERS });
 }
 
 function errorResponse(cause: unknown): Response {
   if (cause instanceof ServiceError) {
-    const status = cause.code === "NOT_FOUND" ? 404 : cause.code === "CONFLICT" || cause.code === "GIT_DIRTY" ? 409 : cause.code === "VAULT_INVALID" ? 422 : cause.code === "EXPORT_RENDERER_UNAVAILABLE" ? 503 : 400;
+    const status = cause.code === "NOT_FOUND" ? 404 : cause.code === "CONFLICT" || cause.code === "GIT_DIRTY" ? 409 : cause.code === "VAULT_INVALID" ? 422 : cause.code === "EXPORT_RENDERER_UNAVAILABLE" ? 503 : cause.code === "EXPORT_TOO_LARGE" ? 413 : cause.code === "EXPORT_QUEUE_FULL" ? 429 : cause.code === "EXPORT_DEADLINE_EXCEEDED" ? 408 : cause.code === "EXPORT_CANCELLED" ? 499 : 400;
     return json({ error: { code: cause.code, message: cause.message, details: cause.details } }, status);
   }
   return json({ error: { code: "INTERNAL_ERROR", message: cause instanceof Error ? cause.message : String(cause) } }, 500);
@@ -143,18 +148,22 @@ export function createApiServer(runtime: VaultRuntime, port: number, uiDist?: st
           return json(url.searchParams.get("source") === "true" ? runtime.getSource(selector) : runtime.getNote(selector));
         }
         if (url.pathname === "/api/note/export/pdf" && request.method === "POST") {
+          const contentLength = Number(request.headers.get("content-length") ?? "0");
+          if (Number.isFinite(contentLength) && contentLength > 8 * 1024 * 1024 + 64 * 1024) throw new ServiceError("EXPORT_TOO_LARGE", "PDF export request is too large.");
           const input = await body(request);
           const note = requiredString(input, "note");
           const markdownBody = input.body === undefined ? undefined : typeof input.body === "string" ? input.body : (() => { throw new ServiceError("INVALID_INPUT", "Field 'body' must be a string."); })();
           const title = input.title === undefined ? undefined : typeof input.title === "string" ? input.title : (() => { throw new ServiceError("INVALID_INPUT", "Field 'title' must be a string."); })();
-          logger.info({ note, title, bodyLength: markdownBody?.length ?? null }, "[PDF-EXPORT] server:start");
+          logger.info({ noteHash: stableId(note), titleLength: title?.length ?? null, bodyLength: markdownBody?.length ?? null }, "[PDF-EXPORT] server:start");
           try {
-            const pdf = await runtime.exportPdf(note, markdownBody, title);
+            const started = performance.now();
+            const artifact = await runtime.exportPdfArtifact(note, markdownBody, title, { signal: request.signal });
             const filename = title?.trim() || runtime.getNote(note).note.title;
-            logger.info({ note, filename: exportFilename(filename), bytes: pdf.length }, "[PDF-EXPORT] server:complete");
-            return new Response(new Uint8Array(pdf), { headers: { "content-type": "application/pdf", "content-disposition": `attachment; filename="${exportFilename(filename)}"`, "cache-control": "no-store", "access-control-allow-origin": "http://127.0.0.1:5175" } });
+            artifact.timings.deliveryMs = performance.now() - started;
+            logger.info({ noteHash: stableId(note), renderer: artifact.renderer, bytes: artifact.pdf.length, ...artifact.timings }, "[PDF-EXPORT] server:complete");
+            return new Response(new Uint8Array(artifact.pdf), { headers: { "content-type": "application/pdf", "content-length": String(artifact.pdf.length), "x-cortex-pdf-sha256": artifact.checksum, "x-cortex-pdf-renderer": artifact.renderer, "content-disposition": `attachment; filename="${exportFilename(filename)}"`, "cache-control": "no-store", "access-control-allow-origin": "http://127.0.0.1:5175" } });
           } catch (cause) {
-            logger.error({ note, err: cause }, "[PDF-EXPORT] server:failed");
+            logger.error({ noteHash: stableId(note), errorCode: cause instanceof ServiceError ? cause.code : "INTERNAL_ERROR", cancelled: cause instanceof ServiceError && cause.code === "EXPORT_CANCELLED", err: cause }, "[PDF-EXPORT] server:failed");
             throw cause;
           }
         }

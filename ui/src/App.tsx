@@ -313,6 +313,7 @@ function WorkspaceApp() {
   const [isSaving, setIsSaving] = useState(false);
   const [indexRefreshError, setIndexRefreshError] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const pdfAbortRef = useRef<AbortController | undefined>(undefined);
   const [isCreatingNote, setIsCreatingNote] = useState(false);
   const [isRefreshingCreatedNote, setIsRefreshingCreatedNote] = useState(false);
   const [creationIssue, setCreationIssue] = useState<NoteCreationIssue>();
@@ -833,19 +834,21 @@ function WorkspaceApp() {
       return;
     }
     setIsExportingPdf(true);
+    const abortController = new AbortController();
+    pdfAbortRef.current = abortController;
     setStatus("Exporting PDF...");
     try {
-      const result = await exportNotePdf(source.note.path, draftRef.current, currentMetadata.title);
+      const result = await exportNotePdf(source.note.path, draftRef.current, currentMetadata.title, abortController.signal);
       const nativeWindow = window as Window & { __TAURI__?: unknown };
       console.info("[PDF-EXPORT] delivery:detect", { isTauri, hasGlobalTauri: Boolean(nativeWindow.__TAURI__) });
       if (nativeWindow.__TAURI__) {
         const bytes = Array.from(new Uint8Array(await result.blob.arrayBuffer()));
-        console.info("[PDF-EXPORT] delivery:native-start", { filename: result.filename, bytes: bytes.length });
+        console.info("[PDF-EXPORT] delivery:native-start", { bytes: bytes.length });
         const savedPath = await invoke<string | null>("save_pdf", { filename: result.filename, bytes });
-        console.info("[PDF-EXPORT] delivery:native-complete", { savedPath });
+        console.info("[PDF-EXPORT] delivery:native-complete", { saved: Boolean(savedPath) });
         setStatus(savedPath ? `PDF saved to ${savedPath}` : "PDF export canceled");
       } else {
-        console.info("[PDF-EXPORT] delivery:browser-start", { filename: result.filename, bytes: result.blob.size });
+        console.info("[PDF-EXPORT] delivery:browser-start", { bytes: result.blob.size });
         const url = URL.createObjectURL(result.blob);
         const anchor = document.createElement("a");
         anchor.href = url;
@@ -854,15 +857,21 @@ function WorkspaceApp() {
         anchor.click();
         anchor.remove();
         URL.revokeObjectURL(url);
-        console.info("[PDF-EXPORT] delivery:browser-complete", { filename: result.filename });
+        console.info("[PDF-EXPORT] delivery:browser-complete", { bytes: result.blob.size });
         setStatus("PDF exported");
       }
     } catch (cause: unknown) {
       console.error("[PDF-EXPORT] failed", cause);
       setStatus(cause instanceof Error ? `PDF export failed: ${cause.message}` : `PDF export failed: ${String(cause)}`);
     } finally {
+      if (pdfAbortRef.current === abortController) pdfAbortRef.current = undefined;
       setIsExportingPdf(false);
     }
+  }
+
+  function cancelPdfExport() {
+    pdfAbortRef.current?.abort();
+    setStatus("Cancelling PDF export…");
   }
 
   function confirmDiscard(message: string): boolean {
@@ -1168,6 +1177,7 @@ function WorkspaceApp() {
                   <FileDownIcon className={isExportingPdf ? "animate-pulse" : undefined} />
                   <span className="hidden sm:inline">{isExportingPdf ? "Exporting…" : "Export PDF"}</span>
                 </Button>
+                {isExportingPdf && <Button variant="ghost" size="sm" className="shrink-0" aria-label="Cancel PDF export" onClick={cancelPdfExport}>Cancel</Button>}
                 <Tooltip>
                   <TooltipTrigger
                     render={<Button variant="ghost" size="icon-sm" className="shrink-0" aria-label="New note" data-testid="new-note-button" disabled={isCreatingNote} onClick={() => void createNewNote()} />}

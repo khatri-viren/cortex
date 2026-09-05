@@ -134,13 +134,14 @@ export function updateNote(
   });
 }
 
-export async function exportNotePdf(note: string, body: string, title: string): Promise<{ blob: Blob; filename: string }> {
+export async function exportNotePdf(note: string, body: string, title: string, signal?: AbortSignal): Promise<{ blob: Blob; filename: string; checksum?: string }> {
   const connection = getRuntimeConnection();
   const origin = connection.origin;
-  console.info("[PDF-EXPORT] request:start", { note, title, bodyLength: body.length, origin });
+  console.info("[PDF-EXPORT] request:start", { bodyLength: body.length, titleLength: title.length, origin });
   const response = await connection.request("/api/note/export/pdf", {
     method: "POST",
     headers: { "content-type": "application/json" },
+    signal,
     body: JSON.stringify({ note, body, title }),
   });
   console.info("[PDF-EXPORT] request:response", { status: response.status, contentType: response.headers.get("content-type") });
@@ -155,8 +156,14 @@ export async function exportNotePdf(note: string, body: string, title: string): 
   const match = disposition.match(/filename="([^"]+)"/i);
   const blob = await response.blob();
   const filename = match?.[1] ?? "untitled-note.pdf";
-  console.info("[PDF-EXPORT] request:complete", { filename, bytes: blob.size, type: blob.type });
-  return { blob, filename };
+  const checksum = response.headers.get("x-cortex-pdf-sha256") ?? undefined;
+  if (checksum && typeof crypto !== "undefined" && crypto.subtle) {
+    const digest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+    const actual = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    if (actual !== checksum.toLowerCase()) throw new Error("PDF checksum verification failed.");
+  }
+  console.info("[PDF-EXPORT] request:complete", { bytes: blob.size, type: blob.type, checksumVerified: Boolean(checksum) });
+  return { blob, filename, checksum };
 }
 
 export function reconcile(note: string, baseMarkdown: string, localMarkdown: string): Promise<ReconcileResponse> {
