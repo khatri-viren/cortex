@@ -1,4 +1,4 @@
-import type { IndexReport } from "./index-types.js";
+import type { IndexReport, WorkspaceIndexReport } from "./index-types.js";
 import type { Diagnostic, NoteFrontmatter, NoteType, Section } from "./types.js";
 
 export type IndexPhase = "disabled" | "warming" | "current" | "rebuilding" | "error";
@@ -151,6 +151,11 @@ export type IndexCounts = {
   graphNodeCount: number;
   graphEdgeCount: number;
   diagnosticCount: number;
+};
+
+export type IndexRefreshResult = {
+  index: IndexReport;
+  workspace?: WorkspaceIndexReport;
 };
 
 export type VaultCheckResult = {

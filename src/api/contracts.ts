@@ -1,5 +1,5 @@
 import type { Diagnostic, NoteFrontmatter, Section } from "../core/types.js";
-import type { DiffResult, GitCommit, GitStatusEntry, GraphEdgeRecord, GraphNodeRecord, GraphQueryResult, HealthResult, HistoryResult, IndexPhase, NoteMetadataPatch, NoteRecord, NoteSource, RepositoryRestoreResult, VaultChangeEvent, VaultCheckResult, VaultTree, VaultTreeNode, WorkspaceStatus } from "../core/runtime-types.js";
+import type { DiffResult, GitCommit, GitStatusEntry, GraphEdgeRecord, GraphNodeRecord, GraphQueryResult, HealthResult, HistoryResult, IndexPhase, IndexRefreshResult, NoteMetadataPatch, NoteRecord, NoteSource, RepositoryRestoreResult, VaultChangeEvent, VaultCheckResult, VaultTree, VaultTreeNode, WorkspaceStatus } from "../core/runtime-types.js";
 
 /** Stable HTTP/MCP/UI wire aliases over the protocol-neutral core types. */
 export type ApiSection = Section;
@@ -22,6 +22,7 @@ export type ApiGitStatusEntry = GitStatusEntry;
 export type ApiVaultCheck = VaultCheckResult;
 export type ApiWorkspaceStatus = WorkspaceStatus;
 export type ApiRepoRestoreResult = RepositoryRestoreResult;
+export type ApiIndexRefreshResult = IndexRefreshResult;
 
 export type ApiNoteUpdateInput = {
   note: string;
@@ -29,6 +30,12 @@ export type ApiNoteUpdateInput = {
   body?: string;
   metadata?: ApiNoteMetadataPatch;
   markdown?: string;
+};
+
+export type ApiPdfExportInput = {
+  note: string;
+  body?: string;
+  title?: string;
 };
 
 export type ApiContext = {

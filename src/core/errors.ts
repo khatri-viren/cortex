@@ -5,7 +5,8 @@ export type ServiceErrorCode =
   | "AMBIGUOUS_SECTION"
   | "GIT_DIRTY"
   | "INDEX_SYNC_FAILED"
-  | "VAULT_INVALID";
+  | "VAULT_INVALID"
+  | "EXPORT_RENDERER_UNAVAILABLE";
 
 export class ServiceError extends Error {
   readonly code: ServiceErrorCode;

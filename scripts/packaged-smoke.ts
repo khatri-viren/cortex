@@ -68,6 +68,9 @@ async function stopProcess(process: Bun.Subprocess): Promise<void> {
 async function runSmoke(args: SmokeArguments): Promise<void> {
   const sidecar = join(args.bundle, "Contents", "MacOS", "cortex-sidecar");
   const uiDist = join(args.bundle, "Contents", "Resources", "dist");
+  const packagedChromium = process.platform === "darwin"
+    ? join(args.bundle, "Contents", "Resources", "chromium", "Chromium.app", "Contents", "MacOS", "Google Chrome for Testing")
+    : join(args.bundle, "Contents", "Resources", "chromium", process.platform === "win32" ? "chrome.exe" : "chrome");
   const tempRoot = join(Bun.env.TMPDIR ?? "/tmp", `cortex-packaged-smoke-${crypto.randomUUID()}`);
   const vaultA = join(tempRoot, "vault-a");
   const vaultB = join(tempRoot, "vault-b");
@@ -81,7 +84,7 @@ async function runSmoke(args: SmokeArguments): Promise<void> {
     for (const [vault, port] of [[vaultA, ports[0]], [vaultB, ports[1]]] as const) {
       const child = Bun.spawn([sidecar, "dev", "--vault", vault, "--port", String(port)], {
         cwd: uiDist,
-        env: { ...Bun.env, CORTEX_PACKAGED: "1", CORTEX_UI_DIST: uiDist },
+        env: { ...Bun.env, CORTEX_PACKAGED: "1", CORTEX_UI_DIST: uiDist, CORTEX_PACKAGED_CHROMIUM_PATH: packagedChromium },
         stdout: "ignore",
         stderr: "ignore",
       });
@@ -93,6 +96,13 @@ async function runSmoke(args: SmokeArguments): Promise<void> {
     if (responses.some((response) => !response.ok)) throw new Error("A packaged runtime did not serve the bundled UI.");
     const html = await Promise.all(responses.map((response) => response.text()));
     if (html.some((document) => !document.toLowerCase().includes("<!doctype html>"))) throw new Error("A packaged runtime did not serve an HTML document.");
+    const pdfResponses = await Promise.all(ports.map((port) => fetch(`http://127.0.0.1:${port}/api/note/export/pdf`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ note: "project-map.md", title: "Packaged Smoke", body: "# Packaged Smoke\n\nPDF export check." }),
+    })));
+    if (pdfResponses.some((response) => !response.ok || response.headers.get("content-type") !== "application/pdf")) throw new Error("Packaged runtime did not generate a PDF.");
+    if ((await Promise.all(pdfResponses.map((response) => response.arrayBuffer()))).some((bytes) => new TextDecoder().decode(bytes.slice(0, 5)) !== "%PDF-")) throw new Error("Packaged PDF export did not return a valid PDF signature.");
     if (markdownSnapshot(vaultA) !== snapshots[0] || markdownSnapshot(vaultB) !== snapshots[1]) throw new Error("Packaged runtime changed vault Markdown.");
     console.log(`Packaged two-vault smoke passed for ${basename(args.bundle)} on ports ${ports.join(" and ")}.`);
   } finally {

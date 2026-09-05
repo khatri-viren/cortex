@@ -8,6 +8,7 @@ import { addMissingSectionMarkers, findSections, getSectionBody, parseMarkdown, 
 import { reconcileMarkdown } from "../src/core/reconcile.js";
 import { migrateVault } from "../src/core/migration.js";
 import { initVault, scanVault } from "../src/core/vault.js";
+import { markdownToHtml, normalizeMarkdownForPdf } from "../src/core/pdf-export.js";
 
 function temporaryDirectory(): string {
   return mkdtempSync(join(tmpdir(), "cortex-phase0-"));
@@ -143,6 +144,60 @@ describe("markdown", () => {
       expect(result.markdown).toContain("Remote sibling");
       expect(result.markdown).toContain("# Sibling");
     }
+  });
+});
+
+describe("markdown PDF export", () => {
+  test("strips frontmatter markers and duplicate title headings without touching code or user comments", () => {
+    const body = [
+      "# Export title",
+      "",
+      "<!-- cortex:section id=\"sec-11111111-1111-4111-8111-111111111111\" -->",
+      "",
+      "<!-- keep this comment -->",
+      "",
+      "```md",
+      "<!-- cortex:section id=\"sec-22222222-2222-4222-8222-222222222222\" -->",
+      "[[Keep this link]]",
+      "```",
+      "",
+      "[[Target|Readable]] and [[Other]].",
+      "",
+      "## Details",
+    ].join("\n");
+    const normalized = normalizeMarkdownForPdf({ notePath: "/tmp/note.md", title: "Export title", body, vaultRoot: "/tmp" });
+    expect(normalized.markdown).not.toContain("sec-11111111-1111-4111-8111-111111111111");
+    expect(normalized.markdown).toContain("<!-- keep this comment -->");
+    expect(normalized.markdown).toContain("<!-- cortex:section id=\"sec-22222222-2222-4222-8222-222222222222\" -->");
+    expect(normalized.markdown).toContain("[[Keep this link]]");
+    expect(normalized.markdown).toContain("Readable and Other.");
+    expect(normalized.markdown).not.toMatch(/^# Export title/m);
+    expect(normalized.markdown).toContain("## Details");
+  });
+
+  test("renders GFM tables, task lists, links, and local images", async () => {
+    const root = temporaryDirectory();
+    const notePath = join(root, "note.md");
+    writeFileSync(notePath, "");
+    writeFileSync(join(root, "asset.png"), Buffer.from([137, 80, 78, 71]));
+    const result = await markdownToHtml({
+      notePath,
+      title: "Rendered Note",
+      vaultRoot: root,
+      body: "- [x] Done\n- [ ] Later\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n[Link](https://example.com)\n\n![Asset](asset.png)",
+    });
+    expect(result.html).toContain("<table>");
+    expect(result.html).toContain("type=\"checkbox\"");
+    expect(result.html).toContain("href=\"https://example.com\"");
+    expect(result.html).toContain("data:image/png;base64,");
+    expect(result.html).toContain("<h1 class=\"pdf-title\">Rendered Note</h1>");
+  });
+
+  test("rejects local images outside the vault", async () => {
+    const root = temporaryDirectory();
+    const notePath = join(root, "note.md");
+    writeFileSync(notePath, "");
+    await expect(markdownToHtml({ notePath, title: "Unsafe", vaultRoot: root, body: "![Unsafe](../outside.png)" })).rejects.toThrow("escapes the vault");
   });
 });
 

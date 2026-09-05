@@ -84,6 +84,21 @@ pub fn packaged_ui_dist(resource_dir: &Path) -> PathBuf {
     resource_dir.join("dist")
 }
 
+pub fn packaged_chromium_path(resource_dir: &Path) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        let candidates = [
+            resource_dir.join("chromium/Chromium.app/Contents/MacOS/Google Chrome for Testing"),
+            resource_dir.join("chromium/Chromium.app/Contents/MacOS/Chromium"),
+        ];
+        return candidates
+            .iter()
+            .find(|candidate| candidate.is_file())
+            .cloned()
+            .unwrap_or_else(|| candidates[0].clone());
+    }
+    resource_dir.join("chromium").join(if cfg!(windows) { "chrome.exe" } else { "chrome" })
+}
+
 pub fn resolve_packaged_sidecar(resource_dir: &Path) -> Result<PathBuf, String> {
     let path = packaged_sidecar_path(resource_dir);
     if path.is_file() {
@@ -222,6 +237,7 @@ pub fn spawn(vault_path: &str, port: u16, resource_dir: Option<&Path>) -> Result
             .arg("--port")
             .arg(port.to_string())
             .env("CORTEX_UI_DIST", packaged_ui_dist(resource_dir))
+            .env("CORTEX_PACKAGED_CHROMIUM_PATH", packaged_chromium_path(resource_dir))
             .env("CORTEX_PACKAGED", "1")
             .current_dir(resource_dir)
             .stdout(Stdio::piped())
@@ -397,6 +413,16 @@ mod tests {
     fn packaged_ui_dist_matches_tauri_resource_target() {
         let path = packaged_ui_dist(Path::new("/tmp/cortex-resources"));
         assert!(path.ends_with("dist"));
+    }
+
+    #[test]
+    fn packaged_chromium_matches_resource_target() {
+        let path = packaged_chromium_path(Path::new("/tmp/cortex-resources"));
+        if cfg!(target_os = "macos") {
+            assert!(path.ends_with("Chromium.app/Contents/MacOS/Google Chrome for Testing"));
+        } else {
+            assert!(path.ends_with(if cfg!(windows) { "chromium/chrome.exe" } else { "chromium/chrome" }));
+        }
     }
 
     #[test]

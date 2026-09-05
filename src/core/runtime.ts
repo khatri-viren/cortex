@@ -20,12 +20,13 @@ import { GitAdapter } from "./git.js";
 import { RUNTIME_DIRECTORY } from "./vault.js";
 import type { Diagnostic, NoteFrontmatter, Section } from "./types.js";
 import { ServiceError } from "./errors.js";
-import type { DiffResult, GraphDirection, GraphEdgeRecord, GraphNodeRecord, GraphQueryResult, HealthResult, HistoryResult, IndexPhase, NoteCreateInput, NoteRecord, NoteSelector, NoteSource, NoteUpdateInput, RepositoryDiffResult, RepositoryHistoryResult, RepositoryRestoreResult, VaultChangeEvent, VaultCheckResult, VaultTree, VaultTreeNode, WorkspaceStatus, WriteResult } from "./runtime-types.js";
+import type { DiffResult, GraphDirection, GraphEdgeRecord, GraphNodeRecord, GraphQueryResult, HealthResult, HistoryResult, IndexPhase, IndexRefreshResult, NoteCreateInput, NoteRecord, NoteSelector, NoteSource, NoteUpdateInput, RepositoryDiffResult, RepositoryHistoryResult, RepositoryRestoreResult, VaultChangeEvent, VaultCheckResult, VaultTree, VaultTreeNode, WorkspaceStatus, WriteResult } from "./runtime-types.js";
 import type { IndexReport } from "./index-types.js";
 import { startWatcher, type WatcherHandle } from "./watcher.js";
 import { isWorkspaceIgnored, loadWorkspaceConfig, workspaceIgnorePatterns, workspaceManifestPath, repositoryRelativePath as workspaceRepositoryRelativePath, type WorkspaceConfig, type WorkspaceRepository } from "./workspace.js";
 import { WorkspaceIndexer } from "./workspace-indexer.js";
 import { resolveWorkspaceAttachments, requireAppliesToRepository, type NoteAttachmentInput } from "./workspace-attachments.js";
+import { renderMarkdownPdf } from "./pdf-export.js";
 
 const MAX_SEARCH_LIMIT = 50;
 const MAX_LIST_LIMIT = 100;
@@ -257,6 +258,36 @@ export class VaultRuntime {
     await this.workspaceTask;
   }
 
+  async rebuildIndex(): Promise<IndexRefreshResult> {
+    return this.writes.run(() => {
+      const workspaceExists = Boolean(this.workspace?.workspaceExists && this.workspaceIndexer);
+      if (workspaceExists) {
+        this.workspacePhase = "rebuilding";
+        this.workspaceError = undefined;
+        this.publishChanges([]);
+      }
+
+      try {
+        const index = this.indexer.fullRebuild();
+        const workspace = this.workspaceIndexer?.fullRebuild();
+        if (workspaceExists) {
+          this.refreshWorkspaceAttachments();
+          this.workspacePhase = "current";
+          this.workspaceError = undefined;
+        }
+        this.publishChanges([]);
+        return { index, workspace };
+      } catch (error) {
+        if (workspaceExists) {
+          this.workspacePhase = "error";
+          this.workspaceError = error instanceof Error ? error.message : String(error);
+          this.publishChanges([]);
+        }
+        throw error;
+      }
+    });
+  }
+
   subscribe(listener: (events: VaultChangeEvent[]) => void): () => void {
     this.subscribers.add(listener);
     return () => this.subscribers.delete(listener);
@@ -400,6 +431,15 @@ export class VaultRuntime {
       extra: {},
     } satisfies NoteFrontmatter;
     return { note, markdown, body: parsed.body, frontmatter, sections: parsed.sections, diagnostics: parsed.diagnostics };
+  }
+
+  async exportPdf(selector: NoteSelector, body?: string, title?: string): Promise<Buffer> {
+    const note = this.noteRow(selector);
+    const absolute = resolve(this.vaultRoot, note.path);
+    const source = body === undefined || title === undefined ? this.getSource(selector) : undefined;
+    const exportBody = body ?? source?.body ?? "";
+    const exportTitle = (title ?? source?.frontmatter.title ?? note.title).trim();
+    return renderMarkdownPdf({ notePath: absolute, title: exportTitle, body: exportBody, vaultRoot: this.vaultRoot });
   }
 
   vaultTree(): VaultTree {

@@ -13,8 +13,17 @@ import {
 } from "../scripts/build-sidecar.js";
 import { buildManifest, parseManifestArguments } from "../scripts/build-update-manifest.js";
 import { verifyBundleLayout } from "../scripts/verify-bundle.js";
+import { loggerOptions } from "../src/logger.js";
 
 const root = resolve(import.meta.dir, "..");
+
+test("packaged logger options do not require a dynamic pretty transport", () => {
+  expect(loggerOptions(true)).toEqual({ level: "info" });
+  expect(loggerOptions(false)).toMatchObject({
+    level: "info",
+    transport: { target: "pino-pretty" },
+  });
+});
 
 test("desktop packaging names the sidecar for the active Rust target", () => {
   const target = targetTriple();
@@ -50,7 +59,7 @@ test("Tauri release config packages the UI resource and external sidecar", () =>
   expect(config.build?.devUrl).toBe("http://127.0.0.1:5175");
   expect(config.build?.beforeBuildCommand).toContain("desktop:sidecar");
   expect(config.bundle?.externalBin).toContain("binaries/cortex-sidecar");
-  expect(config.bundle?.resources).toEqual({ "../dist": "dist" });
+  expect(config.bundle?.resources).toEqual({ "../dist": "dist", "../../resources/chromium": "chromium" });
 });
 
 test("update manifest tooling accepts deterministic release metadata", () => {
@@ -74,10 +83,12 @@ test("bundle verification requires the unsigned app layout to contain sidecar an
   const bundle = join(mkdtempSync(join(tmpdir(), "cortex-bundle-test-")), "Cortex.app");
   mkdirSync(join(bundle, "Contents", "MacOS"), { recursive: true });
   mkdirSync(join(bundle, "Contents", "Resources", "dist"), { recursive: true });
+  mkdirSync(join(bundle, "Contents", "Resources", "chromium", "Chromium.app", "Contents", "MacOS"), { recursive: true });
   const sidecar = join(bundle, "Contents", "MacOS", "cortex-sidecar");
   writeFileSync(sidecar, "sidecar");
   chmodSync(sidecar, 0o755);
   writeFileSync(join(bundle, "Contents", "Resources", "dist", "index.html"), "<html></html>");
+  writeFileSync(join(bundle, "Contents", "Resources", "chromium", "Chromium.app", "Contents", "MacOS", "Google Chrome for Testing"), "chromium");
   const result = verifyBundleLayout(bundle);
   expect(result.valid).toBe(true);
   expect(result.sidecarPath).toEndWith("Contents/MacOS/cortex-sidecar");

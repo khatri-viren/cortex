@@ -1,4 +1,4 @@
-import type { ApiContext, ApiDiff, ApiGraph, ApiHealth, ApiHistory, ApiNoteMetadataPatch, ApiNoteSource, ApiRepoRestoreResult, ApiVaultCheck, ApiVaultTree, ApiWorkspaceStatus } from "../../src/api/contracts";
+import type { ApiContext, ApiDiff, ApiGraph, ApiHealth, ApiHistory, ApiIndexRefreshResult, ApiNoteMetadataPatch, ApiNoteSource, ApiRepoRestoreResult, ApiVaultCheck, ApiVaultTree, ApiWorkspaceStatus } from "../../src/api/contracts";
 import { getApiOrigin } from "./runtime";
 
 export type NoteSummary = {
@@ -79,6 +79,10 @@ export function getHealth(): Promise<ApiHealth> {
   return request<ApiHealth>("/api/health");
 }
 
+export function rebuildIndex(): Promise<ApiIndexRefreshResult> {
+  return request<ApiIndexRefreshResult>("/api/index/rebuild", { method: "POST" });
+}
+
 export function getRepoHistory(repository: string, path: string): Promise<ApiHistory> {
   return request<ApiHistory>("/api/workspace/repo-history?repository=" + encodeURIComponent(repository) + "&path=" + encodeURIComponent(path) + "&limit=20");
 }
@@ -128,6 +132,30 @@ export function updateNote(
     method: "PUT",
     body: JSON.stringify({ note, expected_file_hash: expectedFileHash, body, metadata }),
   });
+}
+
+export async function exportNotePdf(note: string, body: string, title: string): Promise<{ blob: Blob; filename: string }> {
+  const origin = typeof window === "undefined" ? "" : getApiOrigin(window.location.search);
+  console.info("[PDF-EXPORT] request:start", { note, title, bodyLength: body.length, origin });
+  const response = await fetch(origin + "/api/note/export/pdf", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ note, body, title }),
+  });
+  console.info("[PDF-EXPORT] request:response", { status: response.status, contentType: response.headers.get("content-type") });
+  if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => ({}));
+    const message = payload && typeof payload === "object" && "error" in payload
+      ? String((payload as { error?: { message?: string } }).error?.message ?? response.statusText)
+      : response.statusText;
+    throw new Error(message);
+  }
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const match = disposition.match(/filename="([^"]+)"/i);
+  const blob = await response.blob();
+  const filename = match?.[1] ?? "untitled-note.pdf";
+  console.info("[PDF-EXPORT] request:complete", { filename, bytes: blob.size, type: blob.type });
+  return { blob, filename };
 }
 
 export function reconcile(note: string, baseMarkdown: string, localMarkdown: string): Promise<ReconcileResponse> {

@@ -202,8 +202,8 @@
      without this the pane just shows whatever ancestor bg-background paints
      through — the global --background, not --atomic-editor-bg — and a
      dark-mode-only override of the latter would have no visible effect. */
-  background-color: var(--atomic-editor-bg);
-  --atomic-editor-bg: var(--background);
+  background-color: var(--cortex-reading-surface);
+  --atomic-editor-bg: var(--cortex-reading-surface);
   --atomic-editor-bg-panel: var(--muted);
   --atomic-editor-bg-surface: var(--muted);
   --atomic-editor-fg: var(--foreground);
@@ -256,7 +256,6 @@
      near-white text elsewhere), which is harsher than reading mode wants for
      a full pane of body text. Narrow the lightness gap for a softer,
      lower-contrast reading surface instead of pure black-on-white. */
-  --atomic-editor-bg: oklch(0.22 0 0);
   --atomic-editor-fg: oklch(0.85 0 0);
   --atomic-editor-link: var(--primary);
   --atomic-editor-link-hover: oklch(from var(--primary) 0.85 c h);
@@ -293,6 +292,22 @@
 }
 .atomic-editor-host .cm-scroller::-webkit-scrollbar-thumb:hover {
   background-color: var(--muted-foreground);
+}
+
+/* Notes use the same surface above and below the metadata/editor boundary.
+   Keep this token separate from --background so app chrome can stay darker
+   while the reading document retains its softer dark surface. */
+.note-toolbar-surface,
+.note-workspace,
+.note-metadata,
+.note-editor-section {
+  background-color: var(--cortex-reading-surface);
+}
+
+.note-editor-section {
+  height: max(440px, calc(100dvh - 84px));
+  min-height: 440px;
+  background-color: var(--cortex-reading-surface);
 }
 
 @theme inline {
@@ -345,6 +360,7 @@
 }
 
 :root {
+  --cortex-reading-surface: var(--background);
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -385,6 +401,7 @@
 }
 
 .dark {
+  --cortex-reading-surface: oklch(0.22 0 0);
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);

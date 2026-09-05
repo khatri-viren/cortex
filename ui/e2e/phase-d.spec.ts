@@ -54,30 +54,15 @@ async function scrollEditorToEnd(page: import("@playwright/test").Page) {
 }
 
 async function setEditorScrollTop(page: import("@playwright/test").Page, top: number) {
-  return page.locator(".atomic-editor-host").evaluate((element, desired) => {
-    let current: HTMLElement | null = element as HTMLElement;
-    let actual = 0;
-    while (current) {
-      if (current.scrollHeight > current.clientHeight) {
-        current.scrollTop = desired;
-        actual = Math.max(actual, current.scrollTop);
-      }
-      current = current.parentElement;
-    }
-    return actual;
+  return page.locator(".cm-scroller").evaluate((element, desired) => {
+    const scroller = element as HTMLElement;
+    scroller.scrollTop = desired;
+    return scroller.scrollTop;
   }, top);
 }
 
 async function getEditorScrollTop(page: import("@playwright/test").Page) {
-  return page.locator(".atomic-editor-host").evaluate((element) => {
-    let current: HTMLElement | null = element as HTMLElement;
-    let actual = 0;
-    while (current) {
-      if (current.scrollHeight > current.clientHeight) actual = Math.max(actual, current.scrollTop);
-      current = current.parentElement;
-    }
-    return actual;
-  });
+  return page.locator(".cm-scroller").evaluate((element) => (element as HTMLElement).scrollTop);
 }
 
 test.describe.serial("D2-14: rendered-editor stress test", () => {
@@ -191,10 +176,9 @@ test.describe("D2-15: live editing mode", () => {
     }
     expect(before).toBeGreaterThan(1000);
 
-    // The metadata block and its mode switch are intentionally part of the
-    // same scrollable document surface. At this point the body is scrolled
-    // deep into the note, so activate the off-screen control without moving
-    // the document back to the metadata block first.
+    // The reader has its own bounded scroll viewport, while the metadata
+    // block and mode switch remain above it. Activate the off-screen control
+    // without moving the reader back to the top first.
     await page.getByRole("tab", { name: "Live", exact: true }).dispatchEvent("click");
     await expect(async () => {
       const after = await getEditorScrollTop(page);

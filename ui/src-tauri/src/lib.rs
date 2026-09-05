@@ -3,8 +3,10 @@ mod sidecar;
 mod vault_registry;
 
 use serde::Serialize;
+use std::path::Path;
 use std::process::Child;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::menu::{MenuBuilder, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -19,6 +21,8 @@ struct AppState {
     registry: Mutex<VaultRegistry>,
     runtimes: Mutex<RuntimeRegistry>,
     preferences: Mutex<AppPreferences>,
+    shutdown_started: AtomicBool,
+    open_generation: AtomicU64,
 }
 
 #[derive(Serialize)]
@@ -35,6 +39,91 @@ fn find_entry(registry: &VaultRegistry, id: &str) -> Result<VaultRegistryEntry, 
         .find(|v| v.id == id)
         .cloned()
         .ok_or_else(|| format!("No registered vault with id {id}"))
+}
+
+#[cfg(test)]
+mod pdf_export_tests {
+    use super::sanitize_pdf_filename;
+
+    #[test]
+    fn pdf_filename_is_a_safe_basename_with_pdf_extension() {
+        assert_eq!(sanitize_pdf_filename("../My: Note"), "My-Note.pdf");
+        assert_eq!(sanitize_pdf_filename("already.pdf"), "already.pdf");
+        assert_eq!(sanitize_pdf_filename(""), "untitled-note.pdf");
+    }
+}
+
+fn sanitize_pdf_filename(input: &str) -> String {
+    let basename = Path::new(input)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(input);
+    let mut result = String::new();
+    let mut previous_was_separator = false;
+
+    for character in basename.chars() {
+        let allowed = character.is_alphanumeric() || matches!(character, '.' | '-' | '_');
+        if allowed {
+            result.push(character);
+            previous_was_separator = character == '-';
+        } else if !previous_was_separator {
+            result.push('-');
+            previous_was_separator = true;
+        }
+    }
+
+    let result = result.trim_matches(['.', '-', '_']).to_string();
+    let mut result = if result.is_empty() {
+        "untitled-note".to_string()
+    } else {
+        result
+    };
+    if !result.to_ascii_lowercase().ends_with(".pdf") {
+        result.push_str(".pdf");
+    }
+    result
+}
+
+#[tauri::command]
+async fn save_pdf(
+    app: AppHandle,
+    filename: String,
+    bytes: Vec<u8>,
+) -> Result<Option<String>, String> {
+    log::info!("[PDF-EXPORT] native:invoke filename={} bytes={}", filename, bytes.len());
+    let filename = sanitize_pdf_filename(&filename);
+    let app_for_dialog = app.clone();
+    let selected_path = tauri::async_runtime::spawn_blocking(move || {
+        app_for_dialog
+            .dialog()
+            .file()
+            .set_file_name(filename)
+            .add_filter("PDF document", &["pdf"])
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|error| {
+        log::error!("[PDF-EXPORT] native:dialog-join-failed error={error}");
+        format!("Failed to open the PDF save dialog: {error}")
+    })?;
+
+    let Some(selected_path) = selected_path else {
+        log::info!("[PDF-EXPORT] native:cancelled");
+        return Ok(None);
+    };
+    let path = selected_path
+        .into_path()
+        .map_err(|error| {
+            log::error!("[PDF-EXPORT] native:invalid-destination error={error}");
+            format!("Invalid PDF destination: {error}")
+        })?;
+    log::info!("[PDF-EXPORT] native:selected path={}", path.display());
+    std::fs::write(&path, bytes).map_err(|error| {
+        log::error!("[PDF-EXPORT] native:write-failed path={} error={error}", path.display());
+        format!("Could not save PDF: {error}")
+    })?;
+    log::info!("[PDF-EXPORT] native:complete path={}", path.display());
+    Ok(Some(path.to_string_lossy().into_owned()))
 }
 
 /// Dispose whatever sidecar is currently running, regardless of which vault
@@ -84,7 +173,8 @@ fn set_preferences(
 }
 
 #[tauri::command]
-fn close_main_window(window: WebviewWindow) -> Result<(), String> {
+fn close_main_window(window: WebviewWindow, state: State<'_, AppState>) -> Result<(), String> {
+    dispose_current_sidecar(&state, window.label());
     window
         .close()
         .map_err(|error| format!("Failed to close the main window: {error}"))
@@ -200,6 +290,11 @@ async fn open_vault(
         find_entry(&registry, &id)?
     };
 
+    if state.shutdown_started.load(Ordering::Acquire) {
+        return Err("Cortex is shutting down.".to_string());
+    }
+    let open_generation = state.open_generation.fetch_add(1, Ordering::AcqRel) + 1;
+
     // Switching vaults: dispose whatever is currently running first so the
     // previous vault's watchers, DB handles, and in-memory graph state can
     // never leak into the new one (D2-09).
@@ -244,19 +339,46 @@ async fn open_vault(
     let (child, port, health) = spawn_result?;
     let vault_id = entry.id.clone();
 
-    {
-        let mut runtimes = state
-            .runtimes
-            .lock()
-            .map_err(|_| "runtime lock poisoned".to_string())?;
-        runtimes.insert(
-            &window_label,
-            SidecarHandle {
-                child,
-                port,
-                vault_id: vault_id.clone(),
-            },
-        );
+    let mut handle = Some(SidecarHandle {
+        child,
+        port,
+        vault_id: vault_id.clone(),
+    });
+    let inserted = {
+        let mut runtimes = match state.runtimes.lock() {
+            Ok(runtimes) => runtimes,
+            Err(_) => {
+                if let Some(mut handle) = handle.take() {
+                    sidecar::dispose(&mut handle);
+                }
+                return Err("runtime lock poisoned".to_string());
+            }
+        };
+        if state.shutdown_started.load(Ordering::Acquire)
+            || state.open_generation.load(Ordering::Acquire) != open_generation
+        {
+            false
+        } else {
+            runtimes.insert(&window_label, match handle.take() {
+                Some(handle) => handle,
+                None => unreachable!("sidecar handle was already consumed"),
+            });
+            true
+        }
+    };
+    if !inserted {
+        // The app may have begun shutting down, or another open request may
+        // have superseded this one while the sidecar was starting. Since this
+        // child was not inserted into the registry, dispose it here instead
+        // of allowing it to become an orphan.
+        if let Some(mut handle) = handle {
+            sidecar::dispose(&mut handle);
+        }
+        return Err(if state.shutdown_started.load(Ordering::Acquire) {
+            "Cortex is shutting down.".to_string()
+        } else {
+            "Vault open was superseded by a newer request.".to_string()
+        });
     }
     log::info!("Vault {vault_id} healthy on port {port}");
 
@@ -299,6 +421,8 @@ pub fn run() {
                 registry: Mutex::new(registry),
                 runtimes: Mutex::new(RuntimeRegistry::default()),
                 preferences: Mutex::new(preferences.clone()),
+                shutdown_started: AtomicBool::new(false),
+                open_generation: AtomicU64::new(0),
             });
 
             if preferences.show_tray_icon {
@@ -344,6 +468,7 @@ pub fn run() {
             get_preferences,
             set_preferences,
             close_main_window,
+            save_pdf,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -352,6 +477,7 @@ pub fn run() {
             // the window it was started for.
             if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {
                 if let Some(state) = app_handle.try_state::<AppState>() {
+                    state.shutdown_started.store(true, Ordering::Release);
                     if let Ok(mut runtimes) = state.runtimes.lock() {
                         runtimes.dispose_all();
                     }

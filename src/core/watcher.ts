@@ -4,6 +4,9 @@ import { RUNTIME_DIRECTORY } from "./vault.js";
 
 type ParcelWatcher = typeof import("@parcel/watcher");
 
+const DEFAULT_EVENT_FLUSH_DELAY_MS = 100;
+const DEFAULT_PACKAGED_POLL_INTERVAL_MS = 1_000;
+
 export type WatchEvent = {
   type: "create" | "update" | "delete";
   path: string;
@@ -17,6 +20,8 @@ export type WatcherHandle = {
 export type WatcherOptions = {
   /** Return true for a root-relative path that should be ignored and pruned. */
   ignorePath?: (relativePath: string) => boolean;
+  /** Override the packaged polling interval for controlled callers and tests. */
+  pollIntervalMs?: number;
 };
 
 function ignored(relativePath: string, options?: WatcherOptions): boolean {
@@ -61,6 +66,65 @@ function fileSnapshot(root: string, options?: WatcherOptions): Map<string, strin
   return snapshot;
 }
 
+function createEventQueue(
+  root: string,
+  onEvents: (events: WatchEvent[]) => Promise<void>,
+  options?: WatcherOptions,
+): { queue: (events: WatchEvent[]) => void; stop: () => Promise<void> } {
+  const pending = new Map<string, WatchEvent>();
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let flushing: Promise<void> | undefined;
+
+  const flush = async (): Promise<void> => {
+    if (flushing) return flushing;
+    if (pending.size === 0) return;
+
+    const current = (async () => {
+      // Drain one batch at a time. A slow consumer must not be run in parallel
+      // with the next poll, and repeated updates to one path only need the
+      // newest event.
+      while (pending.size > 0) {
+        const events = [...pending.values()];
+        pending.clear();
+        await onEvents(events);
+      }
+    })();
+    flushing = current;
+    try {
+      await current;
+    } finally {
+      if (flushing === current) flushing = undefined;
+    }
+  };
+
+  const queue = (events: WatchEvent[]) => {
+    if (stopped) return;
+    for (const event of events) {
+      if (relevant(event, root, options)) pending.set(event.path, event);
+    }
+    if (pending.size === 0) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = undefined;
+      void flush().catch((error) => {
+        console.error(`Filesystem watcher callback failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }, DEFAULT_EVENT_FLUSH_DELAY_MS);
+  };
+
+  const stop = async () => {
+    stopped = true;
+    if (timer) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+    await flush();
+  };
+
+  return { queue, stop };
+}
+
 async function startPollingWatcher(
   vaultRoot: string,
   onEvents: (events: WatchEvent[]) => Promise<void>,
@@ -69,22 +133,7 @@ async function startPollingWatcher(
   const snapshotPath = join(vaultRoot, RUNTIME_DIRECTORY, "watcher.snapshot");
   mkdirSync(join(vaultRoot, RUNTIME_DIRECTORY), { recursive: true });
   let previous = fileSnapshot(vaultRoot, options);
-  let pending: WatchEvent[] = [];
-  let stopped = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-
-  const flush = async () => {
-    if (pending.length === 0 || stopped) return;
-    const events = pending;
-    pending = [];
-    await onEvents(events);
-  };
-
-  const queue = (events: WatchEvent[]) => {
-    pending.push(...events.filter((event) => relevant(event, vaultRoot, options)));
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => void flush(), 100);
-  };
+  const eventQueue = createEventQueue(vaultRoot, onEvents, options);
 
   const interval = setInterval(() => {
     const current = fileSnapshot(vaultRoot, options);
@@ -98,15 +147,13 @@ async function startPollingWatcher(
       if (!current.has(path)) events.push({ type: "delete", path: join(vaultRoot, path) });
     }
     previous = current;
-    if (events.length > 0) queue(events);
-  }, 250);
+    if (events.length > 0) eventQueue.queue(events);
+  }, options?.pollIntervalMs ?? DEFAULT_PACKAGED_POLL_INTERVAL_MS);
 
   return {
     async stop() {
       clearInterval(interval);
-      if (timer) clearTimeout(timer);
-      await flush();
-      stopped = true;
+      await eventQueue.stop();
     },
     async flushSnapshot() {
       writeFileSync(snapshotPath, JSON.stringify({ mode: "polling", files: [...previous] }));
@@ -126,26 +173,11 @@ export async function startWatcher(
   const parcelWatcher: ParcelWatcher = await import("@parcel/watcher");
   const snapshotPath = join(vaultRoot, RUNTIME_DIRECTORY, "watcher.snapshot");
   mkdirSync(join(vaultRoot, RUNTIME_DIRECTORY), { recursive: true });
-  let pending: WatchEvent[] = [];
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let stopped = false;
-
-  const flush = async () => {
-    if (pending.length === 0 || stopped) return;
-    const events = pending;
-    pending = [];
-    await onEvents(events);
-  };
-
-  const queue = (events: WatchEvent[]) => {
-    pending.push(...events.filter((event) => relevant(event, vaultRoot, options)));
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => void flush(), 100);
-  };
+  const eventQueue = createEventQueue(vaultRoot, onEvents, options);
 
   if (existsSync(snapshotPath)) {
     const historical = await parcelWatcher.getEventsSince(vaultRoot, snapshotPath);
-    queue(historical as WatchEvent[]);
+    eventQueue.queue(historical as WatchEvent[]);
   }
 
   const subscription = await parcelWatcher.subscribe(vaultRoot, (error, events) => {
@@ -153,14 +185,12 @@ export async function startWatcher(
       console.error(`Filesystem watcher error: ${error.message}`);
       return;
     }
-    queue(events as WatchEvent[]);
+    eventQueue.queue(events as WatchEvent[]);
   });
 
   return {
     async stop() {
-      if (timer) clearTimeout(timer);
-      await flush();
-      stopped = true;
+      await eventQueue.stop();
       await subscription.unsubscribe();
     },
     async flushSnapshot() {

@@ -150,4 +150,44 @@ describe("watcher", () => {
     await handle?.flushSnapshot();
     expect(existsSync(join(vault, ".cortex", "watcher.snapshot"))).toBe(true);
   });
+
+  test("does not overlap slow packaged polling callbacks", async () => {
+    const vault = tempVault();
+    const watchedPath = join(vault, "project-map.md");
+    const previousPackagedMode = process.env.CORTEX_PACKAGED;
+    process.env.CORTEX_PACKAGED = "1";
+
+    let handle: Awaited<ReturnType<typeof startWatcher>> | undefined;
+    let activeCallbacks = 0;
+    let maximumActiveCallbacks = 0;
+    let firstCallbackStarted!: () => void;
+    const firstCallback = new Promise<void>((resolve) => {
+      firstCallbackStarted = resolve;
+    });
+
+    try {
+      handle = await startWatcher(vault, async () => {
+        activeCallbacks += 1;
+        maximumActiveCallbacks = Math.max(maximumActiveCallbacks, activeCallbacks);
+        firstCallbackStarted();
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        activeCallbacks -= 1;
+      }, { pollIntervalMs: 25 });
+
+      writeFileSync(watchedPath, `${readFileSync(watchedPath, "utf8")}\nfirst change\n`);
+      await firstCallback;
+
+      for (let index = 0; index < 3; index += 1) {
+        writeFileSync(watchedPath, `${readFileSync(watchedPath, "utf8")}change ${index}\n`);
+        await new Promise((resolve) => setTimeout(resolve, 275));
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      expect(maximumActiveCallbacks).toBe(1);
+    } finally {
+      await handle?.stop();
+      if (previousPackagedMode === undefined) delete process.env.CORTEX_PACKAGED;
+      else process.env.CORTEX_PACKAGED = previousPackagedMode;
+    }
+  });
 });

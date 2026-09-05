@@ -21,8 +21,9 @@ async function openNoteByTitle(page: import("@playwright/test").Page, title: str
   await row.first().click();
   // The rail's Context/Git/Diagnostics panels render an empty state until
   // the note's source (and its context/diagnostics) finish loading — wait
-  // for the editor before interacting with the rail, or a slow fetch under
-  // concurrent test workers races the assertion.
+  // for the requested note title and editor before interacting with the rail,
+  // or a slow fetch under concurrent test workers races the assertion.
+  await expect(page.getByRole("heading", { name: title, exact: true })).toBeVisible();
   await expect(page.getByLabel("Markdown editor")).toBeVisible();
   await page.getByLabel("Open inspector").click();
   await expect(rail(page)).toBeVisible();
@@ -135,6 +136,78 @@ test.describe("D2-19: outline, Git, and diagnostics panels", () => {
     // Jumping switches out of Source mode into Reading so the target text is visible.
     await expect(page.getByRole("tab", { name: "Reading", exact: true, selected: true })).toBeVisible();
     await expect(page.getByText("Jump Target", { exact: true })).toBeVisible();
+  });
+
+  test("reading surface keeps one color and the outline follows scrolling", async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem("theme", "dark"));
+    await page.goto("/");
+    await openNoteByTitle(page, "Stress Test Note");
+    await page.getByLabel("Close inspector").click();
+    await page.getByRole("tab", { name: "Reading", exact: true }).click();
+
+    const colors = await page.evaluate(() => ({
+      toolbar: getComputedStyle(document.querySelector(".note-toolbar-surface")!).backgroundColor,
+      metadata: getComputedStyle(document.querySelector(".note-metadata")!).backgroundColor,
+      reader: getComputedStyle(document.querySelector(".atomic-editor-host")!).backgroundColor,
+    }));
+    expect(colors.metadata).toBe(colors.reader);
+    expect(colors.toolbar).toBe(colors.reader);
+
+    const geometry = await page.evaluate(() => {
+      const viewport = document.querySelector<HTMLElement>("[data-testid=note-document-scroll]");
+      const editor = document.querySelector<HTMLElement>(".note-editor-section > div");
+      const content = document.querySelector<HTMLElement>(".cm-content");
+      const outline = document.querySelector<HTMLElement>("nav[aria-label='Section outline']");
+      if (!viewport || !editor || !content || !outline) return null;
+      const viewportRect = viewport.getBoundingClientRect();
+      const editorRect = editor.getBoundingClientRect();
+      const contentRect = content.getBoundingClientRect();
+      const outlineRect = outline.getBoundingClientRect();
+      return {
+        viewportCenter: viewportRect.left + viewportRect.width / 2,
+        editorCenter: editorRect.left + editorRect.width / 2,
+        contentCenter: contentRect.left + contentRect.width / 2,
+        editorWidth: editorRect.width,
+        viewportWidth: viewportRect.width,
+        outlineRight: outlineRect.right,
+        editorRight: editorRect.right,
+      };
+    });
+    expect(geometry).not.toBeNull();
+    expect(Math.abs(geometry!.editorCenter - geometry!.viewportCenter)).toBeLessThan(2);
+    expect(Math.abs(geometry!.contentCenter - geometry!.viewportCenter)).toBeLessThan(2);
+    expect(Math.abs(geometry!.editorWidth - geometry!.viewportWidth)).toBeLessThan(2);
+    expect(Math.abs(geometry!.outlineRight - geometry!.editorRight)).toBeLessThan(2);
+
+    const documentScroll = page.getByTestId("note-document-scroll");
+    await documentScroll.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    const outlineStack = page.getByTestId("outline-stack");
+    const scroller = page.locator(".cm-scroller");
+    await expect(outlineStack).toBeVisible();
+    const visibleCenterDelta = () => page.evaluate(() => {
+      const nav = [...document.querySelectorAll("nav")].find((element) => element.getAttribute("aria-label") === "Section outline");
+      const stack = nav?.querySelector<HTMLElement>("[data-testid=outline-stack]");
+      const viewport = document.querySelector<HTMLElement>("[data-testid=note-document-scroll]");
+      const reader = document.querySelector<HTMLElement>(".cm-scroller");
+      if (!stack || !viewport || !reader) return Number.POSITIVE_INFINITY;
+      const stackRect = stack.getBoundingClientRect();
+      const viewportRect = viewport.getBoundingClientRect();
+      const readerRect = reader.getBoundingClientRect();
+      const visibleTop = Math.max(readerRect.top, viewportRect.top);
+      const visibleBottom = Math.min(readerRect.bottom, viewportRect.bottom);
+      if (visibleBottom <= visibleTop) return Number.POSITIVE_INFINITY;
+      return Math.abs((stackRect.top + stackRect.bottom) / 2 - (visibleTop + visibleBottom) / 2);
+    });
+    await documentScroll.evaluate((element) => { element.scrollTop = Math.min(100, element.scrollHeight); });
+    await expect.poll(visibleCenterDelta).toBeLessThan(12);
+    await documentScroll.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    await expect.poll(visibleCenterDelta).toBeLessThan(12);
+
+    const activeBefore = await page.locator('[data-testid="outline-tick"]').evaluateAll((ticks) => ticks.findIndex((tick) => tick.getAttribute("aria-current") === "true"));
+    await scroller.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    await expect.poll(async () => page.locator('[data-testid="outline-tick"]').evaluateAll((ticks) => ticks.findIndex((tick) => tick.getAttribute("aria-current") === "true"))).toBeGreaterThan(activeBefore);
+    const lastTickIndex = await page.locator('[data-testid="outline-tick"]').count() - 1;
+    await expect.poll(async () => page.locator('[data-testid="outline-tick"]').evaluateAll((ticks) => ticks.findIndex((tick) => tick.getAttribute("aria-current") === "true"))).toBe(lastTickIndex);
   });
 
   test("Git tab shows the active note's own history and diff by default", async ({ page }) => {

@@ -32,6 +32,10 @@ describe("Phase 3 local API", () => {
       expect((await health.json()).phase).toBe(3);
       expect((await (await fetch(base + "/api/health")).json()).workspace.phase).toBe("disabled");
 
+      const rebuilt = await fetch(base + "/api/index/rebuild", { method: "POST" });
+      expect(rebuilt.status).toBe(200);
+      expect((await rebuilt.json()).index.mode).toBe("full");
+
       const source = await fetch(base + "/api/note?selector=project-map.md&source=true");
       expect(source.status).toBe(200);
       expect((await source.json()).markdown).toContain("Project Map");
@@ -77,6 +81,21 @@ describe("Phase 3 local API", () => {
       expect(updated.body).toContain("Structured update.");
       expect(updated.frontmatter.tags).toEqual(["backend"]);
       expect(updated.note.content_hash).not.toBe(source.note.content_hash);
+    });
+  });
+
+  test("validates PDF export input without mutating the source note", async () => {
+    await withApi(async (base) => {
+      const before = await (await fetch(base + "/api/note?selector=project-map.md&source=true")).json() as { note: { content_hash: string }; body: string };
+      const response = await fetch(base + "/api/note/export/pdf", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ note: "project-map.md", body: before.body, title: "   " }),
+      });
+      expect(response.status).toBe(400);
+      expect((await response.json()).error.code).toBe("INVALID_INPUT");
+      const after = await (await fetch(base + "/api/note?selector=project-map.md&source=true")).json() as { note: { content_hash: string } };
+      expect(after.note.content_hash).toBe(before.note.content_hash);
     });
   });
 

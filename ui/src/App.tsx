@@ -6,12 +6,15 @@ import {
   ClockIcon,
   DatabaseIcon,
   ChevronsUpDownIcon,
+  FileDownIcon,
   FileIcon,
   FileTextIcon,
   FilesIcon,
+  Loader2Icon,
   ListTreeIcon,
   NetworkIcon,
   PlusIcon,
+  RefreshCwIcon,
   XIcon,
 } from "lucide-react";
 import type { ApiContext, ApiGraphEdge, ApiGraphNode, ApiHistory, ApiNoteMetadataPatch, ApiNoteSource, ApiSection, ApiVaultCheck, ApiVaultTree, ApiVaultTreeNode, ApiWorkspaceStatus } from "../../src/api/contracts";
@@ -21,6 +24,7 @@ import { GraphPane } from "./GraphPane";
 import { VaultPicker } from "./VaultPicker";
 import { NoteMetadata } from "./components/note-metadata";
 import { InspectorDrawer } from "./components/inspector-drawer";
+import { ThemeToggle } from "./components/theme-toggle";
 import { VaultTree } from "./components/vault-tree";
 import { closeMainWindow, openRegisteredVault, invoke, type VaultEntry, type VaultRegistry } from "./vault-registry";
 import type { Mode } from "./types";
@@ -36,7 +40,9 @@ import {
   getVaultCheck,
   getVaultTree,
   getWorkspaceStatus,
+  exportNotePdf,
   listNotes,
+  rebuildIndex,
   restoreNote,
   searchNotes,
   subscribeToChanges,
@@ -46,6 +52,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Empty,
   EmptyDescription,
@@ -81,6 +88,18 @@ type Route = "notes" | "graph";
 type ContextDestination =
   | { kind: "note"; path: string }
   | { kind: "code"; repository: string; path: string };
+
+type NoteCreationIssue = {
+  kind: "save" | "create" | "load" | "refresh";
+  message: string;
+  path?: string;
+};
+
+type FocusRequest = { path: string; nonce: number };
+
+type SaveResult =
+  | { ok: true }
+  | { ok: false; message: string };
 
 function destinationFor(node: ApiGraphNode): ContextDestination | undefined {
   if (node.kind === "note" && node.path) return { kind: "note", path: node.path };
@@ -154,7 +173,7 @@ function SidebarAlignedToolbar({ children }: { children: (layout: SidebarToolbar
   return <>{children({ sidebarWidth: isMobile ? "0px" : collapsed ? "3.5rem" : "18.75rem", collapsed })}</>;
 }
 
-function WorkspaceViewSwitcher({ route, onNavigate }: { route: Route; onNavigate: (next: Route) => void }) {
+function WorkspaceViewSwitcher({ route, onNavigate, disabled = false }: { route: Route; onNavigate: (next: Route) => void; disabled?: boolean }) {
   return (
     <div
       data-testid="workspace-view-switcher"
@@ -167,6 +186,7 @@ function WorkspaceViewSwitcher({ route, onNavigate }: { route: Route; onNavigate
         role="tab"
         aria-selected={route === "notes"}
         data-testid="nodes-view"
+        disabled={disabled}
         variant="ghost"
         size="sm"
         className={`h-7 gap-1 rounded-sm px-2 text-[11px] ${route === "notes" ? "bg-background/65 text-foreground shadow-sm hover:bg-background/65" : "text-muted-foreground"}`}
@@ -180,6 +200,7 @@ function WorkspaceViewSwitcher({ route, onNavigate }: { route: Route; onNavigate
         role="tab"
         aria-selected={route === "graph"}
         data-testid="graph-view"
+        disabled={disabled}
         variant="ghost"
         size="sm"
         className={`h-7 gap-1 rounded-sm px-2 text-[11px] ${route === "graph" ? "bg-background/65 text-foreground shadow-sm hover:bg-background/65" : "text-muted-foreground"}`}
@@ -270,6 +291,21 @@ function WorkspaceApp() {
   const [workspaceGitLoaded, setWorkspaceGitLoaded] = useState(false);
   const [noteCount, setNoteCount] = useState<number>();
   const [vaultCheck, setVaultCheck] = useState<ApiVaultCheck>();
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [indexRefreshError, setIndexRefreshError] = useState(false);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [isCreatingNote, setIsCreatingNote] = useState(false);
+  const [isRefreshingCreatedNote, setIsRefreshingCreatedNote] = useState(false);
+  const [creationIssue, setCreationIssue] = useState<NoteCreationIssue>();
+  const [focusTitleRequest, setFocusTitleRequest] = useState<FocusRequest>();
+  const [focusBodyRequest, setFocusBodyRequest] = useState<FocusRequest>();
+  const [noteLoadNonce, setNoteLoadNonce] = useState(0);
+  const creationInFlightRef = useRef(false);
+  const createdRefreshQueueRef = useRef(Promise.resolve());
+  const pendingCreatedNoteRef = useRef<{ id: string; path: string } | undefined>(undefined);
+  const lastCreatedNoteRef = useRef<{ id: string; path: string } | undefined>(undefined);
+  const createdNotePathsRef = useRef(new Set<string>());
+  const createdNoteSummariesRef = useRef(new Map<string, NoteSummary>());
   // Set when a context-rail "Implements"/"Owned by" item resolves to a
   // cross-repo code file: the Git panel switches from the active note's own
   // history to this repository-scoped file's history (the destination
@@ -302,6 +338,7 @@ function WorkspaceApp() {
   const isStale = workspaceStatus?.repositories.some((repository) => repository.status === "stale") ?? false;
   const isIndexing = workspaceStatus?.phase === "warming" || workspaceStatus?.phase === "rebuilding" || workspaceStatus?.repositories.some((repository) => repository.status === "warming" || repository.status === "rebuilding") || false;
   const indexError = workspaceStatus?.phase === "error";
+  const indexNeedsRefresh = isStale || indexError || indexRefreshError;
   const canGoBack = navHistory.index > 0;
   const canGoForward = navHistory.index < navHistory.stack.length - 1;
 
@@ -346,6 +383,94 @@ function WorkspaceApp() {
     return groups;
   }, [context, contextNodeById]);
 
+  function parentDirectory(path: string): string | undefined {
+    const separator = path.lastIndexOf("/");
+    return separator > 0 ? path.slice(0, separator) : undefined;
+  }
+
+  function mergeNoteSummaries(incoming: NoteSummary[]): NoteSummary[] {
+    const incomingPaths = new Set(incoming.map((note) => note.path));
+    const missingCreated = [...createdNoteSummariesRef.current.values()]
+      .filter((note) => !incomingPaths.has(note.path));
+    return [...missingCreated, ...incoming];
+  }
+
+  function preserveCreatedTreeExpansion(tree: ApiVaultTree) {
+    const createdParents = [...createdNotePathsRef.current]
+      .map(parentDirectory)
+      .filter((path): path is string => Boolean(path));
+    setExpandedTreePaths((current) => {
+      const next = new Set(current);
+      if (next.size === 0) {
+        for (const node of tree.children) {
+          if (node.kind === "directory" && node.name === "notes") next.add(node.path);
+        }
+      }
+      for (const path of createdParents) next.add(path);
+      return next;
+    });
+  }
+
+  function refreshVaultData() {
+    listNotes(undefined, 100).then((result) => {
+      const nextNotes = mergeNoteSummaries(result.notes);
+      setNotes(nextNotes);
+      setSelected((current) => {
+        const pendingPath = pendingCreatedNoteRef.current?.path;
+        return current && (nextNotes.some((note) => note.path === current) || current === pendingPath || createdNotePathsRef.current.has(current))
+          ? current
+          : nextNotes[0]?.path;
+      });
+      setTabs((current) => current.filter((path) => nextNotes.some((note) => note.path === path) || createdNotePathsRef.current.has(path)));
+    }).catch(() => undefined);
+    getVaultTree().then((tree) => {
+      setVaultTree(tree);
+      preserveCreatedTreeExpansion(tree);
+    }).catch(() => undefined);
+  }
+
+  function refreshCreatedNoteData(path: string): Promise<void> {
+    const run = async () => {
+      setIsRefreshingCreatedNote(true);
+      setStatus("Refreshing note list…");
+      try {
+        const [notesResult, treeResult] = await Promise.allSettled([listNotes(undefined, 100), getVaultTree()]);
+        const failures: string[] = [];
+
+        if (notesResult.status === "fulfilled") {
+          const nextNotes = mergeNoteSummaries(notesResult.value.notes);
+          setNotes(nextNotes);
+          setSelected((current) => current && (nextNotes.some((note) => note.path === current) || current === path || createdNotePathsRef.current.has(current)) ? current : nextNotes[0]?.path);
+          setTabs((current) => current.filter((tabPath) => nextNotes.some((note) => note.path === tabPath) || createdNotePathsRef.current.has(tabPath)));
+        } else {
+          failures.push(`notes list: ${notesResult.reason instanceof Error ? notesResult.reason.message : String(notesResult.reason)}`);
+        }
+
+        if (treeResult.status === "fulfilled") {
+          setVaultTree(treeResult.value);
+          preserveCreatedTreeExpansion(treeResult.value);
+        } else {
+          failures.push(`file tree: ${treeResult.reason instanceof Error ? treeResult.reason.message : String(treeResult.reason)}`);
+        }
+
+        refreshWorkspaceSignals();
+        if (failures.length > 0) {
+          const message = `The note was created, but the workspace could not refresh (${failures.join("; ")}).`;
+          setCreationIssue((current) => current?.kind === "load" && current.path === path ? current : { kind: "refresh", path, message });
+          setStatus("Note created; refresh needed");
+        } else {
+          setCreationIssue((current) => current?.kind === "refresh" && current.path === path ? undefined : current);
+          setStatus((current) => current === "Refreshing note list…" ? "Note created" : current);
+        }
+      } finally {
+        setIsRefreshingCreatedNote(false);
+      }
+    };
+    const queued = createdRefreshQueueRef.current.then(run, run);
+    createdRefreshQueueRef.current = queued.catch(() => undefined);
+    return queued;
+  }
+
   function refreshWorkspaceSignals() {
     getWorkspaceStatus().then((next) => {
       setWorkspaceStatus((current) => {
@@ -362,6 +487,25 @@ function WorkspaceApp() {
     getHealth().then((health) => setNoteCount(health.index.noteCount)).catch(() => undefined);
   }
 
+  async function refreshIndex() {
+    if (isRefreshing || isCreatingNote) return;
+    setIsRefreshing(true);
+    setIndexRefreshError(false);
+    setStatus("Refreshing index…");
+    try {
+      await rebuildIndex();
+      setCreationIssue((current) => current?.kind === "create" ? undefined : current);
+      refreshVaultData();
+      refreshWorkspaceSignals();
+      setStatus("Index refreshed");
+    } catch (cause: unknown) {
+      setIndexRefreshError(true);
+      setStatus(cause instanceof Error ? `Index refresh failed: ${cause.message}` : `Index refresh failed: ${String(cause)}`);
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
+
   function applySource(next: ApiNoteSource, bumpContentRevision = false) {
     const nextMetadata = cloneMetadata(next.frontmatter);
     setSource(next);
@@ -369,24 +513,19 @@ function WorkspaceApp() {
     setBase(next.body);
     setMetadataDraft(nextMetadata);
     setBaseMetadata(cloneMetadata(nextMetadata));
+    if (createdNotePathsRef.current.has(next.note.path)) {
+      createdNoteSummariesRef.current.set(next.note.path, next.note);
+      setNotes((current) => [next.note, ...current.filter((note) => note.path !== next.note.path)]);
+    } else {
+      setNotes((current) => current.map((note) => note.path === next.note.path ? next.note : note));
+    }
     setConflict(undefined);
     setPreviewPath(undefined);
     if (bumpContentRevision) setContentRevision((revision) => revision + 1);
   }
 
   useEffect(() => {
-    listNotes(undefined, 100).then((result) => {
-      setNotes(result.notes);
-      setSelected((current) => (current && result.notes.some((note) => note.path === current) ? current : result.notes[0]?.path));
-      setTabs((current) => current.filter((path) => result.notes.some((note) => note.path === path)));
-    }).catch((cause: unknown) => setStatus(cause instanceof Error ? cause.message : String(cause)));
-    getVaultTree().then((tree) => {
-      setVaultTree(tree);
-      setExpandedTreePaths((current) => {
-        if (current.size > 0) return current;
-        return new Set(tree.children.filter((node) => node.kind === "directory" && node.name === "notes").map((node) => node.path));
-      });
-    }).catch(() => setVaultTree(undefined));
+    refreshVaultData();
     if (isTauri) invoke<VaultRegistry>("list_vaults").then(setVaultRegistry).catch(() => setVaultRegistry(undefined));
     refreshWorkspaceSignals();
   }, []);
@@ -415,6 +554,7 @@ function WorkspaceApp() {
   useEffect(() => {
     if (!selected) return;
     const requested = selected;
+    const isPendingCreatedNote = pendingCreatedNoteRef.current?.path === requested;
     let stale = false;
     setStatus("Loading " + selected);
     getNoteSource(selected).then((next) => {
@@ -423,7 +563,17 @@ function WorkspaceApp() {
       // (deferred, passive) cleanup runs — see the comment on selectedRef.
       if (stale || selectedRef.current !== requested) return;
       applySource(next);
-      setStatus("Saved");
+      if (isPendingCreatedNote) {
+        pendingCreatedNoteRef.current = undefined;
+        creationInFlightRef.current = false;
+        setIsCreatingNote(false);
+        setFocusTitleRequest((current) => ({ path: requested, nonce: (current?.nonce ?? 0) + 1 }));
+        setFocusBodyRequest(undefined);
+        setCreationIssue((current) => current?.kind === "refresh" && current.path === requested ? current : undefined);
+        setStatus("Note created");
+      } else {
+        setStatus("Saved");
+      }
       setContext(undefined);
       setHistory(undefined);
       setSelectedRevision(undefined);
@@ -432,9 +582,20 @@ function WorkspaceApp() {
         if (stale || selectedRef.current !== requested) return;
         setContext(nextContext);
       }).catch(() => { if (!stale && selectedRef.current === requested) setStatus("Loaded note; context is unavailable"); });
-    }).catch((cause: unknown) => { if (!stale && selectedRef.current === requested) setStatus(cause instanceof Error ? cause.message : String(cause)); });
+    }).catch((cause: unknown) => {
+      if (stale || selectedRef.current !== requested) return;
+      const message = cause instanceof Error ? cause.message : String(cause);
+      if (isPendingCreatedNote) {
+        creationInFlightRef.current = false;
+        setIsCreatingNote(false);
+        setCreationIssue({ kind: "load", path: requested, message });
+        setStatus("Note created, but opening it failed");
+      } else {
+        setStatus(message);
+      }
+    });
     return () => { stale = true; };
-  }, [selected]);
+  }, [selected, noteLoadNonce]);
 
   useEffect(() => {
     if (!source || panel !== "git" || codeTarget) return;
@@ -466,10 +627,8 @@ function WorkspaceApp() {
 
   useEffect(() => {
     return subscribeToChanges((events) => {
-      if (events.some((event) => !event.repository)) {
-        listNotes(undefined, 100).then((result) => setNotes(result.notes)).catch(() => undefined);
-        getVaultTree().then(setVaultTree).catch(() => undefined);
-      }
+      if (isCreatingNote) return;
+      if (events.length === 0 || events.some((event) => !event.repository)) refreshVaultData();
       // Empty batches are emitted when background workspace warming changes
       // phase; status/health are intentionally cheap enough to refresh here.
       refreshWorkspaceSignals();
@@ -486,7 +645,7 @@ function WorkspaceApp() {
         setStatus("Conflict requires review");
       }).catch(() => setStatus("External change detected; reload failed"));
     });
-  }, [activeNotePath, isDirty]);
+  }, [activeNotePath, isDirty, isCreatingNote]);
 
   useEffect(() => {
     if (panel !== "git" || codeTarget || !source || !selectedRevision) {
@@ -521,12 +680,14 @@ function WorkspaceApp() {
   }, [codeTarget, codeSelectedRevision, panel]);
 
   function openCode(node: ApiGraphNode, destination: { repository: string; path: string }) {
+    if (isCreatingNote) return;
     setCodeTarget({ repository: destination.repository, path: destination.path, name: node.name });
     setPanel("git");
     setContextPanelOpen(true);
   }
 
   function openGraphCode(node: ApiGraphNode) {
+    if (isCreatingNote) return;
     const repository = node.metadata?.repository_id;
     if (typeof repository !== "string" || !node.path) return;
     openCode(node, { repository, path: node.path });
@@ -534,6 +695,7 @@ function WorkspaceApp() {
   }
 
   function openContextItem(node: ApiGraphNode) {
+    if (isCreatingNote) return;
     const destination = destinationFor(node);
     if (!destination) return;
     if (destination.kind === "note") openPath(destination.path);
@@ -541,6 +703,7 @@ function WorkspaceApp() {
   }
 
   function viewInGraph(nodeId: string) {
+    if (isCreatingNote) return;
     navigate("graph", nodeId);
   }
 
@@ -560,8 +723,8 @@ function WorkspaceApp() {
     return () => clearTimeout(timer);
   }, [query]);
 
-  async function save() {
-    if (!source || !metadataDraft || !isDirty) return;
+  async function save(): Promise<SaveResult> {
+    if (!source || !metadataDraft || !isDirty) return { ok: true };
     setStatus("Saving...");
     try {
       const metadata: ApiNoteMetadataPatch = {
@@ -575,8 +738,56 @@ function WorkspaceApp() {
       const next = await updateNote(source.note.path, source.note.content_hash, draft, metadata);
       applySource(next);
       setStatus("Saved");
+      return { ok: true };
     } catch (cause) {
-      setStatus(cause instanceof Error ? cause.message : String(cause));
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setStatus(message);
+      return { ok: false, message };
+    }
+  }
+
+  async function exportPdf() {
+    console.info("[PDF-EXPORT] click", {
+      isTauri,
+      hasSource: Boolean(source),
+      hasMetadata: Boolean(metadataDraft),
+      titleLength: metadataDraft?.title.trim().length ?? 0,
+      isExportingPdf,
+    });
+    if (!source || !metadataDraft || !metadataDraft.title.trim() || isExportingPdf) {
+      console.warn("[PDF-EXPORT] click:guarded");
+      return;
+    }
+    setIsExportingPdf(true);
+    setStatus("Exporting PDF...");
+    try {
+      const result = await exportNotePdf(source.note.path, draft, metadataDraft.title);
+      const nativeWindow = window as Window & { __TAURI__?: unknown };
+      console.info("[PDF-EXPORT] delivery:detect", { isTauri, hasGlobalTauri: Boolean(nativeWindow.__TAURI__) });
+      if (nativeWindow.__TAURI__) {
+        const bytes = Array.from(new Uint8Array(await result.blob.arrayBuffer()));
+        console.info("[PDF-EXPORT] delivery:native-start", { filename: result.filename, bytes: bytes.length });
+        const savedPath = await invoke<string | null>("save_pdf", { filename: result.filename, bytes });
+        console.info("[PDF-EXPORT] delivery:native-complete", { savedPath });
+        setStatus(savedPath ? `PDF saved to ${savedPath}` : "PDF export canceled");
+      } else {
+        console.info("[PDF-EXPORT] delivery:browser-start", { filename: result.filename, bytes: result.blob.size });
+        const url = URL.createObjectURL(result.blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = result.filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+        console.info("[PDF-EXPORT] delivery:browser-complete", { filename: result.filename });
+        setStatus("PDF exported");
+      }
+    } catch (cause: unknown) {
+      console.error("[PDF-EXPORT] failed", cause);
+      setStatus(cause instanceof Error ? `PDF export failed: ${cause.message}` : `PDF export failed: ${String(cause)}`);
+    } finally {
+      setIsExportingPdf(false);
     }
   }
 
@@ -594,6 +805,7 @@ function WorkspaceApp() {
   }
 
   function openPath(path: string, opts?: { skipHistory?: boolean; skipConfirm?: boolean }) {
+    if (isCreatingNote) return;
     if (!opts?.skipConfirm && path !== selected && !confirmDiscard("You have unsaved changes. Discard them and switch notes?")) return;
     setSelected(path);
     setTabs((current) => (current.includes(path) ? current : [...current, path]));
@@ -605,6 +817,7 @@ function WorkspaceApp() {
 
   function closeTab(path: string, event?: Pick<MouseEvent, "stopPropagation">, options?: { closeWindowWhenLast?: boolean }) {
     event?.stopPropagation();
+    if (isCreatingNote) return;
     if (path === selected && !confirmDiscard("You have unsaved changes. Discard them and close this tab?")) return;
     const index = tabs.indexOf(path);
     const next = tabs.filter((existing) => existing !== path);
@@ -618,20 +831,29 @@ function WorkspaceApp() {
 
   useEffect(() => {
     const onWindowShortcut = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "w" || event.defaultPrevented) return;
-      event.preventDefault();
-      if (selected) {
-        closeTab(selected, undefined, { closeWindowWhenLast: true });
-      } else {
-        void closeMainWindow();
+      if (event.defaultPrevented || event.repeat || !(event.metaKey || event.ctrlKey)) return;
+      const key = event.key.toLowerCase();
+      if (key === "n") {
+        event.preventDefault();
+        if (!isCreatingNote) void createNewNote();
+        return;
       }
+      if (key !== "w") return;
+      event.preventDefault();
+      if (isCreatingNote) return;
+      if (selected) closeTab(selected, undefined, { closeWindowWhenLast: true });
+      else void closeMainWindow();
     };
     window.addEventListener("keydown", onWindowShortcut);
     return () => window.removeEventListener("keydown", onWindowShortcut);
-  }, [selected, tabs, isDirty]);
+    // The handlers intentionally close over the current draft/navigation
+    // state; re-registering the single global listener when that state
+    // changes keeps Cmd/Ctrl+N and Cmd/Ctrl+W race-free.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, tabs, isDirty, isCreatingNote]);
 
   function goBack() {
-    if (!canGoBack) return;
+    if (isCreatingNote || !canGoBack) return;
     const index = navHistory.index - 1;
     const target = navHistory.stack[index];
     if (target !== selected && !confirmDiscard("You have unsaved changes. Discard them and go back?")) return;
@@ -640,7 +862,7 @@ function WorkspaceApp() {
   }
 
   function goForward() {
-    if (!canGoForward) return;
+    if (isCreatingNote || !canGoForward) return;
     const index = navHistory.index + 1;
     const target = navHistory.stack[index];
     if (target !== selected && !confirmDiscard("You have unsaved changes. Discard them and go forward?")) return;
@@ -649,6 +871,7 @@ function WorkspaceApp() {
   }
 
   async function switchVault(id: string) {
+    if (isCreatingNote) return;
     if (!confirmDiscard("You have unsaved changes. Discard them and switch vaults?")) return;
     setVaultMenuStatus("Starting vault runtime…");
     try {
@@ -690,6 +913,7 @@ function WorkspaceApp() {
   }
 
   function toggleTreePath(path: string) {
+    if (isCreatingNote) return;
     setExpandedTreePaths((current) => {
       const next = new Set(current);
       if (next.has(path)) next.delete(path);
@@ -699,6 +923,7 @@ function WorkspaceApp() {
   }
 
   function openTreeNode(node: Extract<ApiVaultTreeNode, { kind: "note" | "file" }>) {
+    if (isCreatingNote) return;
     if (node.kind === "note") {
       openPath(node.path);
       return;
@@ -708,6 +933,7 @@ function WorkspaceApp() {
   }
 
   async function addVaultFromMenu() {
+    if (isCreatingNote) return;
     setVaultMenuStatus("Choose a vault folder…");
     try {
       const entry = await invoke<VaultEntry | null>("add_vault_via_dialog");
@@ -719,6 +945,7 @@ function WorkspaceApp() {
   }
 
   async function revealVault(id: string) {
+    if (isCreatingNote) return;
     try {
       await invoke("reveal_vault", { id });
     } catch (cause) {
@@ -726,19 +953,98 @@ function WorkspaceApp() {
     }
   }
 
+  function finishNoteCreation() {
+    creationInFlightRef.current = false;
+    setIsCreatingNote(false);
+  }
+
   async function createNewNote() {
-    if (!confirmDiscard("You have unsaved changes. Discard them and create a note?")) return;
-    const title = window.prompt("Note title");
-    if (!title?.trim()) return;
-    try {
-      const created = await createNote({ title: title.trim() });
-      const [notesResult, treeResult] = await Promise.all([listNotes(undefined, 100), getVaultTree()]);
-      setNotes(notesResult.notes);
-      setVaultTree(treeResult);
-      openPath(created.path, { skipConfirm: true });
-    } catch (cause) {
-      setStatus(cause instanceof Error ? cause.message : String(cause));
+    if (creationInFlightRef.current || isCreatingNote) return;
+    creationInFlightRef.current = true;
+    setIsCreatingNote(true);
+    setCreationIssue(undefined);
+    setStatus("Preparing new note…");
+
+    const saved = await save();
+    if (!saved.ok) {
+      finishNoteCreation();
+      navigate("notes");
+      setCreationIssue({ kind: "save", message: `The current note could not be saved: ${saved.message}` });
+      return;
     }
+
+    setStatus("Creating note…");
+    let created: { path: string; id: string };
+    try {
+      created = await createNote({ title: "Untitled", type: "note" });
+    } catch (cause: unknown) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      finishNoteCreation();
+      navigate("notes");
+      setCreationIssue({ kind: "create", message: `The create request may have completed, so refresh before trying again. The note could not be created: ${message}` });
+      setStatus("Note creation failed; refresh before trying again");
+      return;
+    }
+
+    pendingCreatedNoteRef.current = created;
+    lastCreatedNoteRef.current = created;
+    createdNotePathsRef.current.add(created.path);
+    const now = new Date().toISOString();
+    createdNoteSummariesRef.current.set(created.path, {
+      id: created.id,
+      path: created.path,
+      title: "Untitled",
+      type: "note",
+      created_at: now,
+      updated_at: now,
+      aliases: [],
+      tags: [],
+      content_hash: "",
+    });
+    setNotes((current) => [createdNoteSummariesRef.current.get(created.path)!, ...current.filter((note) => note.path !== created.path)]);
+    setStatus("Opening note…");
+    setCreationIssue(undefined);
+    setPreviewPath(undefined);
+    setPanel("context");
+    setTabs((current) => current.includes(created.path) ? current : [...current, created.path]);
+    setSelected(created.path);
+    pushNavHistory(created.path);
+    navigate("notes");
+    void refreshCreatedNoteData(created.path);
+  }
+
+  function retryOpenCreatedNote() {
+    if (isCreatingNote) return;
+    const created = lastCreatedNoteRef.current;
+    if (!created) return;
+    pendingCreatedNoteRef.current = created;
+    creationInFlightRef.current = true;
+    setIsCreatingNote(true);
+    setCreationIssue(undefined);
+    setStatus("Opening note…");
+    setNoteLoadNonce((nonce) => nonce + 1);
+  }
+
+  async function retryCreatedNoteRefresh() {
+    if (isCreatingNote || isRefreshingCreatedNote) return;
+    const path = creationIssue?.path ?? lastCreatedNoteRef.current?.path;
+    if (!path) return;
+    setCreationIssue(undefined);
+    await refreshCreatedNoteData(path);
+  }
+
+  function focusBodyAfterTitle() {
+    if (!activeNotePath || isCreatingNote) return;
+    if (mode === "reading") setMode("live");
+    setFocusBodyRequest((current) => ({ path: activeNotePath, nonce: (current?.nonce ?? 0) + 1 }));
+  }
+
+  function completeTitleFocus(request: FocusRequest) {
+    setFocusTitleRequest((current) => current?.path === request.path && current.nonce === request.nonce ? undefined : current);
+  }
+
+  function completeBodyFocus(request: FocusRequest) {
+    setFocusBodyRequest((current) => current?.path === request.path && current.nonce === request.nonce ? undefined : current);
   }
 
   async function takeTheirs() {
@@ -768,22 +1074,35 @@ function WorkspaceApp() {
                   size="icon-lg"
                   className="size-8 rounded-md text-foreground/70 hover:bg-muted/70 hover:text-foreground [&_svg]:size-4"
                 />
-                <WorkspaceViewSwitcher route={route} onNavigate={navigate} />
+                <WorkspaceViewSwitcher route={route} onNavigate={navigate} disabled={isCreatingNote} />
               </div>
-              <div className="flex min-w-0 flex-1 items-center gap-2 px-3">
-                <Button variant="ghost" size="icon-sm" aria-label="Back" disabled={!canGoBack} onClick={goBack}><ArrowLeftIcon /></Button>
-                <Button variant="ghost" size="icon-sm" aria-label="Forward" disabled={!canGoForward} onClick={goForward}><ArrowRightIcon /></Button>
+              <div className={`flex min-w-0 flex-1 items-center gap-2 px-3 ${route === "notes" ? "note-toolbar-surface" : ""}`}>
+                <Button variant="ghost" size="icon-sm" aria-label="Back" disabled={isCreatingNote || !canGoBack} onClick={goBack}><ArrowLeftIcon /></Button>
+                <Button variant="ghost" size="icon-sm" aria-label="Forward" disabled={isCreatingNote || !canGoForward} onClick={goForward}><ArrowRightIcon /></Button>
                 <div className="cortex-tabs-scroll ml-3 flex min-w-0 flex-1 items-center gap-2 overflow-x-auto overscroll-x-contain" role="tablist" aria-label="Open notes">
                   {openTabs.map((tab) => (
                     <div key={tab.path} data-active-tab={selected === tab.path ? "true" : "false"} className={"group flex max-w-[220px] shrink-0 items-center text-xs transition-colors " + (selected === tab.path ? "rounded-md bg-muted/50 font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}>
-                      <button type="button" role="tab" aria-selected={selected === tab.path} data-testid="open-tab" onClick={() => openPath(tab.path)} className="min-w-0 flex-1 truncate px-1 py-1.5 text-left">{tab.title}</button>
-                      <button type="button" aria-label={`Close ${tab.title}`} onClick={(event) => closeTab(tab.path, event)} className="rounded px-1 py-1.5 opacity-0 hover:bg-muted group-hover:opacity-100"><XIcon className="size-3" /></button>
+                      <button type="button" role="tab" aria-selected={selected === tab.path} data-testid="open-tab" disabled={isCreatingNote} onClick={() => openPath(tab.path)} className="min-w-0 flex-1 truncate px-1 py-1.5 text-left">{tab.title}</button>
+                      <button type="button" aria-label={`Close ${tab.title}`} disabled={isCreatingNote} onClick={(event) => closeTab(tab.path, event)} className="rounded px-1 py-1.5 opacity-0 hover:bg-muted group-hover:opacity-100"><XIcon className="size-3" /></button>
                     </div>
                   ))}
                 </div>
-                {isDirty && <Button size="sm" className="shrink-0" onClick={() => void save()} disabled={!source}>Save</Button>}
-                <Button variant="ghost" size="icon-sm" className="shrink-0" aria-label="New note" onClick={() => void createNewNote()}><PlusIcon /></Button>
+                {isDirty && <Button size="sm" className="shrink-0" onClick={() => void save()} disabled={!source || isCreatingNote}>Save</Button>}
+                <Button variant="ghost" size="sm" className="shrink-0 gap-1" data-testid="export-pdf" aria-label="Export PDF" onClick={() => void exportPdf()} disabled={!source || !metadataDraft?.title.trim() || isExportingPdf || isCreatingNote}>
+                  <FileDownIcon className={isExportingPdf ? "animate-pulse" : undefined} />
+                  <span className="hidden sm:inline">{isExportingPdf ? "Exporting…" : "Export PDF"}</span>
+                </Button>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={<Button variant="ghost" size="icon-sm" className="shrink-0" aria-label="New note" data-testid="new-note-button" disabled={isCreatingNote} onClick={() => void createNewNote()} />}
+                  >
+                    {isCreatingNote ? <Loader2Icon className="animate-spin" /> : <PlusIcon />}
+                  </TooltipTrigger>
+                  <TooltipContent>New note (⌘N / Ctrl+N)</TooltipContent>
+                </Tooltip>
+                {isCreatingNote && <span data-testid="note-creation-progress" className="max-w-[180px] truncate text-xs text-muted-foreground">{status}</span>}
                 <span className="sr-only" aria-live="polite">{status}</span>
+                {status.includes("PDF") && <span className="max-w-[220px] truncate text-xs text-muted-foreground" data-testid="export-status" title={status}>{status}</span>}
               </div>
             </header>
           )}
@@ -792,7 +1111,7 @@ function WorkspaceApp() {
         <div className="flex min-h-0 w-full flex-1">
           <Sidebar collapsible="icon" className="!top-[52px] !h-[calc(100svh-52px)]">
             <SidebarHeader className="gap-2.5">
-              <SidebarInput placeholder="Search" aria-label="Search notes" value={query} onChange={(event) => setQuery(event.target.value)} />
+              <SidebarInput placeholder="Search" aria-label="Search notes" value={query} disabled={isCreatingNote} onChange={(event) => setQuery(event.target.value)} />
               {searchResults.length > 0 && <SidebarGroup><SidebarGroupLabel>Search results</SidebarGroupLabel><SidebarMenu>{searchResults.map((result) => <SidebarMenuItem key={result.path}><SidebarMenuButton size="lg" data-testid="search-result" onClick={() => openPath(result.path)}><FileTextIcon /><div className="flex min-w-0 flex-col items-start gap-0.5 group-data-[collapsible=icon]:hidden"><span className="truncate font-medium">{result.title}</span><span className="truncate text-[10px] text-muted-foreground">{result.snippet}</span></div></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu></SidebarGroup>}
             </SidebarHeader>
             <SidebarContent>
@@ -806,24 +1125,31 @@ function WorkspaceApp() {
               </SidebarGroup>
             </SidebarContent>
             <SidebarFooter className="relative p-3">
-              <button type="button" aria-label="Switch vault" data-testid="vault-switcher" onClick={() => { setVaultMenuOpen((open) => !open); setVaultMenuStatus(""); }} className="flex min-w-0 items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground">
-                <ChevronsUpDownIcon data-testid="vault-switcher-glyph" className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-                <span className="min-w-0 flex-1 truncate group-data-[collapsible=icon]:hidden">{vaultName}</span>
-              </button>
-              {vaultMenuOpen && isTauri && <div className="absolute right-2 bottom-[calc(100%+8px)] left-2 z-40 rounded-lg border bg-popover p-1.5 shadow-xl"><div className="px-2 py-1.5 text-[10px] font-semibold tracking-wide text-muted-foreground uppercase">Switch vault</div>{(vaultRegistry?.vaults ?? []).map((vault) => <div key={vault.id} className="flex items-center gap-1"><button type="button" className="min-w-0 flex-1 truncate rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted" onClick={() => void switchVault(vault.id)}>{vault.id === activeVaultId ? "✓ " : ""}{vault.name}</button><button type="button" aria-label={`Reveal ${vault.name}`} className="rounded-md px-1.5 py-1 text-[10px] text-muted-foreground hover:bg-muted" onClick={() => void revealVault(vault.id)}>↗</button></div>)}<button type="button" className="mt-1 w-full rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => void addVaultFromMenu()}>+ Add vault…</button>{vaultMenuStatus && <p className="px-2 py-1 text-[10px] text-muted-foreground">{vaultMenuStatus}</p>}</div>}
+              <div className="flex items-center gap-1.5">
+                <button type="button" aria-label="Switch vault" data-testid="vault-switcher" disabled={isCreatingNote} onClick={() => { setVaultMenuOpen((open) => !open); setVaultMenuStatus(""); }} className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50">
+                  <ChevronsUpDownIcon data-testid="vault-switcher-glyph" className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                  <span className="min-w-0 flex-1 truncate group-data-[collapsible=icon]:hidden">{vaultName}</span>
+                </button>
+                <ThemeToggle />
+              </div>
+              {vaultMenuOpen && isTauri && <div className="absolute right-2 bottom-[calc(100%+8px)] left-2 z-40 rounded-lg border bg-popover p-1.5 shadow-xl"><div className="px-2 py-1.5 text-[10px] font-semibold tracking-wide text-muted-foreground uppercase">Switch vault</div>{(vaultRegistry?.vaults ?? []).map((vault) => <div key={vault.id} className="flex items-center gap-1"><button type="button" disabled={isCreatingNote} className="min-w-0 flex-1 truncate rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted disabled:opacity-50" onClick={() => void switchVault(vault.id)}>{vault.id === activeVaultId ? "✓ " : ""}{vault.name}</button><button type="button" aria-label={`Reveal ${vault.name}`} disabled={isCreatingNote} className="rounded-md px-1.5 py-1 text-[10px] text-muted-foreground hover:bg-muted disabled:opacity-50" onClick={() => void revealVault(vault.id)}>↗</button></div>)}<button type="button" disabled={isCreatingNote} className="mt-1 w-full rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50" onClick={() => void addVaultFromMenu()}>+ Add vault…</button>{vaultMenuStatus && <p className="px-2 py-1 text-[10px] text-muted-foreground">{vaultMenuStatus}</p>}</div>}
             </SidebarFooter>
           </Sidebar>
 
           <SidebarInset data-testid="workspace" className="relative min-w-0">
-            {route === "graph" ? <section className="flex min-h-0 flex-1 flex-col bg-background"><GraphPane onOpenPath={openPath} onOpenCode={openGraphCode} onBackToNote={() => navigate("notes")} activeNoteLabel={source?.note.title} initialCenter={graphCenter} initialCenterLabel={currentTitle} /></section> : <div className="flex min-h-0 flex-1 flex-col">
-              <div className="min-h-0 flex-1 overflow-auto overscroll-contain">
-                {source && metadataDraft ? <NoteMetadata metadata={metadataDraft} mode={mode} dirty={isDirty} notePath={activeNotePath} connectedFiles={context?.likely_files?.length ?? 0} onChange={setMetadataDraft} onModeChange={setMode} onToggleInspector={() => setContextPanelOpen(true)} /> : previewPath ? <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileIcon /></EmptyMedia><EmptyTitle>File preview unavailable</EmptyTitle><EmptyDescription>{previewPath} is not an indexed Markdown note.</EmptyDescription></EmptyHeader></Empty> : <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileTextIcon /></EmptyMedia><EmptyTitle>Choose a note</EmptyTitle><EmptyDescription>The indexed Markdown workspace will appear here.</EmptyDescription></EmptyHeader></Empty>}
-                {source && <div className="min-h-[440px] border-t border-border/60"><Editor value={draft} mode={mode} onChange={setDraft} linkTargets={notes.map((note) => note.title)} notePath={activeNotePath} notes={notes} onOpenNote={openPath} sections={source.sections} contentRevision={contentRevision} jumpRequest={jumpRequest} /></div>}
+            {route === "graph" ? <section className="flex min-h-0 flex-1 flex-col bg-background"><GraphPane onOpenPath={openPath} onOpenCode={openGraphCode} onBackToNote={() => { if (!isCreatingNote) navigate("notes"); }} activeNoteLabel={source?.note.title} initialCenter={graphCenter} initialCenterLabel={currentTitle} /></section> : <div className="note-workspace flex min-h-0 flex-1 flex-col" aria-busy={isCreatingNote}>
+              <div data-testid="note-document-scroll" className="note-document-scroll min-h-0 flex-1 overflow-auto overscroll-contain">
+                {creationIssue && <Alert data-testid="note-creation-status" variant="destructive" className="m-3"><AlertTitle>{creationIssue.kind === "save" ? "Could not create note" : creationIssue.kind === "load" ? "Note created but could not be opened" : creationIssue.kind === "refresh" ? "Note created but workspace refresh failed" : "Could not create note"}</AlertTitle><AlertDescription><p>{creationIssue.message}</p>{creationIssue.kind === "load" && <Button size="sm" variant="outline" disabled={isCreatingNote} onClick={() => void retryOpenCreatedNote()}>Open created note again</Button>}{creationIssue.kind === "refresh" && <Button size="sm" variant="outline" disabled={isRefreshingCreatedNote || isCreatingNote} onClick={() => void retryCreatedNoteRefresh()}>{isRefreshingCreatedNote ? "Refreshing…" : "Refresh"}</Button>}{creationIssue.kind === "create" && <Button size="sm" variant="outline" disabled={isRefreshing || isCreatingNote} onClick={() => void refreshIndex()}>Refresh</Button>}</AlertDescription></Alert>}
+                {source && metadataDraft ? <NoteMetadata metadata={metadataDraft} mode={mode} dirty={isDirty} notePath={activeNotePath} connectedFiles={context?.likely_files?.length ?? 0} disabled={isCreatingNote} focusTitleRequest={focusTitleRequest} onTitleFocusComplete={completeTitleFocus} onTitleEnter={focusBodyAfterTitle} onChange={setMetadataDraft} onModeChange={setMode} onToggleInspector={() => setContextPanelOpen(true)} /> : previewPath ? <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileIcon /></EmptyMedia><EmptyTitle>File preview unavailable</EmptyTitle><EmptyDescription>{previewPath} is not an indexed Markdown note.</EmptyDescription></EmptyHeader></Empty> : <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileTextIcon /></EmptyMedia><EmptyTitle>Choose a note</EmptyTitle><EmptyDescription>The indexed Markdown workspace will appear here.</EmptyDescription><Button data-testid="create-note-empty" onClick={() => void createNewNote()} disabled={isCreatingNote}><PlusIcon />Create note</Button></EmptyHeader></Empty>}
+                {source && <div className="note-editor-section flex border-t border-border/60"><Editor key={activeNotePath + ":" + (isCreatingNote ? "busy" : "ready")} value={draft} mode={mode} onChange={isCreatingNote ? () => undefined : setDraft} linkTargets={notes.map((note) => note.title)} notePath={activeNotePath} notes={notes} onOpenNote={openPath} sections={source.sections} contentRevision={contentRevision} jumpRequest={jumpRequest} disabled={isCreatingNote} focusRequest={focusBodyRequest} onFocusComplete={completeBodyFocus} /></div>}
               </div>
               {conflict && <Alert variant="destructive" className="m-3 shrink-0"><AlertTitle>External edit needs your decision</AlertTitle><AlertDescription><p>Conflicts: {conflict.sections.join(", ")}</p><div className="mt-2 flex gap-2"><Button size="sm" variant="outline" onClick={() => void takeTheirs()}>Take theirs</Button><Button size="sm" variant="outline" onClick={() => void keepMine()}>Keep mine</Button></div></AlertDescription></Alert>}
-              <footer data-testid="workspace-status-footer" className="relative z-20 flex h-8 shrink-0 items-center gap-3 bg-background/92 px-4 text-[11px] text-muted-foreground backdrop-blur-md before:pointer-events-none before:absolute before:inset-x-0 before:-top-10 before:h-10 before:bg-gradient-to-b before:from-transparent before:via-background/65 before:to-background before:backdrop-blur-[2px] before:content-['']"><span className="relative z-10 flex items-center gap-1"><FilesIcon className="size-3" />{noteCount ?? notes.length} notes</span><span className="relative z-10 flex items-center gap-1"><DatabaseIcon className="size-3" />{workspaceStatus?.repositories.length ?? 0} repositories</span><span className={"relative z-10 ml-auto flex items-center gap-1.5" + ((isStale || isIndexing || indexError) ? " text-warning" : "")}><span className={"size-1.5 rounded-full " + ((isStale || isIndexing || indexError) ? "bg-warning" : "bg-primary")} />{isIndexing ? (workspaceStatus?.phase === "warming" ? "Workspace warming…" : "Index rebuilding…") : indexError ? "Index error" : isStale ? "Index stale" : "Index current"}</span></footer>
+              <footer data-testid="workspace-status-footer" className="relative z-20 flex h-8 shrink-0 items-center gap-3 bg-background/92 px-4 text-[11px] text-muted-foreground backdrop-blur-md before:pointer-events-none before:absolute before:inset-x-0 before:-top-10 before:h-10 before:bg-gradient-to-b before:from-transparent before:via-background/65 before:to-background before:backdrop-blur-[2px] before:content-['']"><span className="relative z-10 flex items-center gap-1"><FilesIcon className="size-3" />{noteCount ?? notes.length} notes</span><span className="relative z-10 flex items-center gap-1"><DatabaseIcon className="size-3" />{workspaceStatus?.repositories.length ?? 0} repositories</span><span aria-live="polite" className={"relative z-10 ml-auto flex items-center gap-1.5" + ((indexNeedsRefresh || isIndexing || isRefreshing) ? " text-warning" : "")}>
+                {indexNeedsRefresh || isRefreshing ? <button type="button" data-testid="refresh-index" aria-label={isRefreshing ? "Refreshing index" : "Refresh index"} title={isRefreshing ? "Refreshing index…" : "Refresh index"} disabled={isRefreshing} onClick={() => void refreshIndex()} className="group/refresh inline-flex size-5 items-center justify-center rounded-sm text-warning transition-colors hover:bg-warning/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-warning/40 disabled:cursor-wait"><RefreshCwIcon className={"size-3 transition-transform " + (isRefreshing ? "animate-spin" : "group-hover/refresh:rotate-45")} aria-hidden="true" /><span className="sr-only">{isRefreshing ? "Refreshing index" : "Refresh index"}</span></button> : isIndexing ? <Loader2Icon className="size-3 animate-spin" aria-hidden="true" /> : <span className="size-1.5 rounded-full bg-primary" aria-hidden="true" />}
+                <span>{isRefreshing ? "Refreshing index…" : isIndexing ? (workspaceStatus?.phase === "warming" ? "Workspace warming…" : "Index rebuilding…") : indexError || indexRefreshError ? "Index error" : isStale ? "Index stale" : "Index current"}</span>
+              </span></footer>
             </div>}
-            <InspectorDrawer open={contextPanelOpen} panel={panel} source={source} context={context} workspaceStatus={workspaceStatus} vaultCheck={vaultCheck} relationshipGroups={relationshipGroups} history={history} selectedRevision={selectedRevision} diff={diff} codeTarget={codeTarget} codeHistory={codeHistory} codeSelectedRevision={codeSelectedRevision} codeDiff={codeDiff} outlineSections={outlineSections} onClose={() => setContextPanelOpen(false)} onPanelChange={setPanel} onOpenContextItem={openContextItem} onViewInGraph={() => context?.anchor && viewInGraph(context.anchor.nodeId)} onRequestJump={requestJump} onSelectRevision={setSelectedRevision} onSelectCodeRevision={setCodeSelectedRevision} onBackToNote={() => setCodeTarget(undefined)} onRestore={() => void restoreSelected()} />
+            <InspectorDrawer open={contextPanelOpen && !isCreatingNote} panel={panel} source={source} context={context} workspaceStatus={workspaceStatus} vaultCheck={vaultCheck} relationshipGroups={relationshipGroups} history={history} selectedRevision={selectedRevision} diff={diff} codeTarget={codeTarget} codeHistory={codeHistory} codeSelectedRevision={codeSelectedRevision} codeDiff={codeDiff} outlineSections={outlineSections} onClose={() => setContextPanelOpen(false)} onPanelChange={setPanel} onOpenContextItem={openContextItem} onViewInGraph={() => context?.anchor && viewInGraph(context.anchor.nodeId)} onRequestJump={requestJump} onSelectRevision={setSelectedRevision} onSelectCodeRevision={setCodeSelectedRevision} onBackToNote={() => setCodeTarget(undefined)} onRestore={() => void restoreSelected()} />
           </SidebarInset>
         </div>
       </SidebarProvider>

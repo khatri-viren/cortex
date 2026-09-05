@@ -181,6 +181,40 @@ test("vault footer reports note and repository counts", async ({ page }) => {
   await expect(page.getByTestId("vault-switcher-glyph")).toBeVisible();
 });
 
+test("vault footer exposes the theme switch beside the vault control", async ({ page }) => {
+  await page.goto("/?vault=phase-c-theme");
+  const toggle = page.getByTestId("theme-toggle");
+
+  await expect(toggle).toBeVisible();
+  await expect(toggle).toHaveAttribute("aria-label", "Switch to dark theme");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-label", "Switch to light theme");
+  await expect(page.locator("html")).toHaveClass(/dark/);
+});
+
+test("stale index status exposes a refresh action", async ({ page }) => {
+  let refreshCalls = 0;
+  await page.route("**/api/workspace/status*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ active: true, phase: "current", repositories: [{ id: "sample", path: "sample", status: "stale" }], diagnostics: [] }),
+    });
+  });
+  await page.route("**/api/index/rebuild", async (route) => {
+    refreshCalls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ index: { mode: "full" } }) });
+  });
+
+  await page.goto("/?vault=phase-c-stale");
+  const refresh = page.getByTestId("refresh-index");
+  await expect(refresh).toBeVisible();
+  await refresh.click();
+  await expect(refresh.locator("svg")).toHaveClass(/animate-spin/);
+  await expect.poll(() => refreshCalls).toBe(1);
+});
+
 test("session (open tabs) persists across reload, scoped by vault", async ({ page }) => {
   await page.goto("/?vault=phase-c-test");
   const rows = page.getByTestId("note-row");
