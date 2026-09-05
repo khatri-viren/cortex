@@ -53,6 +53,21 @@ describe("Phase 3 local API", () => {
     });
   });
 
+  test("returns a deterministic, bounded graph neighborhood", async () => {
+    await withApi(async (base) => {
+      const responses = await Promise.all([
+        fetch(base + "/api/project-map?depth=3&limit=50"),
+        fetch(base + "/api/project-map?depth=3&limit=50"),
+      ]);
+      const payloads = await Promise.all(responses.map((response) => response.json() as Promise<{ anchor: { nodeId: string }; nodes: unknown[]; edges: unknown[]; truncated: boolean }>));
+      expect(payloads[0]?.anchor.nodeId).toBe("project:root");
+      expect(payloads[0]?.nodes.length).toBeLessThanOrEqual(50);
+      expect(payloads[0]?.nodes).toEqual(payloads[1]?.nodes);
+      expect(payloads[0]?.edges).toEqual(payloads[1]?.edges);
+      expect(typeof payloads[0]?.truncated).toBe("boolean");
+    });
+  });
+
   test("serves a vault tree and accepts structured body/metadata updates", async () => {
     await withApi(async (base) => {
       const tree = await fetch(base + "/api/vault/tree");

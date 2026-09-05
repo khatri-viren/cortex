@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
 import {
   ArrowLeftIcon,
@@ -19,13 +19,14 @@ import {
 } from "lucide-react";
 import type { ApiContext, ApiGraphEdge, ApiGraphNode, ApiHistory, ApiNoteMetadataPatch, ApiNoteSource, ApiSection, ApiVaultCheck, ApiVaultTree, ApiVaultTreeNode, ApiWorkspaceStatus } from "../../src/api/contracts";
 import type { NoteFrontmatter } from "../../src/core/types";
-import { Editor } from "./Editor";
-import { GraphPane } from "./GraphPane";
+const Editor = lazy(() => import("./Editor").then((module) => ({ default: module.Editor })));
+const GraphPane = lazy(() => import("./GraphPane").then((module) => ({ default: module.GraphPane })));
 import { VaultPicker } from "./VaultPicker";
 import { NoteMetadata } from "./components/note-metadata";
 import { InspectorDrawer } from "./components/inspector-drawer";
 import { ThemeToggle } from "./components/theme-toggle";
 import { VaultTree } from "./components/vault-tree";
+import { useDocumentSession } from "./document-session";
 import { closeMainWindow, openRegisteredVault, invoke, type VaultEntry, type VaultRegistry } from "./vault-registry";
 import type { Mode } from "./types";
 import {
@@ -276,10 +277,19 @@ function WorkspaceApp() {
   const [expandedTreePaths, setExpandedTreePaths] = useState<Set<string>>(() => new Set(initialSession.expandedTreePaths));
   const [navHistory, setNavHistory] = useState<{ stack: string[]; index: number }>({ stack: [], index: -1 });
   const [source, setSource] = useState<ApiNoteSource>();
-  const [draft, setDraft] = useState("");
-  const [base, setBase] = useState("");
-  const [metadataDraft, setMetadataDraft] = useState<NoteFrontmatter>();
-  const [baseMetadata, setBaseMetadata] = useState<NoteFrontmatter>();
+  const {
+    draft,
+    metadataDraft,
+    isDirty,
+    localRevision: localEditRevisionRef,
+    draftRef,
+    metadataDraftRef,
+    isDirtyRef,
+    updateDraft,
+    updateMetadata,
+    replace: replaceDocument,
+    acknowledge: acknowledgeDocument,
+  } = useDocumentSession();
   const [mode, setMode] = useState<Mode>(initialSession.mode);
   const [vaultTree, setVaultTree] = useState<ApiVaultTree>();
   const [previewPath, setPreviewPath] = useState<string>();
@@ -331,23 +341,11 @@ function WorkspaceApp() {
   // to force the rendered pane to pick up the new content instead of going
   // stale (see Editor.tsx's contentRevision prop).
   const [contentRevision, setContentRevision] = useState(0);
-  const localEditRevisionRef = useRef(0);
   const saveRequestRef = useRef(0);
   const sessionSaveQueueRef = useRef(Promise.resolve());
 
-  const isDirty = draft !== base || JSON.stringify(metadataDraft) !== JSON.stringify(baseMetadata);
   const currentTitle = metadataDraft?.title ?? source?.note.title ?? "Select a note";
   const activeNotePath = source?.note.path;
-
-  function updateDraft(next: string) {
-    localEditRevisionRef.current += 1;
-    setDraft(next);
-  }
-
-  function updateMetadata(next: NoteFrontmatter) {
-    localEditRevisionRef.current += 1;
-    setMetadataDraft(next);
-  }
 
   const recentNotes = useMemo(
     () => notes.slice(0, RECENTS_LIMIT),
@@ -524,13 +522,8 @@ function WorkspaceApp() {
   }
 
   function applySource(next: ApiNoteSource, bumpContentRevision = false) {
-    const nextMetadata = cloneMetadata(next.frontmatter);
-    localEditRevisionRef.current = 0;
     setSource(next);
-    setDraft(next.body);
-    setBase(next.body);
-    setMetadataDraft(nextMetadata);
-    setBaseMetadata(cloneMetadata(nextMetadata));
+    replaceDocument(next);
     if (createdNotePathsRef.current.has(next.note.path)) {
       createdNoteSummariesRef.current.set(next.note.path, next.note);
       setNotes((current) => [next.note, ...current.filter((note) => note.path !== next.note.path)]);
@@ -783,14 +776,14 @@ function WorkspaceApp() {
   }, [query]);
 
   async function save(): Promise<SaveResult> {
-    if (!source || !metadataDraft || !isDirty) return { ok: true };
+    if (!source || !metadataDraftRef.current || !isDirtyRef.current) return { ok: true };
     if (isSaving) return { ok: false, message: "A save is already in progress." };
     const requestedPath = source.note.path;
     const submittedRevision = localEditRevisionRef.current;
     const requestId = ++saveRequestRef.current;
     const expectedHash = source.note.content_hash;
-    const submittedDraft = draft;
-    const submittedMetadata = cloneMetadata(metadataDraft);
+    const submittedDraft = draftRef.current;
+    const submittedMetadata = cloneMetadata(metadataDraftRef.current);
     setIsSaving(true);
     setStatus("Saving...");
     try {
@@ -812,8 +805,7 @@ function WorkspaceApp() {
         // draft must remain in the editor. Applying the whole source here
         // would silently discard that draft.
         setSource(next);
-        setBase(next.body);
-        setBaseMetadata(cloneMetadata(next.frontmatter));
+        acknowledgeDocument(next, true);
         setNotes((current) => current.map((note) => note.path === next.note.path ? next.note : note));
         setStatus("Saved previous revision; newer edits kept");
       }
@@ -828,6 +820,7 @@ function WorkspaceApp() {
   }
 
   async function exportPdf() {
+    const currentMetadata = metadataDraftRef.current;
     console.info("[PDF-EXPORT] click", {
       isTauri,
       hasSource: Boolean(source),
@@ -835,14 +828,14 @@ function WorkspaceApp() {
       titleLength: metadataDraft?.title.trim().length ?? 0,
       isExportingPdf,
     });
-    if (!source || !metadataDraft || !metadataDraft.title.trim() || isExportingPdf) {
+    if (!source || !currentMetadata || !currentMetadata.title.trim() || isExportingPdf) {
       console.warn("[PDF-EXPORT] click:guarded");
       return;
     }
     setIsExportingPdf(true);
     setStatus("Exporting PDF...");
     try {
-      const result = await exportNotePdf(source.note.path, draft, metadataDraft.title);
+      const result = await exportNotePdf(source.note.path, draftRef.current, currentMetadata.title);
       const nativeWindow = window as Window & { __TAURI__?: unknown };
       console.info("[PDF-EXPORT] delivery:detect", { isTauri, hasGlobalTauri: Boolean(nativeWindow.__TAURI__) });
       if (nativeWindow.__TAURI__) {
@@ -964,15 +957,16 @@ function WorkspaceApp() {
   }
 
   async function keepMine() {
-    if (!source || !conflict || !metadataDraft) return;
+    const currentMetadata = metadataDraftRef.current;
+    if (!source || !conflict || !currentMetadata) return;
     try {
-      const next = await updateNote(source.note.path, conflict.hash, draft, {
-        title: metadataDraft.title,
-        type: metadataDraft.type,
-        aliases: metadataDraft.aliases,
-        tags: metadataDraft.tags,
-        applies_to: metadataDraft.applies_to,
-        extra: metadataDraft.extra,
+      const next = await updateNote(source.note.path, conflict.hash, draftRef.current, {
+        title: currentMetadata.title,
+        type: currentMetadata.type,
+        aliases: currentMetadata.aliases,
+        tags: currentMetadata.tags,
+        applies_to: currentMetadata.applies_to,
+        extra: currentMetadata.extra,
       });
       applySource(next);
       setStatus("Kept local version");
@@ -1219,11 +1213,11 @@ function WorkspaceApp() {
           </Sidebar>
 
           <SidebarInset data-testid="workspace" className="relative min-w-0">
-            {route === "graph" ? <section className="flex min-h-0 flex-1 flex-col bg-background"><GraphPane onOpenPath={openPath} onOpenCode={openGraphCode} onBackToNote={() => { if (!isCreatingNote) navigate("notes"); }} activeNoteLabel={source?.note.title} initialCenter={graphCenter} initialCenterLabel={currentTitle} /></section> : <div className="note-workspace flex min-h-0 flex-1 flex-col" aria-busy={isCreatingNote}>
+            {route === "graph" ? <section className="flex min-h-0 flex-1 flex-col bg-background"><Suspense fallback={<div className="grid min-h-0 flex-1 place-items-center text-sm text-muted-foreground">Loading graph tools…</div>}><GraphPane onOpenPath={openPath} onOpenCode={openGraphCode} onBackToNote={() => { if (!isCreatingNote) navigate("notes"); }} activeNoteLabel={source?.note.title} initialCenter={graphCenter} initialCenterLabel={currentTitle} /></Suspense></section> : <div className="note-workspace flex min-h-0 flex-1 flex-col" aria-busy={isCreatingNote}>
               <div data-testid="note-document-scroll" className="note-document-scroll min-h-0 flex-1 overflow-auto overscroll-contain">
                 {creationIssue && <Alert data-testid="note-creation-status" variant="destructive" className="m-3"><AlertTitle>{creationIssue.kind === "save" ? "Could not create note" : creationIssue.kind === "load" ? "Note created but could not be opened" : creationIssue.kind === "refresh" ? "Note created but workspace refresh failed" : "Could not create note"}</AlertTitle><AlertDescription><p>{creationIssue.message}</p>{creationIssue.kind === "load" && <Button size="sm" variant="outline" disabled={isCreatingNote} onClick={() => void retryOpenCreatedNote()}>Open created note again</Button>}{creationIssue.kind === "refresh" && <Button size="sm" variant="outline" disabled={isRefreshingCreatedNote || isCreatingNote} onClick={() => void retryCreatedNoteRefresh()}>{isRefreshingCreatedNote ? "Refreshing…" : "Refresh"}</Button>}{creationIssue.kind === "create" && <Button size="sm" variant="outline" disabled={isRefreshing || isCreatingNote} onClick={() => void refreshIndex()}>Refresh</Button>}</AlertDescription></Alert>}
                 {source && metadataDraft ? <NoteMetadata metadata={metadataDraft} mode={mode} dirty={isDirty} notePath={activeNotePath} connectedFiles={context?.likely_files?.length ?? 0} disabled={isCreatingNote} focusTitleRequest={focusTitleRequest} onTitleFocusComplete={completeTitleFocus} onTitleEnter={focusBodyAfterTitle} onChange={updateMetadata} onModeChange={setMode} onToggleInspector={() => setContextPanelOpen(true)} /> : previewPath ? <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileIcon /></EmptyMedia><EmptyTitle>File preview unavailable</EmptyTitle><EmptyDescription>{previewPath} is not an indexed Markdown note.</EmptyDescription></EmptyHeader></Empty> : <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileTextIcon /></EmptyMedia><EmptyTitle>Choose a note</EmptyTitle><EmptyDescription>The indexed Markdown workspace will appear here.</EmptyDescription><Button data-testid="create-note-empty" onClick={() => void createNewNote()} disabled={isCreatingNote}><PlusIcon />Create note</Button></EmptyHeader></Empty>}
-                {source && <div className="note-editor-section flex border-t border-border/60"><Editor key={activeNotePath + ":" + (isCreatingNote ? "busy" : "ready")} value={draft} mode={mode} onChange={isCreatingNote ? () => undefined : updateDraft} linkTargets={notes.map((note) => note.title)} notePath={activeNotePath} notes={notes} onOpenNote={openPath} sections={source.sections} contentRevision={contentRevision} jumpRequest={jumpRequest} disabled={isCreatingNote} focusRequest={focusBodyRequest} onFocusComplete={completeBodyFocus} /></div>}
+                {source && <div className="note-editor-section flex border-t border-border/60"><Suspense fallback={<div className="grid min-h-[440px] flex-1 place-items-center text-sm text-muted-foreground">Loading editor…</div>}><Editor key={activeNotePath + ":" + (isCreatingNote ? "busy" : "ready")} value={draft} mode={mode} onChange={isCreatingNote ? () => undefined : updateDraft} linkTargets={notes.map((note) => note.title)} notePath={activeNotePath} notes={notes} onOpenNote={openPath} sections={source.sections} contentRevision={contentRevision} jumpRequest={jumpRequest} disabled={isCreatingNote} focusRequest={focusBodyRequest} onFocusComplete={completeBodyFocus} /></Suspense></div>}
               </div>
               {conflict && <Alert variant="destructive" className="m-3 shrink-0"><AlertTitle>External edit needs your decision</AlertTitle><AlertDescription><p>Conflicts: {conflict.sections.join(", ")}</p><div className="mt-2 flex gap-2"><Button size="sm" variant="outline" onClick={() => void takeTheirs()}>Take theirs</Button><Button size="sm" variant="outline" onClick={() => void keepMine()}>Keep mine</Button></div></AlertDescription></Alert>}
               <footer data-testid="workspace-status-footer" className="relative z-20 flex h-8 shrink-0 items-center gap-3 bg-background/92 px-4 text-[11px] text-muted-foreground backdrop-blur-md before:pointer-events-none before:absolute before:inset-x-0 before:-top-10 before:h-10 before:bg-gradient-to-b before:from-transparent before:via-background/65 before:to-background before:backdrop-blur-[2px] before:content-['']"><span className="relative z-10 flex items-center gap-1"><FilesIcon className="size-3" />{noteCount ?? notes.length} notes</span><span className="relative z-10 flex items-center gap-1"><DatabaseIcon className="size-3" />{workspaceStatus?.repositories.length ?? 0} repositories</span><span aria-live="polite" className={"relative z-10 ml-auto flex items-center gap-1.5" + ((indexNeedsRefresh || isIndexing || isRefreshing) ? " text-warning" : "")}>

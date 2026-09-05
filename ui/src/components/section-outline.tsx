@@ -55,8 +55,13 @@ export function SectionOutline({ sections, activeIndex, onJump }: SectionOutline
 
     viewport.addEventListener("scroll", schedulePosition);
     window.addEventListener("resize", schedulePosition);
-    const observer = new MutationObserver(schedulePosition);
-    observer.observe(root, { childList: true, subtree: true });
+    // The editor's virtualized DOM changes frequently while scrolling. A
+    // MutationObserver would schedule a layout read for every mounted line;
+    // resize and viewport events are sufficient to keep the rail aligned and
+    // avoid turning typing/scrolling into a mutation storm.
+    const observer = new ResizeObserver(schedulePosition);
+    observer.observe(root);
+    observer.observe(viewport);
     schedulePosition();
 
     return () => {

@@ -33,6 +33,7 @@ const MAX_SEARCH_LIMIT = 50;
 const MAX_LIST_LIMIT = 100;
 const MAX_GRAPH_LIMIT = 100;
 const MAX_CONTEXT_BYTES = 6_000;
+const MAX_GRAPH_RESPONSE_BYTES = 512_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HASH_RE = /^[0-9a-f]{64}$/i;
 const MAX_CHANGE_HISTORY = 128;
@@ -453,7 +454,16 @@ export class VaultRuntime {
       for (const nodeId of frontier) {
         const outgoing = direction === "in" ? [] : this.indexer.store.unifiedEdgesFrom(nodeId);
         const incoming = direction === "out" ? [] : this.indexer.store.unifiedEdgesTo(nodeId);
-        for (const row of [...outgoing, ...incoming]) {
+        // SQLite does not promise row order. Stable traversal makes the
+        // bounded neighborhood reproducible and prevents a high-degree node
+        // from returning a different slice on each request.
+        const adjacent = [...outgoing, ...incoming].sort((left, right) =>
+          left.kind.localeCompare(right.kind)
+          || left.from_id.localeCompare(right.from_id)
+          || left.to_id.localeCompare(right.to_id)
+          || left.metadata_json.localeCompare(right.metadata_json),
+        );
+        for (const row of adjacent) {
           const edge = { fromId: row.from_id, toId: row.to_id, kind: row.kind, metadata: jsonMetadata(row.metadata_json) };
           edges.set(`${edge.fromId}|${edge.toId}|${edge.kind}|${row.metadata_json}`, edge);
           const neighbor = direction === "in" ? edge.fromId : edge.toId;
@@ -699,11 +709,15 @@ export class VaultRuntime {
   }
 
   projectMap(selector = "project:root", depth?: number, limit?: number): GraphQueryResult {
-    return this.queryGraphInternal(selector, "neighbors", Math.max(1, Math.min(depth ?? 1, 3)), clamp(limit, 50, MAX_GRAPH_LIMIT));
+    const graph = this.queryGraphInternal(selector, "neighbors", Math.max(1, Math.min(depth ?? 1, 3)), clamp(limit, 50, MAX_GRAPH_LIMIT));
+    const bounded = trimPayload(graph, MAX_GRAPH_RESPONSE_BYTES);
+    return { ...bounded.value, truncated: graph.truncated || bounded.truncated };
   }
 
   graphQuery(selector: string, direction: GraphDirection, depth?: number, limit?: number): GraphQueryResult {
-    return this.queryGraphInternal(selector, direction, Math.max(1, Math.min(depth ?? 1, 4)), clamp(limit, 50, MAX_GRAPH_LIMIT));
+    const graph = this.queryGraphInternal(selector, direction, Math.max(1, Math.min(depth ?? 1, 4)), clamp(limit, 50, MAX_GRAPH_LIMIT));
+    const bounded = trimPayload(graph, MAX_GRAPH_RESPONSE_BYTES);
+    return { ...bounded.value, truncated: graph.truncated || bounded.truncated };
   }
 
   getContext(selector: string, taskHint?: string, limit?: number): Record<string, unknown> {

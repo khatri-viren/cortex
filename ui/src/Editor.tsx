@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AtomicCodeMirrorEditor,
   wikiLinks,
@@ -119,7 +119,7 @@ type EditorProps = {
   onFocusComplete?: (request: { path: string; nonce: number }) => void;
 };
 
-export function Editor({
+export const Editor = memo(function Editor({
   value,
   mode,
   onChange,
@@ -150,6 +150,10 @@ export function Editor({
         .sort((a, b) => a.startLine - b.startLine),
     [sections],
   );
+  const outlineSectionsRef = useRef<ApiSection[]>([]);
+  const modeRef = useRef(mode);
+  outlineSectionsRef.current = outlineSections;
+  modeRef.current = mode;
   const onChangeRef = useRef(onChange);
   const linkTargetsRef = useRef(linkTargets);
   const notesRef = useRef(notes);
@@ -242,6 +246,33 @@ export function Editor({
 
   const readingExtensions = useMemo(
     () => [
+      // CodeMirror reports document and viewport transactions even while its
+      // virtualized line DOM is being replaced. Resolve the active heading
+      // from document line blocks here so duplicate headings and unsaved
+      // edits retain their section identity without a mutation observer.
+      EditorView.updateListener.of((update) => {
+        if (!(update.docChanged || update.viewportChanged || update.geometryChanged)) return;
+        requestAnimationFrame(() => {
+          if (modeRef.current === "source") return;
+          const currentSections = outlineSectionsRef.current;
+          if (currentSections.length < 2) return;
+          const scroller = update.view.scrollDOM;
+          const activationLine = scroller.getBoundingClientRect().top + Math.min(160, scroller.clientHeight * 0.3);
+          const maxScroll = scroller.scrollHeight - scroller.clientHeight;
+          if (maxScroll <= 0 || scroller.scrollTop >= maxScroll - 2) {
+            setActiveSectionIndex((current) => current === currentSections.length - 1 ? current : currentSections.length - 1);
+            return;
+          }
+          let next = 0;
+          for (let index = 0; index < currentSections.length; index += 1) {
+            const lineNumber = Math.max(1, Math.min(currentSections[index].startLine, update.view.state.doc.lines));
+            const coords = update.view.coordsAtPos(update.view.state.doc.line(lineNumber).from);
+            if (coords && coords.top <= activationLine) next = index;
+            else if (coords) break;
+          }
+          setActiveSectionIndex((current) => current === next ? current : next);
+        });
+      }),
       wikiLinks({
         suggest: async (query) => {
           const lowered = query.toLocaleLowerCase();
@@ -429,4 +460,4 @@ export function Editor({
       aria-label="Markdown editor"
     />
   );
-}
+});
