@@ -57,9 +57,7 @@ function indexExists(vaultRoot: string): boolean {
 }
 
 function topLevelAreas(indexer: VaultIndexer, limit: number): string[] {
-  const rows = indexer.store.db.query<{ path: string | null; kind: string; name: string }, []>(
-    "SELECT path, kind, name FROM graph_nodes WHERE path IS NOT NULL ORDER BY kind, path",
-  ).all();
+  const rows = indexer.store.graphPaths();
   const values = new Set<string>();
   for (const row of rows) {
     if (!row.path) continue;
@@ -124,9 +122,7 @@ export function buildSessionContext(vaultRoot: string, requestedTokenCap = DEFAU
 }
 
 function indexedHash(indexer: VaultIndexer, relativePath: string): string | undefined {
-  return indexer.store.db.query<{ content_hash: string }, [string]>(
-    "SELECT content_hash FROM files WHERE path = ?1",
-  ).get(relativePath)?.content_hash;
+  return indexer.store.fileHash(relativePath);
 }
 
 export function reindexChangedPath(vaultRoot: string, inputPath: string): ReindexResult {

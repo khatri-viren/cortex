@@ -1,8 +1,8 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { workspaceDirectoryNodeId as directoryId, workspaceFileNodeId as fileId } from "./identity.js";
 import type { AppliesTo, Diagnostic } from "./types.js";
 import type { GraphEdge } from "./index-types.js";
-import { directoryId, fileId } from "./workspace-indexer.js";
 import { repositoryRelativePath, type WorkspaceConfig } from "./workspace.js";
 
 export type NoteAttachmentInput = { noteId: string; path: string; appliesTo: AppliesTo[] };

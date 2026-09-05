@@ -8,7 +8,7 @@ import { VaultIndexer } from "./core/indexer.js";
 import { GitAdapter } from "./core/git.js";
 import { MCP_TOOL_NAMES, runMcpServer } from "./mcp/server.js";
 import { createApiServer } from "./api/server.js";
-import { VaultRuntime } from "./mcp/service.js";
+import { VaultRuntime } from "./core/runtime.js";
 import { initializeWorkspaceManifest, loadWorkspaceConfig, removeWorkspaceRepository } from "./core/workspace.js";
 import { WorkspaceIndexer } from "./core/workspace-indexer.js";
 import { setupClaudeWorkspaceConfig } from "./core/claude-workspace.js";
@@ -83,7 +83,9 @@ function logDiagnosticsSummary(diagnostics: Diagnostic[]): void {
 async function runDev(options: CliOptions): Promise<void> {
   const vaultRoot = requireGitVault(vaultArgument(options));
   const runtime = await VaultRuntime.start(vaultRoot, { workspaceRoot: options.workspace });
-  const uiDist = resolve(dirname(fileURLToPath(import.meta.url)), "..", "ui", "dist");
+  const uiDist = process.env.CORTEX_UI_DIST
+    ? resolve(process.env.CORTEX_UI_DIST)
+    : resolve(dirname(fileURLToPath(import.meta.url)), "..", "ui", "dist");
   const server = createApiServer(runtime, options.port ?? 4170, uiDist);
   const shutdown = async () => {
     server.stop();

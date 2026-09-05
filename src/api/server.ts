@@ -1,7 +1,12 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { reconcileMarkdown } from "../core/reconcile.js";
-import { ServiceError, VaultRuntime, type VaultChangeEvent } from "../mcp/service.js";
+import { ServiceError } from "../core/errors.js";
+import { VaultRuntime } from "../core/runtime.js";
+import { exportFilename } from "../core/pdf-export.js";
+import { logger } from "../logger.js";
+import type { VaultChangeEvent } from "../core/runtime-types.js";
+import type { ApiNoteUpdateInput } from "./contracts.js";
 
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
@@ -16,7 +21,7 @@ function json(payload: unknown, status = 200): Response {
 
 function errorResponse(cause: unknown): Response {
   if (cause instanceof ServiceError) {
-    const status = cause.code === "NOT_FOUND" ? 404 : cause.code === "CONFLICT" || cause.code === "GIT_DIRTY" ? 409 : cause.code === "VAULT_INVALID" ? 422 : 400;
+    const status = cause.code === "NOT_FOUND" ? 404 : cause.code === "CONFLICT" || cause.code === "GIT_DIRTY" ? 409 : cause.code === "VAULT_INVALID" ? 422 : cause.code === "EXPORT_RENDERER_UNAVAILABLE" ? 503 : 400;
     return json({ error: { code: cause.code, message: cause.message, details: cause.details } }, status);
   }
   return json({ error: { code: "INTERNAL_ERROR", message: cause instanceof Error ? cause.message : String(cause) } }, 500);
@@ -57,6 +62,10 @@ function contentType(path: string): string {
   if (path.endsWith(".js")) return "text/javascript; charset=utf-8";
   if (path.endsWith(".css")) return "text/css; charset=utf-8";
   if (path.endsWith(".svg")) return "image/svg+xml";
+  if (path.endsWith(".png")) return "image/png";
+  if (path.endsWith(".ico")) return "image/x-icon";
+  if (path.endsWith(".woff2")) return "font/woff2";
+  if (path.endsWith(".json")) return "application/json; charset=utf-8";
   return "application/octet-stream";
 }
 
@@ -98,12 +107,30 @@ export function createApiServer(runtime: VaultRuntime, port: number, uiDist?: st
       try {
         if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...JSON_HEADERS, "access-control-allow-methods": "GET,POST,PATCH,PUT,OPTIONS", "access-control-allow-headers": "content-type" } });
         if (url.pathname === "/events" && request.method === "GET") return eventStream(runtime);
-        if (url.pathname === "/api/health" && request.method === "GET") return json({ status: "ok", phase: 3, index: runtime.indexer.store.counts() });
+        if (url.pathname === "/api/health" && request.method === "GET") return json(runtime.health());
+        if (url.pathname === "/api/index/rebuild" && request.method === "POST") return json(await runtime.rebuildIndex());
         if (url.pathname === "/api/notes" && request.method === "GET") return json(runtime.listNotes(url.searchParams.get("prefix") ?? undefined, url.searchParams.get("tag") ?? undefined, numberParam(url, "limit")));
+        if (url.pathname === "/api/vault/tree" && request.method === "GET") return json(runtime.vaultTree());
         if (url.pathname === "/api/note" && request.method === "GET") {
           const selector = url.searchParams.get("selector");
           if (!selector) throw new ServiceError("INVALID_INPUT", "Query parameter 'selector' is required.");
           return json(url.searchParams.get("source") === "true" ? runtime.getSource(selector) : runtime.getNote(selector));
+        }
+        if (url.pathname === "/api/note/export/pdf" && request.method === "POST") {
+          const input = await body(request);
+          const note = requiredString(input, "note");
+          const markdownBody = input.body === undefined ? undefined : typeof input.body === "string" ? input.body : (() => { throw new ServiceError("INVALID_INPUT", "Field 'body' must be a string."); })();
+          const title = input.title === undefined ? undefined : typeof input.title === "string" ? input.title : (() => { throw new ServiceError("INVALID_INPUT", "Field 'title' must be a string."); })();
+          logger.info({ note, title, bodyLength: markdownBody?.length ?? null }, "[PDF-EXPORT] server:start");
+          try {
+            const pdf = await runtime.exportPdf(note, markdownBody, title);
+            const filename = title?.trim() || runtime.getNote(note).note.title;
+            logger.info({ note, filename: exportFilename(filename), bytes: pdf.length }, "[PDF-EXPORT] server:complete");
+            return new Response(new Uint8Array(pdf), { headers: { "content-type": "application/pdf", "content-disposition": `attachment; filename="${exportFilename(filename)}"`, "cache-control": "no-store", "access-control-allow-origin": "http://127.0.0.1:5175" } });
+          } catch (cause) {
+            logger.error({ note, err: cause }, "[PDF-EXPORT] server:failed");
+            throw cause;
+          }
         }
         if (url.pathname === "/api/section" && request.method === "GET") {
           const selector = url.searchParams.get("selector");
@@ -133,7 +160,7 @@ export function createApiServer(runtime: VaultRuntime, port: number, uiDist?: st
           return json(runtime.diff(selector, url.searchParams.get("revision") ?? undefined));
         }
         if (url.pathname === "/api/vault-check" && request.method === "GET") return json(runtime.vaultCheck());
-        if (url.pathname === "/api/workspace/status" && request.method === "GET") return json(runtime.workspaceStatus());
+        if (url.pathname === "/api/workspace/status" && request.method === "GET") return json(runtime.workspaceStatus(url.searchParams.get("include_git") === "true"));
         if (url.pathname === "/api/workspace/repo-history" && request.method === "GET") {
           const repository = url.searchParams.get("repository");
           const path = url.searchParams.get("path");
@@ -157,7 +184,14 @@ export function createApiServer(runtime: VaultRuntime, port: number, uiDist?: st
         }
         if (url.pathname === "/api/note" && request.method === "PUT") {
           const input = await body(request);
-          return json(await runtime.replaceNote(requiredString(input, "note"), requiredString(input, "expected_file_hash"), requiredString(input, "markdown")));
+          const update = input as Partial<ApiNoteUpdateInput>;
+          const note = requiredString(input, "note");
+          const expectedHash = requiredString(input, "expected_file_hash");
+          const markdown = typeof update.markdown === "string" ? update.markdown : undefined;
+          const bodyText = typeof update.body === "string" ? update.body : undefined;
+          const metadata = update.metadata && typeof update.metadata === "object" ? update.metadata : undefined;
+          await runtime.updateNote(note, expectedHash, { markdown, body: bodyText, metadata });
+          return json(runtime.getSource(note));
         }
         if (url.pathname === "/api/restore" && request.method === "POST") {
           const input = await body(request);

@@ -1,7 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { McpVaultService, ServiceError } from "./service.js";
+import { ServiceError } from "../core/errors.js";
+import { VaultRuntime } from "../core/runtime.js";
 import type { NoteType } from "../core/types.js";
 
 export const MCP_TOOL_NAMES = [
@@ -50,7 +51,7 @@ function registerTool(server: McpServer, name: string, description: string, inpu
   });
 }
 
-export function createMcpServer(service: McpVaultService): McpServer {
+export function createMcpServer(service: VaultRuntime): McpServer {
   const server = new McpServer(
     { name: "cortex-notes", version: "2.0.0" },
     { capabilities: { tools: { listChanged: false } }, instructions: "Cortex exposes focused note, graph, search, table, diagnostics, and Git tools. Prefer slices over whole-file exploration." },
@@ -172,7 +173,7 @@ export function createMcpServer(service: McpVaultService): McpServer {
 }
 
 export async function runMcpServer(vaultRoot: string, options?: { workspaceRoot?: string }): Promise<void> {
-  const service = await McpVaultService.start(vaultRoot, options);
+  const service = await VaultRuntime.start(vaultRoot, options);
   const server = createMcpServer(service);
   const transport = new StdioServerTransport();
   let closed = false;

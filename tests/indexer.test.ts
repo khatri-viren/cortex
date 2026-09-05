@@ -34,6 +34,11 @@ describe("Phase 1 indexer", () => {
     expect((indexer.store.db.query("SELECT COUNT(*) as count FROM graph_edges WHERE kind = 'imports'").get() as { count: number }).count).toBe(1);
     expect((indexer.store.db.query("SELECT COUNT(*) as count FROM graph_edges WHERE kind = 'depends_on'").get() as { count: number }).count).toBeGreaterThanOrEqual(2);
     expect((indexer.store.db.query("SELECT COUNT(*) as count FROM graph_edges WHERE kind = 'tested_by'").get() as { count: number }).count).toBe(1);
+    expect(indexer.store.noteByPath("notes/engine.md")).toMatchObject({ path: "notes/engine.md", title: "Engine Notes" });
+    expect(indexer.store.noteById(indexer.store.noteByPath("notes/engine.md")!.id)?.aliases).toContain("Backend Notes");
+    expect(indexer.store.searchNotes("backend", 20).hits.some((hit) => hit.path === "notes/engine.md")).toBe(true);
+    expect(indexer.store.graphNodeIdByPath("src.ts")).toBe("file:src.ts");
+    expect(indexer.store.fileHash("notes/engine.md")).toMatch(/^[0-9a-f]{64}$/);
     indexer.close();
   });
 
@@ -144,5 +149,45 @@ describe("watcher", () => {
     await handle?.stop();
     await handle?.flushSnapshot();
     expect(existsSync(join(vault, ".cortex", "watcher.snapshot"))).toBe(true);
+  });
+
+  test("does not overlap slow packaged polling callbacks", async () => {
+    const vault = tempVault();
+    const watchedPath = join(vault, "project-map.md");
+    const previousPackagedMode = process.env.CORTEX_PACKAGED;
+    process.env.CORTEX_PACKAGED = "1";
+
+    let handle: Awaited<ReturnType<typeof startWatcher>> | undefined;
+    let activeCallbacks = 0;
+    let maximumActiveCallbacks = 0;
+    let firstCallbackStarted!: () => void;
+    const firstCallback = new Promise<void>((resolve) => {
+      firstCallbackStarted = resolve;
+    });
+
+    try {
+      handle = await startWatcher(vault, async () => {
+        activeCallbacks += 1;
+        maximumActiveCallbacks = Math.max(maximumActiveCallbacks, activeCallbacks);
+        firstCallbackStarted();
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        activeCallbacks -= 1;
+      }, { pollIntervalMs: 25 });
+
+      writeFileSync(watchedPath, `${readFileSync(watchedPath, "utf8")}\nfirst change\n`);
+      await firstCallback;
+
+      for (let index = 0; index < 3; index += 1) {
+        writeFileSync(watchedPath, `${readFileSync(watchedPath, "utf8")}change ${index}\n`);
+        await new Promise((resolve) => setTimeout(resolve, 275));
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      expect(maximumActiveCallbacks).toBe(1);
+    } finally {
+      await handle?.stop();
+      if (previousPackagedMode === undefined) delete process.env.CORTEX_PACKAGED;
+      else process.env.CORTEX_PACKAGED = previousPackagedMode;
+    }
   });
 });

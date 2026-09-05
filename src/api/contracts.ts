@@ -1,91 +1,48 @@
-export type ApiSection = {
-  id?: string;
-  level: number;
-  heading: string;
-  startLine: number;
-  endLine: number;
-  revision: string;
+import type { Diagnostic, NoteFrontmatter, Section } from "../core/types.js";
+import type { DiffResult, GitCommit, GitStatusEntry, GraphEdgeRecord, GraphNodeRecord, GraphQueryResult, HealthResult, HistoryResult, IndexPhase, IndexRefreshResult, NoteMetadataPatch, NoteRecord, NoteSource, RepositoryRestoreResult, VaultChangeEvent, VaultCheckResult, VaultTree, VaultTreeNode, WorkspaceStatus } from "../core/runtime-types.js";
+
+/** Stable HTTP/MCP/UI wire aliases over the protocol-neutral core types. */
+export type ApiSection = Section;
+export type ApiDiagnostic = Diagnostic;
+export type ApiNote = NoteRecord;
+export type ApiGraphNode = GraphNodeRecord;
+export type ApiGraphEdge = GraphEdgeRecord;
+export type ApiChange = VaultChangeEvent;
+export type ApiNoteSource = NoteSource;
+export type ApiVaultTreeNode = VaultTreeNode;
+export type ApiVaultTree = VaultTree;
+export type ApiNoteMetadataPatch = NoteMetadataPatch;
+export type ApiGraph = GraphQueryResult;
+export type ApiGitCommit = GitCommit;
+export type ApiHistory = HistoryResult;
+export type ApiDiff = DiffResult;
+export type ApiIndexPhase = IndexPhase;
+export type ApiHealth = HealthResult;
+export type ApiGitStatusEntry = GitStatusEntry;
+export type ApiVaultCheck = VaultCheckResult;
+export type ApiWorkspaceStatus = WorkspaceStatus;
+export type ApiRepoRestoreResult = RepositoryRestoreResult;
+export type ApiIndexRefreshResult = IndexRefreshResult;
+
+export type ApiNoteUpdateInput = {
+  note: string;
+  expected_file_hash: string;
+  body?: string;
+  metadata?: ApiNoteMetadataPatch;
+  markdown?: string;
 };
 
-export type ApiDiagnostic = {
-  severity: "error" | "warning";
-  code: string;
-  message: string;
-  filePath?: string;
-  line?: number;
-  column?: number;
-};
-
-export type ApiNote = {
-  id: string;
-  path: string;
-  title: string;
-  type: "note" | "map" | "table";
-  created_at: string;
-  updated_at: string;
-  aliases: string[];
-  tags: string[];
-  content_hash: string;
-};
-
-export type ApiGraphNode = {
-  nodeId: string;
-  kind: string;
-  path?: string;
-  name: string;
-  metadata: Record<string, unknown>;
-};
-
-export type ApiGraphEdge = {
-  fromId: string;
-  toId: string;
-  kind: string;
-  metadata: Record<string, unknown>;
-};
-
-export type ApiChange = {
-  type: "create" | "update" | "delete";
-  path: string;
-  content_hash?: string;
-  mtime?: string;
-  repository?: string;
-};
-
-export type ApiNoteSource = {
-  note: ApiNote;
-  markdown: string;
-  sections: ApiSection[];
-  diagnostics: ApiDiagnostic[];
-};
-
-export type ApiGraph = {
-  anchor: ApiGraphNode;
-  nodes: ApiGraphNode[];
-  edges: ApiGraphEdge[];
-  truncated: boolean;
-};
-
-export type ApiGitCommit = {
-  hash: string;
-  author: string;
-  date: string;
-  subject: string;
-};
-
-export type ApiHistory = {
-  path: string;
-  commits: ApiGitCommit[];
-};
-
-export type ApiDiff = {
-  path: string;
-  diff: string;
+export type ApiPdfExportInput = {
+  note: string;
+  body?: string;
+  title?: string;
 };
 
 export type ApiContext = {
   anchor?: ApiGraphNode;
   likely_files?: ApiGraphNode[];
   attached_notes?: ApiGraphNode[];
+  related_nodes?: ApiGraphNode[];
   relationships?: ApiGraphEdge[];
   task_matches?: Array<{ note_id: string; title: string; path: string; snippet: string }>;
   truncated?: boolean;
@@ -96,27 +53,7 @@ export type ApiChangeEvent = {
   events: ApiChange[];
 };
 
-export type ApiWorkspaceRepository = {
-  id: string;
-  path: string;
-  status: string;
-  lastIndexedAt?: string;
-};
-
-export type ApiWorkspaceStatus = {
-  active: boolean;
-  workspaceRoot?: string;
-  workspaceExists?: boolean;
-  repositories: ApiWorkspaceRepository[];
-  diagnostics: ApiDiagnostic[];
-};
-
-export type ApiRepoRestoreResult = {
-  repository: string;
-  path: string;
-  revision: string;
-  mtime: string;
-};
+export type ApiWorkspaceRepository = WorkspaceStatus["repositories"][number];
 
 export type ApiError = {
   error: {
@@ -125,3 +62,7 @@ export type ApiError = {
     details?: Record<string, unknown>;
   };
 };
+
+// Keep these imports visible to generated declaration consumers that used the
+// old contract module as the source of the frontmatter and section shapes.
+export type { NoteFrontmatter, Section };

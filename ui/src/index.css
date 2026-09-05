@@ -4,10 +4,138 @@
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/ibm-plex-sans";
 
+.cortex-tabs-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.cortex-tabs-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.cortex-dev-picker {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.cortex-dev-picker-card {
+  width: min(560px, 100%);
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--card);
+  box-shadow: 0 18px 60px color-mix(in oklch, var(--foreground) 10%, transparent);
+}
+
+.cortex-dev-picker-card h1 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 650;
+}
+
+.cortex-dev-picker-hint,
+.cortex-dev-picker-empty,
+.cortex-dev-picker-status {
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+}
+
+.cortex-dev-picker-hint { margin: 4px 0 20px; }
+.cortex-dev-picker-empty { margin: 0 0 20px; }
+
+.cortex-dev-picker-list {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 18px;
+  padding: 0;
+  list-style: none;
+}
+
+.cortex-dev-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+
+.cortex-dev-picker-row button,
+.cortex-dev-picker-toolbar button,
+.cortex-dev-picker-preference-actions button {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--background);
+  color: var(--foreground);
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.cortex-dev-picker-row button:disabled,
+.cortex-dev-picker-toolbar button:disabled,
+.cortex-dev-picker-preference-actions button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.cortex-dev-picker-open {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  border-color: transparent !important;
+  background: transparent !important;
+  text-align: left;
+}
+
+.cortex-dev-picker-name { font-weight: 600; }
+.cortex-dev-picker-path {
+  width: 100%;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 0.7rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cortex-dev-picker-actions,
+.cortex-dev-picker-toolbar,
+.cortex-dev-picker-preference-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.cortex-dev-picker-toolbar { justify-content: flex-end; }
+.cortex-dev-picker-primary { background: var(--primary) !important; color: var(--primary-foreground) !important; }
+.cortex-dev-picker-preferences {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  font-size: 0.78rem;
+}
+
+.cortex-dev-picker-preferences label { display: flex; gap: 8px; align-items: flex-start; }
+.cortex-dev-picker-preference-actions { justify-content: flex-end; }
+.cortex-dev-picker-status { min-height: 1.3em; margin-top: 14px; }
+
 @custom-variant dark (&:is(.dark *));
 
 @layer base {
   html {
+    height: 100%;
+    overflow: hidden;
     font-synthesis: none;
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
@@ -16,8 +144,14 @@
 
   body {
     min-width: 320px;
-    min-height: 100vh;
+    min-height: 100%;
+    height: 100%;
+    overflow: hidden;
     @apply bg-background text-foreground;
+  }
+  #root {
+    height: 100%;
+    overflow: hidden;
   }
   * {
     @apply border-border outline-ring/50;
@@ -68,8 +202,8 @@
      without this the pane just shows whatever ancestor bg-background paints
      through — the global --background, not --atomic-editor-bg — and a
      dark-mode-only override of the latter would have no visible effect. */
-  background-color: var(--atomic-editor-bg);
-  --atomic-editor-bg: var(--background);
+  background-color: var(--cortex-reading-surface);
+  --atomic-editor-bg: var(--cortex-reading-surface);
   --atomic-editor-bg-panel: var(--muted);
   --atomic-editor-bg-surface: var(--muted);
   --atomic-editor-fg: var(--foreground);
@@ -122,7 +256,6 @@
      near-white text elsewhere), which is harsher than reading mode wants for
      a full pane of body text. Narrow the lightness gap for a softer,
      lower-contrast reading surface instead of pure black-on-white. */
-  --atomic-editor-bg: oklch(0.22 0 0);
   --atomic-editor-fg: oklch(0.85 0 0);
   --atomic-editor-link: var(--primary);
   --atomic-editor-link-hover: oklch(from var(--primary) 0.85 c h);
@@ -161,9 +294,25 @@
   background-color: var(--muted-foreground);
 }
 
+/* Notes use the same surface above and below the metadata/editor boundary.
+   Keep this token separate from --background so app chrome can stay darker
+   while the reading document retains its softer dark surface. */
+.note-toolbar-surface,
+.note-workspace,
+.note-metadata,
+.note-editor-section {
+  background-color: var(--cortex-reading-surface);
+}
+
+.note-editor-section {
+  height: max(440px, calc(100dvh - 84px));
+  min-height: 440px;
+  background-color: var(--cortex-reading-surface);
+}
+
 @theme inline {
   --font-heading: var(--font-sans);
-  --font-sans: 'IBM Plex Sans Variable', sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
   --font-mono: ui-monospace, "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
@@ -196,6 +345,11 @@
   --color-card: var(--card);
   --color-foreground: var(--foreground);
   --color-background: var(--background);
+  --color-warning: var(--warning);
+  --color-conflict: var(--conflict);
+  --color-node-repository: var(--node-repository);
+  --color-node-directory: var(--node-directory);
+  --color-node-root: var(--node-root);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -206,6 +360,7 @@
 }
 
 :root {
+  --cortex-reading-surface: var(--background);
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -230,7 +385,7 @@
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
+  --sidebar: var(--background);
   --sidebar-foreground: oklch(0.145 0 0);
   --sidebar-primary: oklch(0.648 0.2 131.684);
   --sidebar-primary-foreground: oklch(0.986 0.031 120.757);
@@ -238,9 +393,15 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+  --warning: oklch(0.60 0.16 70);
+  --conflict: oklch(0.62 0.20 340);
+  --node-repository: oklch(0.60 0.15 250);
+  --node-directory: oklch(0.55 0.14 190);
+  --node-root: oklch(0.60 0.16 300);
 }
 
 .dark {
+  --cortex-reading-surface: oklch(0.22 0 0);
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);
@@ -264,7 +425,7 @@
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
+  --sidebar: var(--background);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.768 0.233 130.85);
   --sidebar-primary-foreground: oklch(0.274 0.072 132.109);
@@ -272,4 +433,9 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+  --warning: oklch(0.80 0.17 70);
+  --conflict: oklch(0.75 0.20 340);
+  --node-repository: oklch(0.72 0.15 250);
+  --node-directory: oklch(0.75 0.13 190);
+  --node-root: oklch(0.75 0.16 300);
 }

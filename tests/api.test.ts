@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createApiServer } from "../src/api/server.js";
 import { reconcileMarkdown } from "../src/core/reconcile.js";
 import { initVault } from "../src/core/vault.js";
-import { VaultRuntime } from "../src/mcp/service.js";
+import { VaultRuntime } from "../src/core/runtime.js";
 
 function temporaryVault(): string {
   return initVault(join(mkdtempSync(join(tmpdir(), "cortex-phase3-api-")), "vault"));
@@ -30,10 +30,16 @@ describe("Phase 3 local API", () => {
       const health = await fetch(base + "/api/health");
       expect(health.status).toBe(200);
       expect((await health.json()).phase).toBe(3);
+      expect((await (await fetch(base + "/api/health")).json()).workspace.phase).toBe("disabled");
+
+      const rebuilt = await fetch(base + "/api/index/rebuild", { method: "POST" });
+      expect(rebuilt.status).toBe(200);
+      expect((await rebuilt.json()).index.mode).toBe("full");
 
       const source = await fetch(base + "/api/note?selector=project-map.md&source=true");
       expect(source.status).toBe(200);
       expect((await source.json()).markdown).toContain("Project Map");
+      expect((await fetch(base + "/api/note?selector=project-map.md&source=true")).status).toBe(200);
 
       const graph = await fetch(base + "/api/project-map?depth=1&limit=20");
       expect((await graph.json()).anchor.nodeId).toBe("project:root");
@@ -44,6 +50,52 @@ describe("Phase 3 local API", () => {
       const invalid = await fetch(base + "/api/note");
       expect(invalid.status).toBe(400);
       expect((await invalid.json()).error.code).toBe("INVALID_INPUT");
+    });
+  });
+
+  test("serves a vault tree and accepts structured body/metadata updates", async () => {
+    await withApi(async (base) => {
+      const tree = await fetch(base + "/api/vault/tree");
+      expect(tree.status).toBe(200);
+      const treePayload = await tree.json() as { children: Array<{ kind: string; path: string; children?: Array<{ path: string }> }> };
+      expect(treePayload.children.some((node) => node.path === "notes" && node.kind === "directory")).toBe(true);
+
+      const sourceResponse = await fetch(base + "/api/note?selector=notes/engine.md&source=true");
+      const source = await sourceResponse.json() as { note: { content_hash: string; title: string }; body: string; frontmatter: { id: string; created_at: string; tags: string[] } };
+      expect(source.body).toContain("# Engine Notes");
+      expect(source.frontmatter.id).toBeTruthy();
+
+      const update = await fetch(base + "/api/note", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          note: "notes/engine.md",
+          expected_file_hash: source.note.content_hash,
+          body: source.body + "\nStructured update.\n",
+          metadata: { title: "Engine Notes Updated", tags: ["backend"] },
+        }),
+      });
+      expect(update.status).toBe(200);
+      const updated = await update.json() as { note: { title: string; content_hash: string }; body: string; frontmatter: { tags: string[] } };
+      expect(updated.note.title).toBe("Engine Notes Updated");
+      expect(updated.body).toContain("Structured update.");
+      expect(updated.frontmatter.tags).toEqual(["backend"]);
+      expect(updated.note.content_hash).not.toBe(source.note.content_hash);
+    });
+  });
+
+  test("validates PDF export input without mutating the source note", async () => {
+    await withApi(async (base) => {
+      const before = await (await fetch(base + "/api/note?selector=project-map.md&source=true")).json() as { note: { content_hash: string }; body: string };
+      const response = await fetch(base + "/api/note/export/pdf", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ note: "project-map.md", body: before.body, title: "   " }),
+      });
+      expect(response.status).toBe(400);
+      expect((await response.json()).error.code).toBe("INVALID_INPUT");
+      const after = await (await fetch(base + "/api/note?selector=project-map.md&source=true")).json() as { note: { content_hash: string } };
+      expect(after.note.content_hash).toBe(before.note.content_hash);
     });
   });
 

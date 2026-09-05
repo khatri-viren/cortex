@@ -17,4 +17,6 @@ export function noteNodeId(noteId: string): string { return `note:${noteId}`; }
 export function projectNodeId(): string { return "project:root"; }
 export function directoryNodeId(repositoryRoot: string, targetPath: string): string { return `dir:${repositoryRelativePath(repositoryRoot, targetPath)}`; }
 export function fileNodeId(repositoryRoot: string, targetPath: string): string { return `file:${repositoryRelativePath(repositoryRoot, targetPath)}`; }
+export function workspaceDirectoryNodeId(repositoryId: string, path: string): string { return `dir:${repositoryId}:${path}`; }
+export function workspaceFileNodeId(repositoryId: string, path: string): string { return `file:${repositoryId}:${path}`; }
 export function symbolNodeId(repositoryRoot: string, targetPath: string, qualifiedName: string): string { return `symbol:${repositoryRelativePath(repositoryRoot, targetPath)}#${qualifiedName}`; }

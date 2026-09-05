@@ -1,4 +1,4 @@
-import { parseMarkdown } from "./markdown.js";
+import { getSectionDirectBody, parseMarkdown, replaceSectionDirectBody } from "./markdown.js";
 
 export type ReconcileResult =
   | { status: "merged"; markdown: string; changedSections: string[] }
@@ -8,28 +8,17 @@ type SectionBody = { id: string; body: string };
 
 function markedSections(markdown: string): Map<string, SectionBody> {
   const parsed = parseMarkdown(markdown);
-  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const sections = new Map<string, SectionBody>();
   for (const section of parsed.sections) {
     if (!section.id) continue;
-    const start = section.startLine - 1;
-    const end = sectionDirectEnd(lines, start, section.level);
-    const marker = lines.slice(start + 1, end).findIndex((line) => /^\s*<!--\s*cortex:section\s+id="sec-[0-9a-f-]+"\s*-->\s*$/i.test(line));
-    if (marker < 0) continue;
+    const body = getSectionDirectBody(markdown, section);
+    if (body === undefined) continue;
     sections.set(section.id, {
       id: section.id,
-      body: lines.slice(start + 1 + marker + 1, end).join("\n"),
+      body,
     });
   }
   return sections;
-}
-
-function sectionDirectEnd(lines: string[], start: number, _level: number): number {
-  for (let index = start + 1; index < lines.length; index += 1) {
-    const heading = lines[index].match(/^(#{1,6})\s+/);
-    if (heading) return index;
-  }
-  return lines.length;
 }
 
 function outsideHead(markdown: string): string {
@@ -38,28 +27,10 @@ function outsideHead(markdown: string): string {
   return (heading < 0 ? lines : lines.slice(0, heading)).join("\n");
 }
 
-function sectionIds(markdown: string): Set<string> {
-  return new Set(markedSections(markdown).keys());
-}
-
 function hasStructuralDiagnostics(markdown: string): boolean {
   return parseMarkdown(markdown).diagnostics.some((item) =>
     item.severity === "error" || item.code === "missing-section-id" || item.code === "duplicate-section-id",
   );
-}
-
-function replaceSectionBody(markdown: string, sectionId: string, body: string): string {
-  const parsed = parseMarkdown(markdown);
-  const section = parsed.sections.find((item) => item.id === sectionId);
-  if (!section) return markdown;
-  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
-  const start = section.startLine - 1;
-  const end = sectionDirectEnd(lines, start, section.level);
-  const marker = lines.slice(start + 1, end).findIndex((line) => /^\s*<!--\s*cortex:section\s+id="sec-[0-9a-f-]+"\s*-->\s*$/i.test(line));
-  if (marker < 0) return markdown;
-  const markerLine = start + 1 + marker;
-  const replacement = body.length === 0 ? [] : body.split("\n");
-  return [...lines.slice(0, markerLine + 1), ...replacement, ...lines.slice(end)].join("\n");
 }
 
 export function reconcileMarkdown(base: string, local: string, remote: string): ReconcileResult {
@@ -67,9 +38,12 @@ export function reconcileMarkdown(base: string, local: string, remote: string): 
     return { status: "conflict", conflicts: ["document-structure"] };
   }
 
-  const baseIds = sectionIds(base);
-  const localIds = sectionIds(local);
-  const remoteIds = sectionIds(remote);
+  const baseParsed = parseMarkdown(base);
+  const localParsed = parseMarkdown(local);
+  const remoteParsed = parseMarkdown(remote);
+  const baseIds = new Set(baseParsed.sections.flatMap((section) => section.id ? [section.id] : []));
+  const localIds = new Set(localParsed.sections.flatMap((section) => section.id ? [section.id] : []));
+  const remoteIds = new Set(remoteParsed.sections.flatMap((section) => section.id ? [section.id] : []));
   if (baseIds.size !== localIds.size || baseIds.size !== remoteIds.size || [...baseIds].some((id) => !localIds.has(id) || !remoteIds.has(id))) {
     return { status: "conflict", conflicts: ["section-structure"] };
   }
@@ -103,7 +77,7 @@ export function reconcileMarkdown(base: string, local: string, remote: string): 
   const changedSections: string[] = [];
   for (const id of remoteChanged) {
     if (localChanged.has(id)) continue;
-    merged = replaceSectionBody(merged, id, remoteSections.get(id)?.body ?? "");
+    merged = replaceSectionDirectBody(merged, id, remoteSections.get(id)?.body ?? "");
     changedSections.push(id);
   }
   return { status: "merged", markdown: merged, changedSections };

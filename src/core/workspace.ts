@@ -10,6 +10,7 @@ const DEFAULT_IGNORES = [
   "**/.git/**",
   "**/node_modules/**",
   "**/.cortex/**",
+  "**/target/**",
   "**/dist/**",
   "**/build/**",
   "**/.next/**",
@@ -112,14 +113,41 @@ function normalizedRelative(root: string, target: string): string {
 }
 
 export function isWorkspaceIgnored(path: string, patterns: string[]): boolean {
-  const normalized = path.replaceAll("\\", "/");
+  const normalized = path.replaceAll("\\", "/").replace(/^\.\//, "").replace(/^\/+|\/+$/g, "");
+  if (!normalized || normalized === ".") return false;
+
+  const glob = (pattern: string, allowDescendants = false): RegExp => {
+    let source = "^";
+    for (let index = 0; index < pattern.length; index += 1) {
+      const character = pattern[index];
+      if (character === "*" && pattern[index + 1] === "*") {
+        index += 1;
+        if (pattern[index + 1] === "/") {
+          index += 1;
+          source += "(?:.*/)?";
+        } else {
+          source += ".*";
+        }
+      } else if (character === "*") {
+        source += "[^/]*";
+      } else if (character === "?") {
+        source += "[^/]";
+      } else {
+        source += character.replace(/[\\^$+?.()|[\]{}]/g, "\\$&");
+      }
+    }
+    if (allowDescendants) source += "(?:/.*)?";
+    return new RegExp(source + "$");
+  };
+
   return patterns.some((pattern) => {
-    const value = pattern.replaceAll("\\", "/");
-    if (value.startsWith("**/") && normalized.includes(value.slice(3).replaceAll("**", ""))) return true;
-    if (value.endsWith("/**") && (normalized === value.slice(0, -3) || normalized.startsWith(value.slice(0, -2)))) return true;
-    if (value.startsWith("**/*.") && normalized.toLocaleLowerCase().endsWith(value.slice(4).toLocaleLowerCase().replace("*", ""))) return true;
-    if (value.endsWith("*") && normalized.split("/").at(-1)?.startsWith(value.slice(0, -1))) return true;
-    return normalized === value;
+    const value = pattern.replaceAll("\\", "/").replace(/^\.\//, "").replace(/^\/+|\/+$/g, "");
+    if (!value) return false;
+    if (value.endsWith("/**")) return glob(value.slice(0, -3), true).test(normalized);
+    if (!value.includes("/") && !value.includes("*")) {
+      return normalized === value || normalized.startsWith(`${value}/`) || normalized.includes(`/${value}/`) || normalized.endsWith(`/${value}`);
+    }
+    return glob(value).test(normalized);
   });
 }
 
@@ -203,7 +231,7 @@ export function removeWorkspaceRepository(vaultRoot: string, repositoryId: strin
 export function repositoryRelativePath(workspaceRoot: string, repository: WorkspaceRepository, target: string): string {
   const absolute = isAbsolute(target) ? resolve(target) : resolve(repository.absolutePath, target);
   const relativePath = normalizedRelative(repository.absolutePath, absolute);
-  if (relativePath === "." || isWorkspaceIgnored(relativePath, [".git", "node_modules", ".cortex"])) throw new Error(`Workspace target '${target}' is not indexable.`);
+  if (relativePath === "." || isWorkspaceIgnored(relativePath, [".git", "node_modules", ".cortex", "target"])) throw new Error(`Workspace target '${target}' is not indexable.`);
   if (normalizedRelative(workspaceRoot, absolute).startsWith("../")) throw new Error(`Workspace target '${target}' is outside the workspace.`);
   return relativePath;
 }

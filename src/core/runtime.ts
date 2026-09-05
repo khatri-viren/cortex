@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -9,20 +10,23 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, extname, relative as relativePath, resolve } from "node:path";
-import { addMissingSectionMarkers, parseMarkdown } from "../core/markdown.js";
-import { createFrontmatter, serializeFrontmatter } from "../core/frontmatter.js";
-import { repositoryRelativePath, projectNodeId, noteNodeId } from "../core/identity.js";
-import { VaultIndexer } from "../core/indexer.js";
-import { scanVault, vaultHasExpectedGitIgnore } from "../core/vault.js";
-import { GitAdapter, type GitCommit, type GitStatusEntry } from "../core/git.js";
-import { RUNTIME_DIRECTORY } from "../core/vault.js";
-import type { Diagnostic, NoteFrontmatter, NoteType, Section } from "../core/types.js";
-import type { IndexReport } from "../core/index-types.js";
-import { startWatcher, type WatcherHandle } from "../core/watcher.js";
-import { loadWorkspaceConfig, workspaceManifestPath, repositoryRelativePath as workspaceRepositoryRelativePath, type WorkspaceConfig, type WorkspaceRepository } from "../core/workspace.js";
-import { WorkspaceIndexer } from "../core/workspace-indexer.js";
-import { resolveWorkspaceAttachments, requireAppliesToRepository, type NoteAttachmentInput } from "../core/workspace-attachments.js";
+import { basename, dirname, extname, join, relative as relativePath, resolve } from "node:path";
+import { addMissingSectionMarkers, findSections, getSectionBody, parseMarkdown, replaceSectionBody } from "./markdown.js";
+import { createFrontmatter, serializeFrontmatter } from "./frontmatter.js";
+import { repositoryRelativePath, projectNodeId, noteNodeId } from "./identity.js";
+import { VaultIndexer } from "./indexer.js";
+import { scanVault, vaultHasExpectedGitIgnore } from "./vault.js";
+import { GitAdapter } from "./git.js";
+import { RUNTIME_DIRECTORY } from "./vault.js";
+import type { Diagnostic, NoteFrontmatter, Section } from "./types.js";
+import { ServiceError } from "./errors.js";
+import type { DiffResult, GraphDirection, GraphEdgeRecord, GraphNodeRecord, GraphQueryResult, HealthResult, HistoryResult, IndexPhase, IndexRefreshResult, NoteCreateInput, NoteRecord, NoteSelector, NoteSource, NoteUpdateInput, RepositoryDiffResult, RepositoryHistoryResult, RepositoryRestoreResult, VaultChangeEvent, VaultCheckResult, VaultTree, VaultTreeNode, WorkspaceStatus, WriteResult } from "./runtime-types.js";
+import type { IndexReport } from "./index-types.js";
+import { startWatcher, type WatcherHandle } from "./watcher.js";
+import { isWorkspaceIgnored, loadWorkspaceConfig, workspaceIgnorePatterns, workspaceManifestPath, repositoryRelativePath as workspaceRepositoryRelativePath, type WorkspaceConfig, type WorkspaceRepository } from "./workspace.js";
+import { WorkspaceIndexer } from "./workspace-indexer.js";
+import { resolveWorkspaceAttachments, requireAppliesToRepository, type NoteAttachmentInput } from "./workspace-attachments.js";
+import { renderMarkdownPdf } from "./pdf-export.js";
 
 const MAX_SEARCH_LIMIT = 50;
 const MAX_LIST_LIMIT = 100;
@@ -30,98 +34,6 @@ const MAX_GRAPH_LIMIT = 100;
 const MAX_CONTEXT_BYTES = 6_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HASH_RE = /^[0-9a-f]{64}$/i;
-const SECTION_MARKER_RE = /^\s*<!--\s*cortex:section\s+id="(sec-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})"\s*-->\s*$/i;
-
-export type NoteSelector = string;
-
-export type NoteRecord = {
-  id: string;
-  path: string;
-  title: string;
-  type: NoteType;
-  created_at: string;
-  updated_at: string;
-  aliases: string[];
-  tags: string[];
-  content_hash: string;
-};
-
-export type GraphNodeRecord = {
-  nodeId: string;
-  kind: string;
-  path?: string;
-  name: string;
-  metadata: Record<string, unknown>;
-};
-
-export type GraphEdgeRecord = {
-  fromId: string;
-  toId: string;
-  kind: string;
-  metadata: Record<string, unknown>;
-};
-
-export type VaultChangeEvent = {
-  type: "create" | "update" | "delete";
-  path: string;
-  content_hash?: string;
-  mtime?: string;
-  repository?: string;
-};
-
-export type WorkspaceStatus = {
-  active: boolean;
-  workspaceRoot?: string;
-  workspaceExists?: boolean;
-  repositories: Array<{ id: string; path: string; status: string; lastIndexedAt?: string }>;
-  diagnostics: Diagnostic[];
-};
-
-export type ServiceErrorCode =
-  | "INVALID_INPUT"
-  | "NOT_FOUND"
-  | "CONFLICT"
-  | "AMBIGUOUS_SECTION"
-  | "GIT_DIRTY"
-  | "INDEX_SYNC_FAILED"
-  | "VAULT_INVALID";
-
-export class ServiceError extends Error {
-  readonly code: ServiceErrorCode;
-  readonly details?: Record<string, unknown>;
-
-  constructor(code: ServiceErrorCode, message: string, details?: Record<string, unknown>) {
-    super(message);
-    this.name = "ServiceError";
-    this.code = code;
-    this.details = details;
-  }
-}
-
-type GraphDirection = "in" | "out" | "neighbors";
-
-type NoteDbRow = {
-  id: string;
-  path: string;
-  title: string;
-  type: NoteType;
-  created_at: string;
-  updated_at: string;
-};
-
-type GraphQueryResult = {
-  anchor: GraphNodeRecord;
-  nodes: GraphNodeRecord[];
-  edges: GraphEdgeRecord[];
-  truncated: boolean;
-};
-
-type WriteResult = {
-  path: string;
-  mtime: string;
-  content_hash: string;
-  index: IndexReport;
-};
 
 function hashContent(content: Buffer | string): string {
   return createHash("sha256").update(content).digest("hex");
@@ -139,32 +51,6 @@ function jsonMetadata(value: string): Record<string, unknown> {
   } catch {
     return {};
   }
-}
-
-function sectionBounds(text: string, section: Section): { lines: string[]; start: number; end: number; marker: number } {
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
-  const start = section.startLine - 1;
-  const end = Math.min(section.endLine, lines.length);
-  const marker = lines.slice(start + 1, end).findIndex((line) => SECTION_MARKER_RE.test(line));
-  if (marker < 0) throw new ServiceError("CONFLICT", `Section '${section.id ?? section.heading}' has no writable section marker.`);
-  return { lines, start, end, marker: start + 1 + marker };
-}
-
-function sectionBody(text: string, section: Section): string {
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
-  const start = section.startLine - 1;
-  const end = Math.min(section.endLine, lines.length);
-  const markerOffset = lines.slice(start + 1, end).findIndex((line) => SECTION_MARKER_RE.test(line));
-  const contentStart = markerOffset < 0 ? start + 1 : start + 1 + markerOffset + 1;
-  return lines.slice(contentStart, end).join("\n").replace(/^\n+|\n+$/g, "");
-}
-
-function replaceSectionBody(text: string, section: Section, body: string): string {
-  const bounds = sectionBounds(text, section);
-  const next = body.replace(/\r\n/g, "\n").replace(/^\n+|\n+$/g, "");
-  const replacement = next.length === 0 ? [] : next.split("\n");
-  const lines = [...bounds.lines.slice(0, bounds.marker + 1), ...replacement, ...bounds.lines.slice(bounds.end)];
-  return lines.join("\n");
 }
 
 function slugify(value: string): string {
@@ -210,27 +96,36 @@ class AsyncMutex {
 export class VaultRuntime {
   readonly vaultRoot: string;
   readonly indexer: VaultIndexer;
-  readonly git: GitAdapter;
   workspace?: WorkspaceConfig;
+  private gitAdapter?: GitAdapter;
   private workspaceIndexer?: WorkspaceIndexer;
   private workspaceAttachmentDiagnostics: Diagnostic[] = [];
   private readonly repoGit = new Map<string, GitAdapter>();
   private readonly repoWatchers = new Map<string, WatcherHandle>();
   private watcher?: WatcherHandle;
+  private workspacePhase: IndexPhase = "disabled";
+  private workspaceError?: string;
+  private workspaceTask?: Promise<void>;
+  private closing = false;
   private readonly writes = new AsyncMutex();
   private readonly subscribers = new Set<(events: VaultChangeEvent[]) => void>();
 
-  private constructor(vaultRoot: string, indexer: VaultIndexer, git: GitAdapter) {
+  private constructor(vaultRoot: string, indexer: VaultIndexer) {
     this.vaultRoot = vaultRoot;
     this.indexer = indexer;
-    this.git = git;
+  }
+
+  /** Construct the vault Git adapter only for an operation that needs Git. */
+  get git(): GitAdapter {
+    this.gitAdapter ??= new GitAdapter(this.vaultRoot);
+    return this.gitAdapter;
   }
 
   static async start(vaultRoot: string, options?: { workspaceRoot?: string }): Promise<VaultRuntime> {
     const indexer = new VaultIndexer(vaultRoot);
     try {
       indexer.fullRebuild();
-      const service = new VaultRuntime(indexer.vaultRoot, indexer, new GitAdapter(indexer.vaultRoot));
+      const service = new VaultRuntime(indexer.vaultRoot, indexer);
       const workspaceRequested = Boolean(options?.workspaceRoot) || Boolean(process.env.CORTEX_WORKSPACE_ROOT) || existsSync(workspaceManifestPath(service.vaultRoot));
       if (workspaceRequested) await service.startWorkspace(options?.workspaceRoot);
       service.watcher = await startWatcher(service.vaultRoot, async (events) => {
@@ -252,19 +147,61 @@ export class VaultRuntime {
     const workspace = loadWorkspaceConfig(this.vaultRoot, workspaceRoot);
     this.workspace = workspace;
     this.workspaceIndexer = new WorkspaceIndexer(this.indexer.store, workspace);
-    this.workspaceIndexer.fullRebuild();
-    this.refreshWorkspaceAttachments();
-    for (const repository of workspace.repositories) {
-      this.repoGit.set(repository.id, new GitAdapter(repository.absolutePath));
+    this.workspacePhase = workspace.workspaceExists ? "warming" : "error";
+    this.workspaceError = workspace.workspaceExists ? undefined : `Workspace root does not exist: ${workspace.workspaceRoot}`;
+    const ignorePatterns = workspaceIgnorePatterns(workspace.manifest);
+    const watcherOptions = { ignorePath: (path: string) => isWorkspaceIgnored(path, ignorePatterns) };
+    await Promise.all(workspace.repositories.map(async (repository) => {
       const handle = await startWatcher(repository.absolutePath, async (events) => {
-        await this.writes.run(() => {
-          const normalized = events.map((event) => ({ ...event, path: this.normalizeEventPath(event.path, repository.absolutePath) }));
-          this.workspaceIndexer!.incrementalRebuild(repository.id);
-          this.refreshWorkspaceAttachments();
+        const normalized = events.map((event) => ({ ...event, path: this.normalizeEventPath(event.path, repository.absolutePath) }));
+        this.workspacePhase = "rebuilding";
+        try {
+          await this.writes.run(() => {
+            this.workspaceIndexer!.incrementalRebuild(repository.id);
+            this.refreshWorkspaceAttachments();
+          });
+          this.workspacePhase = "current";
+          this.workspaceError = undefined;
           this.publishChanges(normalized, repository.id);
-        });
-      });
+        } catch (error) {
+          this.workspacePhase = "error";
+          this.workspaceError = error instanceof Error ? error.message : String(error);
+          this.publishChanges([]);
+        }
+      }, watcherOptions);
       this.repoWatchers.set(repository.id, handle);
+    }));
+    if (workspace.workspaceExists) this.scheduleWorkspaceRebuild();
+  }
+
+  private scheduleWorkspaceRebuild(): void {
+    this.workspaceTask = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        if (this.closing) {
+          resolve();
+          return;
+        }
+        void this.rebuildWorkspace().then(resolve, resolve);
+      }, 0);
+    });
+  }
+
+  private async rebuildWorkspace(): Promise<void> {
+    if (!this.workspaceIndexer || !this.workspace?.workspaceExists) return;
+    try {
+      await this.writes.run(() => {
+        this.workspaceIndexer!.fullRebuild();
+        this.refreshWorkspaceAttachments();
+      });
+      this.workspacePhase = "current";
+      this.workspaceError = undefined;
+      // An empty change batch is a status invalidation. It lets the UI learn
+      // that background warming finished without inventing a fake file event.
+      this.publishChanges([]);
+    } catch (error) {
+      this.workspacePhase = "error";
+      this.workspaceError = error instanceof Error ? error.message : String(error);
+      this.publishChanges([]);
     }
   }
 
@@ -285,6 +222,15 @@ export class VaultRuntime {
     return repository;
   }
 
+  private repoGitAdapter(repositoryId: string): GitAdapter {
+    const repository = this.requireRepository(repositoryId);
+    const existing = this.repoGit.get(repository.id);
+    if (existing) return existing;
+    const adapter = new GitAdapter(repository.absolutePath);
+    this.repoGit.set(repository.id, adapter);
+    return adapter;
+  }
+
   private repositoryPath(repositoryId: string, target: string): { repository: WorkspaceRepository; relative: string } {
     const repository = this.requireRepository(repositoryId);
     const workspace = this.workspace!;
@@ -296,14 +242,50 @@ export class VaultRuntime {
   }
 
   async close(): Promise<void> {
+    this.closing = true;
     await this.watcher?.stop();
     await this.watcher?.flushSnapshot();
     for (const handle of this.repoWatchers.values()) {
       await handle.stop();
       await handle.flushSnapshot();
     }
+    await this.workspaceTask;
     this.indexer.close();
     this.subscribers.clear();
+  }
+
+  async waitForWorkspace(): Promise<void> {
+    await this.workspaceTask;
+  }
+
+  async rebuildIndex(): Promise<IndexRefreshResult> {
+    return this.writes.run(() => {
+      const workspaceExists = Boolean(this.workspace?.workspaceExists && this.workspaceIndexer);
+      if (workspaceExists) {
+        this.workspacePhase = "rebuilding";
+        this.workspaceError = undefined;
+        this.publishChanges([]);
+      }
+
+      try {
+        const index = this.indexer.fullRebuild();
+        const workspace = this.workspaceIndexer?.fullRebuild();
+        if (workspaceExists) {
+          this.refreshWorkspaceAttachments();
+          this.workspacePhase = "current";
+          this.workspaceError = undefined;
+        }
+        this.publishChanges([]);
+        return { index, workspace };
+      } catch (error) {
+        if (workspaceExists) {
+          this.workspacePhase = "error";
+          this.workspaceError = error instanceof Error ? error.message : String(error);
+          this.publishChanges([]);
+        }
+        throw error;
+      }
+    });
   }
 
   subscribe(listener: (events: VaultChangeEvent[]) => void): () => void {
@@ -357,11 +339,9 @@ export class VaultRuntime {
 
   private noteRow(selector: NoteSelector): NoteRecord {
     const row = UUID_RE.test(selector)
-      ? this.indexer.store.db.query<NoteDbRow, [string]>("SELECT note_id as id, path, title, type, created_at, updated_at FROM notes WHERE note_id = ?1").get(selector)
-      : this.indexer.store.db.query<NoteDbRow, [string]>("SELECT note_id as id, path, title, type, created_at, updated_at FROM notes WHERE path = ?1").get(this.relativePath(selector).relative);
+      ? this.indexer.store.noteById(selector)
+      : this.indexer.store.noteByPath(this.relativePath(selector).relative);
     if (!row) throw new ServiceError("NOT_FOUND", `Note '${selector}' was not found.`);
-    const aliases = this.indexer.store.db.query<{ alias: string }, [string]>("SELECT alias FROM note_aliases WHERE note_id = ?1 ORDER BY alias").all(row.id).map((item) => item.alias);
-    const tags = this.indexer.store.db.query<{ tag: string }, [string]>("SELECT tag FROM note_tags WHERE note_id = ?1 ORDER BY tag").all(row.id).map((item) => item.tag);
     const absolute = resolve(this.vaultRoot, row.path);
     return {
       id: row.id,
@@ -370,8 +350,8 @@ export class VaultRuntime {
       type: row.type,
       created_at: row.created_at,
       updated_at: row.updated_at,
-      aliases,
-      tags,
+      aliases: row.aliases,
+      tags: row.tags,
       content_hash: hashContent(readFileSync(absolute, "utf8")),
     };
   }
@@ -381,7 +361,7 @@ export class VaultRuntime {
     if (UUID_RE.test(selector)) nodeId = noteNodeId(selector);
     else if (!selector.includes(":")) {
       const relative = this.relativePath(selector).relative;
-      nodeId = relative === "." ? projectNodeId() : this.indexer.store.db.query<{ node_id: string }, [string]>("SELECT node_id FROM graph_nodes WHERE path = ?1").get(relative)?.node_id ?? "";
+      nodeId = relative === "." ? projectNodeId() : this.indexer.store.graphNodeIdByPath(relative) ?? "";
     }
     if (!nodeId) throw new ServiceError("NOT_FOUND", `Graph node '${selector}' was not found.`);
     const row = this.indexer.store.unifiedNode(nodeId);
@@ -434,23 +414,71 @@ export class VaultRuntime {
     return { note, sections: parsed.sections };
   }
 
-  getSource(selector: NoteSelector): { note: NoteRecord; markdown: string; sections: Section[]; diagnostics: Diagnostic[] } {
+  getSource(selector: NoteSelector): NoteSource {
     const note = this.noteRow(selector);
     const absolute = resolve(this.vaultRoot, note.path);
     const markdown = readFileSync(absolute, "utf8");
     const parsed = parseMarkdown(markdown, absolute);
-    return { note, markdown, sections: parsed.sections, diagnostics: parsed.diagnostics };
+    const frontmatter = parsed.frontmatter ?? {
+      id: note.id,
+      title: note.title,
+      type: note.type,
+      created_at: note.created_at,
+      updated_at: note.updated_at,
+      aliases: note.aliases,
+      tags: note.tags,
+      applies_to: [],
+      extra: {},
+    } satisfies NoteFrontmatter;
+    return { note, markdown, body: parsed.body, frontmatter, sections: parsed.sections, diagnostics: parsed.diagnostics };
+  }
+
+  async exportPdf(selector: NoteSelector, body?: string, title?: string): Promise<Buffer> {
+    const note = this.noteRow(selector);
+    const absolute = resolve(this.vaultRoot, note.path);
+    const source = body === undefined || title === undefined ? this.getSource(selector) : undefined;
+    const exportBody = body ?? source?.body ?? "";
+    const exportTitle = (title ?? source?.frontmatter.title ?? note.title).trim();
+    return renderMarkdownPdf({ notePath: absolute, title: exportTitle, body: exportBody, vaultRoot: this.vaultRoot });
+  }
+
+  vaultTree(): VaultTree {
+    const noteRows = this.indexer.store.noteHeaders();
+    const notesByPath = new Map(noteRows.map((row) => [row.path, row]));
+    const visit = (directory: string, relativeDirectory: string): VaultTreeNode[] => {
+      const entries = readdirSync(directory, { withFileTypes: true })
+        .filter((entry) => entry.name !== ".git" && entry.name !== RUNTIME_DIRECTORY && entry.name !== "node_modules")
+        .sort((left, right) => {
+          if (left.isDirectory() !== right.isDirectory()) return left.isDirectory() ? -1 : 1;
+          return left.name.localeCompare(right.name);
+        });
+      return entries.map((entry) => {
+        const absolute = join(directory, entry.name);
+        const path = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+          return { kind: "directory", path, name: entry.name, children: visit(absolute, path) } satisfies VaultTreeNode;
+        }
+        const note = notesByPath.get(path);
+        if (note) {
+          return { kind: "note", path, name: entry.name, noteId: note.note_id, title: note.title, type: note.type, updated_at: note.updated_at } satisfies VaultTreeNode;
+        }
+        return { kind: "file", path, name: entry.name, openable: false } satisfies VaultTreeNode;
+      });
+    };
+    return { rootName: basename(this.vaultRoot), children: visit(this.vaultRoot, ""), truncated: false };
   }
 
   getSection(selector: NoteSelector, sectionId?: string, heading?: string): { note: NoteRecord; section: Section; body: string } {
     const note = this.noteRow(selector);
     const content = readFileSync(resolve(this.vaultRoot, note.path), "utf8");
     const parsed = parseMarkdown(content);
-    let matches = sectionId ? parsed.sections.filter((section) => section.id === sectionId) : parsed.sections.filter((section) => section.heading.toLocaleLowerCase() === heading?.toLocaleLowerCase());
+    const matches = findSections(parsed, sectionId ? { id: sectionId } : { heading });
     if (matches.length === 0) throw new ServiceError("NOT_FOUND", "Section was not found.");
     if (matches.length > 1) throw new ServiceError("AMBIGUOUS_SECTION", `Section heading '${heading}' is ambiguous.`);
     const section = matches[0];
-    return { note, section, body: sectionBody(content, section) };
+    const body = getSectionBody(content, section, true);
+    if (body === undefined) throw new ServiceError("CONFLICT", `Section '${section.id ?? section.heading}' has no writable section marker.`);
+    return { note, section, body };
   }
 
   async patchSection(selector: NoteSelector, sectionId: string, expectedRevision: string, newContent: string): Promise<WriteResult> {
@@ -459,12 +487,12 @@ export class VaultRuntime {
       const absolute = resolve(this.vaultRoot, note.path);
       const original = readFileSync(absolute, "utf8");
       const parsed = parseMarkdown(original, absolute);
-      const matches = parsed.sections.filter((section) => section.id === sectionId);
+      const matches = findSections(parsed, { id: sectionId });
       if (matches.length === 0) throw new ServiceError("NOT_FOUND", `Section '${sectionId}' was not found.`);
       if (matches.length > 1 || diagnosticsHaveErrors(parsed.diagnostics)) throw new ServiceError("CONFLICT", "The note has invalid or duplicate section metadata.");
       const section = matches[0];
       if (section.revision !== expectedRevision) throw new ServiceError("CONFLICT", "Section revision is stale.", { expected_revision: expectedRevision, actual_revision: section.revision });
-      const body = replaceSectionBody(original, section, newContent);
+      const body = replaceSectionBody(original, section, newContent.replace(/\r\n/g, "\n").replace(/^\n+|\n+$/g, ""));
       const updated = { ...parsed.frontmatter!, updated_at: new Date().toISOString() };
       const content = serializeFrontmatter(updated) + parseMarkdown(body).body;
       return this.writeAndIndexLocked(note.path, content);
@@ -472,6 +500,10 @@ export class VaultRuntime {
   }
 
   async replaceNote(selector: NoteSelector, expectedHash: string, markdown: string): Promise<WriteResult> {
+    return this.updateNote(selector, expectedHash, { markdown });
+  }
+
+  async updateNote(selector: NoteSelector, expectedHash: string, input: NoteUpdateInput): Promise<WriteResult> {
     if (!HASH_RE.test(expectedHash)) throw new ServiceError("INVALID_INPUT", "expected_file_hash must be a SHA-256 hash.");
     return this.writes.run(() => {
       const note = this.noteRow(selector);
@@ -479,18 +511,33 @@ export class VaultRuntime {
       const current = readFileSync(absolute, "utf8");
       const actualHash = hashContent(current);
       if (actualHash !== expectedHash) throw new ServiceError("CONFLICT", "Note file hash is stale.", { expected_file_hash: expectedHash, actual_file_hash: actualHash });
-      const parsed = parseMarkdown(markdown, absolute);
+      if (input.markdown === undefined && input.body === undefined && input.metadata === undefined) {
+        throw new ServiceError("INVALID_INPUT", "A note update must include markdown, body, or metadata.");
+      }
+      const parsed = parseMarkdown(input.markdown ?? current, absolute);
       if (diagnosticsHaveErrors(parsed.diagnostics) || !parsed.frontmatter) throw new ServiceError("INVALID_INPUT", "Replacement Markdown has invalid frontmatter or section metadata.", { diagnostics: parsed.diagnostics });
       if (parsed.frontmatter.id !== note.id || parsed.frontmatter.created_at !== note.created_at) throw new ServiceError("CONFLICT", "id and created_at are immutable.");
-      if (this.workspace) this.validateAppliesTo(parsed.frontmatter.applies_to);
-      const content = serializeFrontmatter({ ...parsed.frontmatter, updated_at: new Date().toISOString() }) + parsed.body;
+      const metadata = input.metadata ?? {};
+      const frontmatter: NoteFrontmatter = {
+        ...parsed.frontmatter,
+        ...(metadata.title === undefined ? {} : { title: metadata.title }),
+        ...(metadata.type === undefined ? {} : { type: metadata.type }),
+        ...(metadata.aliases === undefined ? {} : { aliases: metadata.aliases }),
+        ...(metadata.tags === undefined ? {} : { tags: metadata.tags }),
+        ...(metadata.applies_to === undefined ? {} : { applies_to: metadata.applies_to }),
+        ...(metadata.extra === undefined ? {} : { extra: metadata.extra }),
+        updated_at: new Date().toISOString(),
+      };
+      if (this.workspace) this.validateAppliesTo(frontmatter.applies_to);
+      const body = input.body ?? parsed.body;
+      const content = serializeFrontmatter(frontmatter) + body;
       const result = this.writeAndIndexLocked(note.path, content);
       if (this.workspace) this.refreshWorkspaceAttachments();
       return result;
     });
   }
 
-  async createNote(input: { title: string; type?: NoteType; aliases?: string[]; tags?: string[]; applies_to?: NoteFrontmatter["applies_to"]; body?: string; path?: string }): Promise<WriteResult & { id: string }> {
+  async createNote(input: NoteCreateInput): Promise<WriteResult & { id: string }> {
     return this.writes.run(() => {
       if (this.workspace && input.applies_to) this.validateAppliesTo(input.applies_to);
       const frontmatter = createFrontmatter({ title: input.title, type: input.type, aliases: input.aliases, tags: input.tags, applies_to: input.applies_to });
@@ -545,16 +592,13 @@ export class VaultRuntime {
     if (!normalized) throw new ServiceError("INVALID_INPUT", "Search query cannot be empty.");
     const words = normalized.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
     if (!words.length) throw new ServiceError("INVALID_INPUT", "Search query cannot be empty.");
-    const terms = words.map((term) => `"${term.replaceAll('"', '""')}"`).join(" AND ");
-    const rows = this.indexer.store.db.query<{ note_id: string; title: string; path: string; snippet: string }, [string, number]>("SELECT notes_fts.note_id, notes_fts.title, notes.path, snippet(notes_fts, 2, '', '', '...', 24) as snippet FROM notes_fts JOIN notes ON notes.note_id = notes_fts.note_id WHERE notes_fts MATCH ?1 LIMIT ?2").all(terms, clamp(limit, 20, MAX_SEARCH_LIMIT));
-    return { hits: rows, truncated: rows.length >= clamp(limit, 20, MAX_SEARCH_LIMIT) };
+    return this.indexer.store.searchNotes(normalized, clamp(limit, 20, MAX_SEARCH_LIMIT));
   }
 
   listNotes(prefix?: string, tag?: string, limit?: number): { notes: NoteRecord[]; truncated: boolean } {
-    const rows = this.indexer.store.db.query<{ note_id: string; path: string; title: string; type: NoteType; created_at: string; updated_at: string }, []>("SELECT note_id, path, title, type, created_at, updated_at FROM notes ORDER BY updated_at DESC").all();
-    const filtered = rows.filter((row) => (!prefix || row.path.startsWith(prefix) || row.title.toLocaleLowerCase().startsWith(prefix.toLocaleLowerCase())) && (!tag || this.indexer.store.db.query<{ count: number }, [string, string]>("SELECT COUNT(*) as count FROM note_tags WHERE note_id = ?1 AND tag = ?2").get(row.note_id, tag)?.count === 1));
     const limitValue = clamp(limit, 20, MAX_LIST_LIMIT);
-    return { notes: filtered.slice(0, limitValue).map((row) => this.noteRow(row.note_id)), truncated: filtered.length > limitValue };
+    const result = this.indexer.store.indexedNotes({ prefix, tag, limit: limitValue });
+    return { notes: result.notes.map((row) => this.noteRow(row.id)), truncated: result.truncated };
   }
 
   queryTable(selector: NoteSelector, sectionId?: string, contains?: Record<string, string>, limit?: number): { note: NoteRecord; headers: string[]; rows: string[][]; section_id?: string; truncated: boolean } {
@@ -582,18 +626,36 @@ export class VaultRuntime {
     const graph = this.queryGraphInternal(selector, "neighbors", 2, clamp(limit, 20, MAX_GRAPH_LIMIT));
     const files = graph.nodes.filter((node) => ["file", "module", "test", "configuration"].includes(node.kind)).slice(0, 20);
     const attachedNotes = graph.nodes.filter((node) => node.kind === "note").slice(0, 20);
+    const relatedNodes = graph.nodes.filter((node) => ["project", "repository", "directory", "package"].includes(node.kind)).slice(0, 20);
+    // Only the anchor's own edges are "relationships" for context purposes —
+    // the 2-hop neighborhood also carries edges between unrelated neighbors
+    // (e.g. another note's own backlinks), which is noise here and, being
+    // unbounded, would otherwise dominate trimPayload's byte budget and
+    // starve out the (small, capped) node-lookup buckets above. Also collapse
+    // repeated mentions of the same link between the same two nodes (e.g. a
+    // note wikilinking the anchor from several sections) to one relationship
+    // per connected node, matching "relationship labels, not anonymous
+    // backlinks" — the count of mentions isn't a distinct relationship.
+    const seenRelationships = new Set<string>();
+    const relationships = graph.edges.filter((edge) => {
+      if (edge.fromId !== graph.anchor.nodeId && edge.toId !== graph.anchor.nodeId) return false;
+      const key = `${edge.fromId}|${edge.toId}|${edge.kind}`;
+      if (seenRelationships.has(key)) return false;
+      seenRelationships.add(key);
+      return true;
+    });
     const search = taskHint ? this.search(taskHint, 10).hits : [];
-    const payload = { anchor: graph.anchor, purpose: graph.anchor.metadata, likely_files: files, attached_notes: attachedNotes, relationships: graph.edges, task_matches: search };
+    const payload = { anchor: graph.anchor, purpose: graph.anchor.metadata, likely_files: files, attached_notes: attachedNotes, related_nodes: relatedNodes, relationships, task_matches: search };
     const trimmed = trimPayload(payload);
     return { ...trimmed.value, truncated: trimmed.truncated || graph.truncated };
   }
 
-  history(selector: NoteSelector, limit?: number): { path: string; commits: GitCommit[] } {
+  history(selector: NoteSelector, limit?: number): HistoryResult {
     const note = this.noteRow(selector);
     return { path: note.path, commits: this.git.history(note.path, clamp(limit, 20, 100)) };
   }
 
-  diff(selector: NoteSelector, revision?: string): { path: string; diff: string } {
+  diff(selector: NoteSelector, revision?: string): DiffResult {
     const note = this.noteRow(selector);
     return { path: note.path, diff: this.git.diff(note.path, revision) };
   }
@@ -613,56 +675,84 @@ export class VaultRuntime {
     });
   }
 
-  vaultCheck(): { vaultRoot: string; diagnostics: Diagnostic[]; index: ReturnType<VaultIndexer["store"]["counts"]>; gitStatus: GitStatusEntry[]; ok: boolean } {
+  vaultCheck(): VaultCheckResult {
     const scan = scanVault(this.vaultRoot);
     const diagnostics = [...scan.diagnostics];
     if (!vaultHasExpectedGitIgnore(this.vaultRoot)) diagnostics.push({ severity: "warning", code: "invalid-gitignore", message: "Vault .gitignore does not cover runtime data.", filePath: `${this.vaultRoot}/.gitignore` });
     return { vaultRoot: this.vaultRoot, diagnostics, index: this.indexer.store.counts(), gitStatus: this.git.status(), ok: !diagnosticsHaveErrors(diagnostics) };
   }
 
-  workspaceStatus(): WorkspaceStatus {
-    if (!this.workspace) return { active: false, repositories: [], diagnostics: [] };
-    const repositories = this.indexer.store.workspaceRepositories().map((row) => ({ id: row.repository_id, path: row.path, status: row.status, lastIndexedAt: row.last_indexed_at ?? undefined }));
+  health(): HealthResult {
+    return {
+      status: "ok",
+      phase: 3,
+      index: this.indexer.store.counts(),
+      workspace: { active: Boolean(this.workspace), phase: this.workspacePhase, error: this.workspaceError },
+    };
+  }
+
+  workspaceStatus(includeGitStatus = false): WorkspaceStatus {
+    if (!this.workspace) return { active: false, phase: "disabled", repositories: [], diagnostics: [] };
+    const rows = new Map(this.indexer.store.workspaceRepositories().map((row) => [row.repository_id, row]));
+    const activeIds = new Set(this.workspace.repositories.map((repository) => repository.id));
+    const repositories = this.workspace.repositories.map((repository) => {
+      const row = rows.get(repository.id);
+      const status = this.workspacePhase === "warming" || this.workspacePhase === "rebuilding"
+        ? this.workspacePhase
+        : this.workspacePhase === "error" ? "error" : row?.status ?? "stale";
+      return {
+        id: repository.id,
+        path: repository.path,
+        status,
+        lastIndexedAt: row?.last_indexed_at ?? undefined,
+        gitChangedFileCount: includeGitStatus ? this.repoGitAdapter(repository.id).status().length : undefined,
+      };
+    });
+    for (const row of rows.values()) {
+      if (!activeIds.has(row.repository_id)) repositories.push({ id: row.repository_id, path: row.path, status: row.status, lastIndexedAt: row.last_indexed_at ?? undefined, gitChangedFileCount: undefined });
+    }
     const diagnostics = [
       ...this.workspace.diagnostics.map((diagnostic) => ({ severity: diagnostic.severity, code: diagnostic.code, message: diagnostic.message, filePath: diagnostic.path })),
       ...this.indexer.store.workspaceDiagnostics(),
       ...this.workspaceAttachmentDiagnostics,
     ];
-    return { active: true, workspaceRoot: this.workspace.workspaceRoot, workspaceExists: this.workspace.workspaceExists, repositories, diagnostics };
+    return { active: true, phase: this.workspacePhase, error: this.workspaceError, workspaceRoot: this.workspace.workspaceRoot, workspaceExists: this.workspace.workspaceExists, repositories, diagnostics };
   }
 
-  getRepoHistory(repositoryId: string, path: string, limit?: number): { repository: string; path: string; commits: GitCommit[] } {
+  getRepoHistory(repositoryId: string, path: string, limit?: number): RepositoryHistoryResult {
     const { repository, relative } = this.repositoryPath(repositoryId, path);
-    const git = this.repoGit.get(repository.id);
-    if (!git) throw new ServiceError("NOT_FOUND", `Repository '${repositoryId}' has no Git adapter available.`);
-    return { repository: repository.id, path: relative, commits: git.history(relative, clamp(limit, 20, 100)) };
+    return { repository: repository.id, path: relative, commits: this.repoGitAdapter(repository.id).history(relative, clamp(limit, 20, 100)) };
   }
 
-  getRepoDiff(repositoryId: string, path: string, revision?: string): { repository: string; path: string; diff: string } {
+  getRepoDiff(repositoryId: string, path: string, revision?: string): RepositoryDiffResult {
     const { repository, relative } = this.repositoryPath(repositoryId, path);
-    const git = this.repoGit.get(repository.id);
-    if (!git) throw new ServiceError("NOT_FOUND", `Repository '${repositoryId}' has no Git adapter available.`);
-    return { repository: repository.id, path: relative, diff: git.diff(relative, revision) };
+    return { repository: repository.id, path: relative, diff: this.repoGitAdapter(repository.id).diff(relative, revision) };
   }
 
-  async restoreRepoPath(repositoryId: string, path: string, revision: string, confirm: boolean): Promise<{ repository: string; path: string; revision: string; mtime: string }> {
+  async restoreRepoPath(repositoryId: string, path: string, revision: string, confirm: boolean): Promise<RepositoryRestoreResult> {
     if (!confirm) throw new ServiceError("INVALID_INPUT", "Restoring a repository path requires explicit confirm: true.");
     return this.writes.run(async () => {
       const { repository, relative } = this.repositoryPath(repositoryId, path);
-      const git = this.repoGit.get(repository.id);
-      if (!git) throw new ServiceError("NOT_FOUND", `Repository '${repositoryId}' has no Git adapter available.`);
+      const git = this.repoGitAdapter(repository.id);
       try {
         git.restore(relative, revision);
       } catch (error) {
         if (error instanceof Error && error.message.includes("dirty")) throw new ServiceError("GIT_DIRTY", error.message);
         throw error;
       }
-      this.workspaceIndexer!.incrementalRebuild(repository.id);
-      this.refreshWorkspaceAttachments();
+      this.workspacePhase = "rebuilding";
+      try {
+        this.workspaceIndexer!.incrementalRebuild(repository.id);
+        this.refreshWorkspaceAttachments();
+        this.workspacePhase = "current";
+        this.workspaceError = undefined;
+      } catch (error) {
+        this.workspacePhase = "error";
+        this.workspaceError = error instanceof Error ? error.message : String(error);
+        throw error;
+      }
       const stats = statSync(resolve(repository.absolutePath, relative));
       return { repository: repository.id, path: relative, revision, mtime: new Date(stats.mtimeMs).toISOString() };
     });
   }
 }
-
-export { VaultRuntime as McpVaultService };

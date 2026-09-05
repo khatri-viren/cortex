@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFrontmatter, parseFrontmatter, serializeFrontmatter } from "../src/core/frontmatter.js";
 import { directoryNodeId, fileNodeId, noteNodeId, projectNodeId, repositoryRelativePath } from "../src/core/identity.js";
-import { addMissingSectionMarkers, parseMarkdown } from "../src/core/markdown.js";
+import { addMissingSectionMarkers, findSections, getSectionBody, parseMarkdown, replaceSectionBody } from "../src/core/markdown.js";
+import { reconcileMarkdown } from "../src/core/reconcile.js";
 import { migrateVault } from "../src/core/migration.js";
 import { initVault, scanVault } from "../src/core/vault.js";
+import { markdownToHtml, normalizeMarkdownForPdf } from "../src/core/pdf-export.js";
 
 function temporaryDirectory(): string {
   return mkdtempSync(join(tmpdir(), "cortex-phase0-"));
@@ -68,6 +70,134 @@ describe("markdown", () => {
     expect(result.body).toContain("cortex:section id=\"sec-");
     expect(result.body).toContain("Text");
     expect(result.body).toContain("More");
+  });
+
+  test("uses hierarchy-aware section ranges for nested headings", () => {
+    const text = [
+      "# Parent",
+      "",
+      "<!-- cortex:section id=\"sec-11111111-1111-4111-8111-111111111111\" -->",
+      "",
+      "Parent body",
+      "",
+      "## Child",
+      "",
+      "<!-- cortex:section id=\"sec-22222222-2222-4222-8222-222222222222\" -->",
+      "",
+      "Child body",
+      "",
+      "# Sibling",
+      "",
+      "<!-- cortex:section id=\"sec-33333333-3333-4333-8333-333333333333\" -->",
+      "",
+      "Sibling body",
+    ].join("\n");
+    const parsed = parseMarkdown(text);
+    const parent = findSections(parsed, { id: "sec-11111111-1111-4111-8111-111111111111" });
+    expect(parent).toHaveLength(1);
+    expect(getSectionBody(text, parent[0], true)).toContain("Child body");
+    expect(getSectionBody(text, parent[0], true)).not.toContain("Sibling body");
+
+    const child = findSections(parsed, { id: "sec-22222222-2222-4222-8222-222222222222" });
+    expect(child).toHaveLength(1);
+    const replaced = replaceSectionBody(text, child[0], "Updated child");
+    expect(replaced).toContain("Updated child");
+    expect(replaced).toContain("Parent body");
+    expect(replaced).toContain("## Child");
+    expect(replaced).toContain("Sibling body");
+  });
+
+  test("reconciliation uses the same nested section ranges", () => {
+    const base = [
+      "---",
+      "id: 77777777-7777-4777-8777-777777777777",
+      "title: Nested merge",
+      "type: note",
+      "created_at: 2026-01-01T00:00:00Z",
+      "updated_at: 2026-01-01T00:00:00Z",
+      "---",
+      "",
+      "# Parent",
+      "",
+      "<!-- cortex:section id=\"sec-44444444-4444-4444-8444-444444444444\" -->",
+      "",
+      "Parent body",
+      "",
+      "## Child",
+      "",
+      "<!-- cortex:section id=\"sec-55555555-5555-4555-8555-555555555555\" -->",
+      "",
+      "Child body",
+      "",
+      "# Sibling",
+      "",
+      "<!-- cortex:section id=\"sec-66666666-6666-4666-8666-666666666666\" -->",
+      "",
+      "Sibling body",
+    ].join("\n");
+    const local = base.replace("Child body", "Local child");
+    const remote = base.replace("Sibling body", "Remote sibling");
+    const result = reconcileMarkdown(base, local, remote);
+    expect(result.status).toBe("merged");
+    if (result.status === "merged") {
+      expect(result.markdown).toContain("Local child");
+      expect(result.markdown).toContain("Remote sibling");
+      expect(result.markdown).toContain("# Sibling");
+    }
+  });
+});
+
+describe("markdown PDF export", () => {
+  test("strips frontmatter markers and duplicate title headings without touching code or user comments", () => {
+    const body = [
+      "# Export title",
+      "",
+      "<!-- cortex:section id=\"sec-11111111-1111-4111-8111-111111111111\" -->",
+      "",
+      "<!-- keep this comment -->",
+      "",
+      "```md",
+      "<!-- cortex:section id=\"sec-22222222-2222-4222-8222-222222222222\" -->",
+      "[[Keep this link]]",
+      "```",
+      "",
+      "[[Target|Readable]] and [[Other]].",
+      "",
+      "## Details",
+    ].join("\n");
+    const normalized = normalizeMarkdownForPdf({ notePath: "/tmp/note.md", title: "Export title", body, vaultRoot: "/tmp" });
+    expect(normalized.markdown).not.toContain("sec-11111111-1111-4111-8111-111111111111");
+    expect(normalized.markdown).toContain("<!-- keep this comment -->");
+    expect(normalized.markdown).toContain("<!-- cortex:section id=\"sec-22222222-2222-4222-8222-222222222222\" -->");
+    expect(normalized.markdown).toContain("[[Keep this link]]");
+    expect(normalized.markdown).toContain("Readable and Other.");
+    expect(normalized.markdown).not.toMatch(/^# Export title/m);
+    expect(normalized.markdown).toContain("## Details");
+  });
+
+  test("renders GFM tables, task lists, links, and local images", async () => {
+    const root = temporaryDirectory();
+    const notePath = join(root, "note.md");
+    writeFileSync(notePath, "");
+    writeFileSync(join(root, "asset.png"), Buffer.from([137, 80, 78, 71]));
+    const result = await markdownToHtml({
+      notePath,
+      title: "Rendered Note",
+      vaultRoot: root,
+      body: "- [x] Done\n- [ ] Later\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n[Link](https://example.com)\n\n![Asset](asset.png)",
+    });
+    expect(result.html).toContain("<table>");
+    expect(result.html).toContain("type=\"checkbox\"");
+    expect(result.html).toContain("href=\"https://example.com\"");
+    expect(result.html).toContain("data:image/png;base64,");
+    expect(result.html).toContain("<h1 class=\"pdf-title\">Rendered Note</h1>");
+  });
+
+  test("rejects local images outside the vault", async () => {
+    const root = temporaryDirectory();
+    const notePath = join(root, "note.md");
+    writeFileSync(notePath, "");
+    await expect(markdownToHtml({ notePath, title: "Unsafe", vaultRoot: root, body: "![Unsafe](../outside.png)" })).rejects.toThrow("escapes the vault");
   });
 });
 

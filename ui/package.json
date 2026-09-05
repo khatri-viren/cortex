@@ -6,6 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "desktop:dev": "bunx tauri dev",
+    "desktop:sidecar": "bun run ../scripts/build-sidecar.ts",
+    "desktop:build": "bunx tauri build",
     "lint": "oxlint",
     "preview": "vite preview",
     "e2e": "playwright test"
@@ -47,6 +50,7 @@
   "devDependencies": {
     "@playwright/test": "1.61.1",
     "@tailwindcss/vite": "^4.3.3",
+    "@tauri-apps/cli": "^2",
     "@types/node": "^24.13.2",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
