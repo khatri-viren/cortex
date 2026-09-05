@@ -166,7 +166,7 @@ export async function startWatcher(
   onEvents: (events: WatchEvent[]) => Promise<void>,
   options?: WatcherOptions,
 ): Promise<WatcherHandle> {
-  if (process.env.CORTEX_PACKAGED === "1") {
+  if (process.env.CORTEX_PACKAGED === "1" && options?.pollIntervalMs !== undefined) {
     return startPollingWatcher(vaultRoot, onEvents, options);
   }
 
@@ -180,13 +180,22 @@ export async function startWatcher(
     eventQueue.queue(historical as WatchEvent[]);
   }
 
-  const subscription = await parcelWatcher.subscribe(vaultRoot, (error, events) => {
-    if (error) {
-      console.error(`Filesystem watcher error: ${error.message}`);
-      return;
-    }
-    eventQueue.queue(events as WatchEvent[]);
-  });
+  let subscription: Awaited<ReturnType<ParcelWatcher["subscribe"]>>;
+  try {
+    subscription = await parcelWatcher.subscribe(vaultRoot, (error, events) => {
+      if (error) {
+        console.error(`Filesystem watcher error: ${error.message}`);
+        return;
+      }
+      eventQueue.queue(events as WatchEvent[]);
+    });
+  } catch (error) {
+    await eventQueue.stop();
+    // Packaged distributions prefer native notifications but retain polling
+    // as an explicit recovery adapter when the native backend is unavailable.
+    if (process.env.CORTEX_PACKAGED === "1") return startPollingWatcher(vaultRoot, onEvents, options);
+    throw error;
+  }
 
   return {
     async stop() {

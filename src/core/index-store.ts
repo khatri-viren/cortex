@@ -1,8 +1,9 @@
 import { mkdirSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { Database, constants } from "bun:sqlite";
 import type { Diagnostic, ParsedNote, NoteType } from "./types.js";
 import type { FileKind, GraphBuild, IndexedMarkdown, IndexedNoteHeader, IndexedNoteRecord, IndexSearchResult } from "./index-types.js";
+import { directoryNodeId, noteNodeId } from "./identity.js";
 
 export const SCHEMA_VERSION = "1";
 export const PROJECTION_VERSION = "1";
@@ -492,6 +493,73 @@ export class IndexStore {
     for (const link of links) {
       this.db.query("INSERT OR IGNORE INTO graph_edges (from_id, to_id, kind, metadata_json) VALUES (?1, ?2, 'wikilink', ?3)").run(`note:${link.source_note_id}`, `note:${link.target_note_id}`, JSON.stringify({ rowId: link.row_id, section: link.target_section }));
     }
+  }
+
+  /** Return the title, aliases, and filename stem used to resolve links for a note. */
+  noteLinkKeys(noteId: string): string[] {
+    const row = this.db.query<{ title: string; path: string }, [string]>("SELECT title, path FROM notes WHERE note_id = ?1").get(noteId);
+    if (!row) return [];
+    const aliases = this.db.query<{ alias: string }, [string]>("SELECT alias FROM note_aliases WHERE note_id = ?1").all(noteId).map((item) => item.alias);
+    return [basename(row.path, ".md"), row.title, ...aliases];
+  }
+
+  /** Resolve only links owned by or pointing at the supplied key set. */
+  resolveLinksFor(sourceNoteIds: string[], targetKeys: string[]): void {
+    const sourceIds = [...new Set(sourceNoteIds)];
+    const keys = [...new Set(targetKeys.map((key) => key.toLocaleLowerCase()))];
+    if (sourceIds.length === 0 && keys.length === 0) return;
+    const targets = new Map<string, string>();
+    for (const row of this.db.query<{ note_id: string; title: string; path: string }, []>("SELECT note_id, title, path FROM notes").all()) {
+      targets.set(basename(row.path, ".md").toLocaleLowerCase(), row.note_id);
+      targets.set(row.title.toLocaleLowerCase(), row.note_id);
+    }
+    for (const row of this.db.query<{ note_id: string; alias: string }, []>("SELECT note_id, alias FROM note_aliases").all()) targets.set(row.alias.toLocaleLowerCase(), row.note_id);
+    const predicates: string[] = [];
+    const values: string[] = [];
+    if (sourceIds.length > 0) {
+      predicates.push(`source_note_id IN (${sourceIds.map(() => "?").join(",")})`);
+      values.push(...sourceIds);
+    }
+    if (keys.length > 0) {
+      predicates.push(`lower(target_title) IN (${keys.map(() => "?").join(",")})`);
+      values.push(...keys);
+    }
+    const links = this.db.query<{ row_id: number; target_title: string }, string[]>(`SELECT row_id, target_title FROM links WHERE ${predicates.join(" OR ")}`).all(...values);
+    for (const link of links) {
+      const noteId = targets.get(link.target_title.toLocaleLowerCase());
+      this.db.query("UPDATE links SET target_note_id = ?1, status = ?2 WHERE row_id = ?3").run(noteId ?? null, noteId ? "resolved" : "unresolved", link.row_id);
+    }
+  }
+
+  /** Recompute unresolved-link diagnostics for only the changed note sources. */
+  refreshUnresolvedLinkDiagnostics(sourceNoteIds: string[]): void {
+    for (const noteId of [...new Set(sourceNoteIds)]) {
+      const path = this.db.query<{ path: string }, [string]>("SELECT path FROM notes WHERE note_id = ?1").get(noteId)?.path;
+      if (!path) continue;
+      const diagnosticPath = join(this.vaultRoot, path);
+      this.db.query("DELETE FROM diagnostics WHERE path = ?1 AND code = 'unresolved-wikilink'").run(diagnosticPath);
+      const unresolved = this.db.query<{ target_title: string; line: number; column_number: number }, [string]>("SELECT target_title, line, column_number FROM links WHERE source_note_id = ?1 AND status = 'unresolved'").all(noteId);
+      for (const link of unresolved) this.db.query("INSERT INTO diagnostics (path, severity, code, message, line, column_number) VALUES (?1, 'warning', 'unresolved-wikilink', ?2, ?3, ?4)").run(diagnosticPath, `Unresolved wikilink '${link.target_title}'.`, link.line, link.column_number);
+    }
+  }
+
+  /** Refresh only wikilink edges whose source or target is in the affected note set. */
+  refreshWikilinkEdgesFor(noteIds: string[]): void {
+    const ids = [...new Set(noteIds.filter(Boolean))];
+    if (ids.length === 0) return;
+    const placeholders = ids.map(() => "?").join(",");
+    this.db.query(`DELETE FROM graph_edges WHERE kind = 'wikilink' AND (from_id IN (${ids.map(() => "?").join(",")}) OR to_id IN (${ids.map(() => "?").join(",")}))`).run(...ids.map(noteNodeId), ...ids.map(noteNodeId));
+    const links = this.db.query<{ source_note_id: string; target_note_id: string; target_section: string | null; row_id: number }, string[]>(`SELECT source_note_id, target_note_id, target_section, row_id FROM links WHERE target_note_id IS NOT NULL AND (source_note_id IN (${placeholders}) OR target_note_id IN (${placeholders}))`).all(...ids, ...ids);
+    for (const link of links) this.db.query("INSERT OR IGNORE INTO graph_edges (from_id, to_id, kind, metadata_json) VALUES (?1, ?2, 'wikilink', ?3)").run(`note:${link.source_note_id}`, `note:${link.target_note_id}`, JSON.stringify({ rowId: link.row_id, section: link.target_section }));
+  }
+
+  /** Restore the changed note node and its directory containment edge after a path-local replacement. */
+  upsertNoteGraphNode(note: IndexedNoteRecord): void {
+    const nodeId = noteNodeId(note.id);
+    this.db.query("INSERT OR REPLACE INTO graph_nodes (node_id, kind, path, name, metadata_json) VALUES (?1, 'note', ?2, ?3, ?4)").run(nodeId, note.path, note.title, JSON.stringify({ type: note.type }));
+    const parent = dirname(note.path);
+    const parentId = parent === "." ? "project:root" : directoryNodeId(this.vaultRoot, join(this.vaultRoot, parent));
+    this.db.query("INSERT OR IGNORE INTO graph_edges (from_id, to_id, kind, metadata_json) VALUES (?1, ?2, 'contains', '{}')").run(parentId, nodeId);
   }
 
   counts(): { noteCount: number; sectionCount: number; linkCount: number; tableRowCount: number; graphNodeCount: number; graphEdgeCount: number; diagnosticCount: number } {

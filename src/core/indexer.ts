@@ -3,6 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { buildProjectGraph, walkProjectFiles } from "./project-graph.js";
 import { repositoryRelativePath } from "./identity.js";
+import { parseMarkdown } from "./markdown.js";
 import { requireGitVault, scanVault, vaultFiles } from "./vault.js";
 import { IndexStore, PROJECTION_VERSION, SCHEMA_VERSION } from "./index-store.js";
 import type { Diagnostic } from "./types.js";
@@ -181,12 +182,60 @@ export class VaultIndexer {
       return this.report("incremental", uniquePaths.map((path) => repositoryRelativePath(this.vaultRoot, path)), started, work);
     }
 
+    const markdownChanged = changedPaths.some((path) => isMarkdown(path));
+    const graphRelevant = changedPaths.some((path) => !isMarkdown(path));
+    if (markdownChanged && !graphRelevant) {
+      const parsedByPath = new Map<string, ReturnType<typeof parseMarkdown>>();
+      let requiresFullReconciliation = false;
+      for (const absolutePath of changedPaths) {
+        const preloadedFile = preloaded.get(absolutePath);
+        if (!preloadedFile?.exists) {
+          requiresFullReconciliation = true;
+          continue;
+        }
+        const parsed = parseMarkdown(String(preloadedFile.content), absolutePath);
+        parsedByPath.set(absolutePath, parsed);
+        const previous = this.store.noteByPath(repositoryRelativePath(this.vaultRoot, absolutePath));
+        const next = parsed.frontmatter;
+        if (!previous || !next || previous.title !== next.title || previous.type !== next.type || JSON.stringify(previous.aliases) !== JSON.stringify(next.aliases)) requiresFullReconciliation = true;
+      }
+      if (!requiresFullReconciliation) {
+        const affectedIds = new Set<string>();
+        this.store.transaction(() => {
+          for (const absolutePath of changedPaths) {
+            const relativePath = repositoryRelativePath(this.vaultRoot, absolutePath);
+            const previous = this.store.noteByPath(relativePath);
+            const parsed = parsedByPath.get(absolutePath);
+            const preloadedFile = preloaded.get(absolutePath);
+            if (!parsed || !preloadedFile || !previous) continue;
+            affectedIds.add(previous.id);
+            work.projectionDeletes += 1;
+            work.projectionWrites += 1;
+            this.store.replaceMarkdown(this.markdownRecord(absolutePath, parsed, { content: String(preloadedFile.content), mtimeMs: preloadedFile.mtimeMs }));
+            const updated = this.store.noteByPath(relativePath);
+            if (updated) {
+              affectedIds.add(updated.id);
+              this.store.upsertNoteGraphNode(updated);
+            }
+          }
+          this.store.resolveLinksFor([...affectedIds], []);
+          this.store.refreshUnresolvedLinkDiagnostics([...affectedIds]);
+          this.store.refreshWikilinkEdgesFor([...affectedIds]);
+          this.store.setState("last_incremental_rebuild", new Date().toISOString());
+        });
+        work.scanFiles = 0;
+        work.scanNotes = changedPaths.length;
+        work.graphRebuilds = 0;
+        work.linkResolutionRuns = 1;
+        work.wikilinkEdgeRefreshes = 1;
+        return this.report("incremental", changedPaths.map((path) => repositoryRelativePath(this.vaultRoot, path)), started, work);
+      }
+    }
+
     const scan = scanVault(this.vaultRoot);
     work.scanFiles = scan.files.length;
     work.scanNotes = scan.notes.length;
     const parsedByPath = new Map(scan.notes.filter((note) => note.filePath).map((note) => [resolve(note.filePath!), note]));
-    const graphRelevant = changedPaths.some((path) => !isMarkdown(path));
-    const markdownChanged = changedPaths.some((path) => isMarkdown(path));
     this.store.transaction(() => {
       for (const absolutePath of changedPaths) {
         const relativePath = repositoryRelativePath(this.vaultRoot, absolutePath);

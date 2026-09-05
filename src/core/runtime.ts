@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, extname, join, relative as relativePath, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { addMissingSectionMarkers, findSections, getSectionBody, parseMarkdown, replaceSectionBody } from "./markdown.js";
 import { createFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { repositoryRelativePath, projectNodeId, noteNodeId } from "./identity.js";
@@ -214,10 +215,8 @@ export class VaultRuntime {
   private async rebuildWorkspace(): Promise<void> {
     if (!this.workspaceIndexer || !this.workspace?.workspaceExists) return;
     try {
-      await this.writes.run(() => {
-        this.workspaceIndexer!.fullRebuild();
-        this.refreshWorkspaceAttachments();
-      });
+      await this.rebuildWorkspaceInBackground();
+      this.refreshWorkspaceAttachments();
       this.workspacePhase = "current";
       this.workspaceError = undefined;
       // An empty change batch is a status invalidation. It lets the UI learn
@@ -228,6 +227,19 @@ export class VaultRuntime {
       this.workspaceError = error instanceof Error ? error.message : String(error);
       this.publishChanges([]);
     }
+  }
+
+  /** Run the expensive workspace projection in a separate process so source,
+   * search, and health requests keep the main event loop available. */
+  private async rebuildWorkspaceInBackground(): Promise<void> {
+    if (!this.workspace) return;
+    const cliEntry = resolve(dirname(fileURLToPath(import.meta.url)), "../cli.ts");
+    const args = existsSync(cliEntry)
+      ? ["run", cliEntry, "workspace:rebuild", "--vault", this.vaultRoot, "--workspace", this.workspace.workspaceRoot]
+      : ["workspace:rebuild", "--vault", this.vaultRoot, "--workspace", this.workspace.workspaceRoot];
+    const child = Bun.spawn([process.execPath, ...args], { stdout: "ignore", stderr: "pipe" });
+    const exitCode = await child.exited;
+    if (exitCode !== 0) throw new Error(`Background workspace projection exited with code ${exitCode}.`);
   }
 
   private refreshWorkspaceAttachments(): void {

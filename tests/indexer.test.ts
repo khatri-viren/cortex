@@ -18,6 +18,27 @@ function git(vault: string, ...args: string[]): string {
   return result.stdout;
 }
 
+function normalizedProjection(indexer: VaultIndexer): Record<string, unknown[]> {
+  const rows = (sql: string): unknown[] => indexer.store.db.query(sql).all();
+  const graphEdges = rows("SELECT from_id, to_id, kind, metadata_json FROM graph_edges ORDER BY from_id, to_id, kind, metadata_json").map((row) => {
+    const value = row as { metadata_json: string };
+    const metadata = JSON.parse(value.metadata_json) as Record<string, unknown>;
+    delete metadata.rowId;
+    return { ...value, metadata_json: JSON.stringify(metadata) };
+  });
+  return {
+    notes: rows("SELECT note_id, path, title, type, created_at, updated_at FROM notes ORDER BY note_id"),
+    aliases: rows("SELECT note_id, alias FROM note_aliases ORDER BY note_id, alias"),
+    tags: rows("SELECT note_id, tag FROM note_tags ORDER BY note_id, tag"),
+    sections: rows("SELECT note_id, section_id, level, heading, start_line, end_line, revision FROM sections ORDER BY note_id, start_line"),
+    links: rows("SELECT source_note_id, target_title, target_note_id, target_section, display, line, column_number, status FROM links ORDER BY source_note_id, line"),
+    tableRows: rows("SELECT note_id, section_id, row_index, headers_json, values_json FROM table_rows ORDER BY note_id, row_index"),
+    graphNodes: rows("SELECT node_id, kind, path, name, metadata_json FROM graph_nodes ORDER BY node_id"),
+    graphEdges,
+    diagnostics: rows("SELECT path, severity, code, message, line, column_number FROM diagnostics ORDER BY path, code, line, message"),
+  };
+}
+
 describe("Phase 1 indexer", () => {
   test("builds notes, tables, FTS, and the project graph", () => {
     const vault = tempVault();
@@ -112,6 +133,21 @@ describe("Phase 1 indexer", () => {
     expect(restarted.warmRead()).toMatchObject({ valid: true, reason: "validated" });
     expect(restarted.store.counts().noteCount).toBe(2);
     restarted.close();
+  });
+
+  test("keeps the path-local delta projection equivalent to a full rebuild", () => {
+    const vault = tempVault();
+    const notePath = join(vault, "notes", "engine.md");
+    const indexer = new VaultIndexer(vault);
+    indexer.fullRebuild();
+    writeFileSync(notePath, readFileSync(notePath, "utf8") + "\nA dependency-local body delta. [[Project Map]] [[Missing Delta Target]]\n");
+    const delta = indexer.incrementalRebuild([notePath]);
+    expect(delta.work.scanFiles).toBe(0);
+    expect(delta.work.graphRebuilds).toBe(0);
+    const incrementalProjection = normalizedProjection(indexer);
+    indexer.fullRebuild();
+    expect(normalizedProjection(indexer)).toEqual(incrementalProjection);
+    indexer.close();
   });
 
   test("invalid Markdown is represented by diagnostics and does not remain searchable", () => {
@@ -236,6 +272,33 @@ describe("watcher", () => {
 
       await new Promise((resolve) => setTimeout(resolve, 900));
       expect(maximumActiveCallbacks).toBe(1);
+    } finally {
+      await handle?.stop();
+      if (previousPackagedMode === undefined) delete process.env.CORTEX_PACKAGED;
+      else process.env.CORTEX_PACKAGED = previousPackagedMode;
+    }
+  });
+
+  test("uses native packaged notifications when available and keeps polling as fallback", async () => {
+    const vault = tempVault();
+    const previousPackagedMode = process.env.CORTEX_PACKAGED;
+    process.env.CORTEX_PACKAGED = "1";
+    let handle: Awaited<ReturnType<typeof startWatcher>> | undefined;
+    try {
+      const eventPromise = new Promise<string>((resolve) => {
+        void startWatcher(vault, async (events) => {
+          const watched = events.find((event) => event.path.endsWith("native-watch.md"));
+          if (watched) resolve(watched.path);
+        }).then((value) => {
+          handle = value;
+          writeFileSync(join(vault, "native-watch.md"), readFileSync(join(vault, "project-map.md"), "utf8"));
+        });
+      });
+      const eventPath = await Promise.race([
+        eventPromise,
+        new Promise<string>((_, reject) => setTimeout(() => reject(new Error("packaged watcher event timeout")), 4_000)),
+      ]);
+      expect(eventPath.endsWith("native-watch.md")).toBe(true);
     } finally {
       await handle?.stop();
       if (previousPackagedMode === undefined) delete process.env.CORTEX_PACKAGED;
