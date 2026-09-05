@@ -27,6 +27,9 @@ describe("Phase 1 indexer", () => {
     const indexer = new VaultIndexer(vault);
     const report = indexer.fullRebuild();
     expect(report.noteCount).toBe(2);
+    expect(report.work.scanNotes).toBe(2);
+    expect(report.work.projectionResets).toBe(1);
+    expect(report.work.projectionWrites).toBeGreaterThanOrEqual(2);
     expect(report.tableRowCount).toBe(0);
     expect(report.graphNodeCount).toBeGreaterThanOrEqual(8);
     expect(report.graphEdgeCount).toBeGreaterThanOrEqual(8);
@@ -51,6 +54,8 @@ describe("Phase 1 indexer", () => {
     writeFileSync(notePath, `${original}\nNow see [[Project Map]].\n`);
     const update = indexer.incrementalRebuild([notePath]);
     expect(update.mode).toBe("incremental");
+    expect(update.work.changedFilesRead).toBe(1);
+    expect(update.work.projectionWrites).toBe(1);
     expect((indexer.store.db.query("SELECT COUNT(*) as count FROM links WHERE target_title = 'Project Map' AND status = 'resolved'").get() as { count: number }).count).toBe(1);
     expect((indexer.store.db.query("SELECT COUNT(*) as count FROM notes_fts WHERE notes_fts MATCH 'diagnostics'").get() as { count: number }).count).toBe(1);
 

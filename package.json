@@ -23,6 +23,8 @@
     "ui:preview": "cd ui && bun run preview",
     "e2e": "cd ui && bun run e2e",
     "benchmark": "bun run bench/run.ts",
+    "benchmark:desktop": "bun run bench/desktop-baseline.ts",
+    "desktop:native-baseline": "bun run scripts/native-desktop-baseline.ts",
     "benchmark:e2e": "bun run bench/e2e/run.ts",
     "benchmark:e2e:aggregate": "bun run bench/e2e/aggregate.ts",
     "git:status": "bun run src/cli.ts git:status",
