@@ -98,6 +98,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
   tags
 );
 CREATE INDEX IF NOT EXISTS idx_notes_path ON notes(path);
+CREATE INDEX IF NOT EXISTS idx_notes_updated_path ON notes(updated_at DESC, path ASC);
 CREATE INDEX IF NOT EXISTS idx_links_target ON links(target_note_id);
 CREATE INDEX IF NOT EXISTS idx_links_source ON links(source_note_id);
 CREATE INDEX IF NOT EXISTS idx_sections_note ON sections(note_id);
@@ -287,18 +288,22 @@ export class IndexStore {
     return this.db.query<IndexedNoteHeader, []>("SELECT note_id, path, title, type, updated_at FROM notes ORDER BY path").all();
   }
 
-  indexedNotes(options: { prefix?: string; tag?: string; limit: number }): { notes: IndexedNoteRecord[]; truncated: boolean } {
-    const rows = this.db.query<{ note_id: string }, [string | null, string | null, string | null, string | null, number]>(
-      "SELECT notes.note_id FROM notes WHERE (?1 IS NULL OR notes.path LIKE ?2 OR lower(notes.title) LIKE lower(?3)) AND (?4 IS NULL OR EXISTS (SELECT 1 FROM note_tags WHERE note_tags.note_id = notes.note_id AND note_tags.tag = ?4)) ORDER BY notes.updated_at DESC LIMIT ?5",
+  indexedNotes(options: { prefix?: string; tag?: string; limit: number; cursor?: { updatedAt: string; path: string } }): { notes: IndexedNoteRecord[]; truncated: boolean; nextCursor?: { updatedAt: string; path: string } } {
+    const rows = this.db.query<{ note_id: string; updated_at: string; path: string }, [string | null, string | null, string | null, string | null, string | null, string | null, number]>(
+      "SELECT notes.note_id, notes.updated_at, notes.path FROM notes WHERE (?1 IS NULL OR notes.path LIKE ?2 OR lower(notes.title) LIKE lower(?3)) AND (?4 IS NULL OR EXISTS (SELECT 1 FROM note_tags WHERE note_tags.note_id = notes.note_id AND note_tags.tag = ?4)) AND (?5 IS NULL OR notes.updated_at < ?5 OR (notes.updated_at = ?5 AND notes.path > ?6)) ORDER BY notes.updated_at DESC, notes.path ASC LIMIT ?7",
     ).all(
       options.prefix ?? null,
       options.prefix ? `${options.prefix}%` : null,
       options.prefix ? `${options.prefix}%` : null,
       options.tag ?? null,
+      options.cursor?.updatedAt ?? null,
+      options.cursor?.path ?? null,
       options.limit + 1,
     );
     const truncated = rows.length > options.limit;
-    return { notes: rows.slice(0, options.limit).map((row) => this.indexedNote(row.note_id)).filter((row): row is IndexedNoteRecord => Boolean(row)), truncated };
+    const page = rows.slice(0, options.limit);
+    const last = page.at(-1);
+    return { notes: page.map((row) => this.indexedNote(row.note_id)).filter((row): row is IndexedNoteRecord => Boolean(row)), truncated, nextCursor: truncated && last ? { updatedAt: last.updated_at, path: last.path } : undefined };
   }
 
   searchNotes(query: string, limit: number): IndexSearchResult {

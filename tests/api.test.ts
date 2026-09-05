@@ -84,6 +84,23 @@ describe("Phase 3 local API", () => {
     });
   });
 
+  test("paginates note metadata with an opaque cursor", async () => {
+    await withApi(async (base) => {
+      const first = await (await fetch(base + "/api/notes?limit=1")).json() as { notes: Array<{ path: string }>; truncated: boolean; next_cursor?: string };
+      expect(first.notes).toHaveLength(1);
+      expect(first.truncated).toBe(true);
+      expect(first.next_cursor).toBeTruthy();
+
+      const second = await (await fetch(base + "/api/notes?limit=1&cursor=" + encodeURIComponent(first.next_cursor!))).json() as { notes: Array<{ path: string }>; truncated: boolean };
+      expect(second.notes).toHaveLength(1);
+      expect(second.notes[0]?.path).not.toBe(first.notes[0]?.path);
+
+      const invalid = await fetch(base + "/api/notes?cursor=not-a-cursor");
+      expect(invalid.status).toBe(400);
+      expect((await invalid.json()).error.code).toBe("INVALID_INPUT");
+    });
+  });
+
   test("validates PDF export input without mutating the source note", async () => {
     await withApi(async (base) => {
       const before = await (await fetch(base + "/api/note?selector=project-map.md&source=true")).json() as { note: { content_hash: string }; body: string };

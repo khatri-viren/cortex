@@ -277,10 +277,23 @@ pub fn spawn(vault_path: &str, port: u16, resource_dir: Option<&Path>) -> Result
 }
 
 /// Poll GET /api/health until it responds 200 or `timeout` elapses.
+#[allow(dead_code)]
 pub fn wait_for_health(
     child: &mut Child,
     port: u16,
     timeout: Duration,
+) -> Result<serde_json::Value, String> {
+    wait_for_health_until(child, port, timeout, || false)
+}
+
+/// Poll health while allowing the owning supervisor to cancel a superseded
+/// start. Cancellation kills and joins the child before returning, so a
+/// generation change cannot leave a startup process running in the background.
+pub fn wait_for_health_until<F: Fn() -> bool>(
+    child: &mut Child,
+    port: u16,
+    timeout: Duration,
+    cancelled: F,
 ) -> Result<serde_json::Value, String> {
     let url = format!("http://127.0.0.1:{port}/api/health");
     let deadline = Instant::now() + timeout;
@@ -290,6 +303,11 @@ pub fn wait_for_health(
         .build();
 
     loop {
+        if cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("Cortex sidecar startup on port {port} was cancelled."));
+        }
         match child.try_wait() {
             Ok(Some(status)) => {
                 return Err(format!(
@@ -386,6 +404,14 @@ mod tests {
             .expect("vault:init should spawn");
         assert!(status.success(), "vault:init failed for {dir:?}");
         dir
+    }
+
+    #[test]
+    fn cancelled_health_wait_joins_the_starting_child() {
+        let mut child = Command::new("sleep").arg("30").spawn().expect("sleep should start");
+        let result = wait_for_health_until(&mut child, 9_999, Duration::from_secs(5), || true);
+        assert!(result.expect_err("cancelled startup should fail").contains("cancelled"));
+        assert!(child.try_wait().expect("child status should be readable").is_some());
     }
 
     #[test]

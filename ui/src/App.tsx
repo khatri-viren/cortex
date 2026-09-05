@@ -222,9 +222,8 @@ const vaultKey = typeof window !== "undefined"
   : "default";
 const sessionStorageKey = "cortex.vaultSession." + vaultKey;
 
-function loadVaultSession(): VaultSession {
+function parseVaultSession(raw: string | null): VaultSession {
   try {
-    const raw = localStorage.getItem(sessionStorageKey);
     if (!raw) return DEFAULT_SESSION;
     const parsed = JSON.parse(raw) as Partial<VaultSession>;
     return {
@@ -235,6 +234,14 @@ function loadVaultSession(): VaultSession {
       panel: parsed.panel === "git" || parsed.panel === "outline" || parsed.panel === "diagnostics" ? parsed.panel : "context",
       mode: parsed.mode === "source" || parsed.mode === "live" ? parsed.mode : "reading",
     };
+  } catch {
+    return DEFAULT_SESSION;
+  }
+}
+
+function loadVaultSession(): VaultSession {
+  try {
+    return parseVaultSession(localStorage.getItem(sessionStorageKey));
   } catch {
     return DEFAULT_SESSION;
   }
@@ -254,6 +261,7 @@ function WorkspaceApp() {
   const [route, graphCenter, navigate] = useRoute();
   const [notes, setNotes] = useState<NoteSummary[]>([]);
   const initialSession = useMemo(loadVaultSession, []);
+  const [sessionReady, setSessionReady] = useState(!isTauri);
   const [selected, setSelected] = useState<string | undefined>(initialSession.activeTabPath ?? undefined);
   // useEffect cleanup (which flips a closure's `stale` flag) is a *passive*
   // effect: React defers running it until after paint, whereas a fast local
@@ -292,6 +300,7 @@ function WorkspaceApp() {
   const [noteCount, setNoteCount] = useState<number>();
   const [vaultCheck, setVaultCheck] = useState<ApiVaultCheck>();
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [indexRefreshError, setIndexRefreshError] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [isCreatingNote, setIsCreatingNote] = useState(false);
@@ -322,10 +331,23 @@ function WorkspaceApp() {
   // to force the rendered pane to pick up the new content instead of going
   // stale (see Editor.tsx's contentRevision prop).
   const [contentRevision, setContentRevision] = useState(0);
+  const localEditRevisionRef = useRef(0);
+  const saveRequestRef = useRef(0);
+  const sessionSaveQueueRef = useRef(Promise.resolve());
 
   const isDirty = draft !== base || JSON.stringify(metadataDraft) !== JSON.stringify(baseMetadata);
   const currentTitle = metadataDraft?.title ?? source?.note.title ?? "Select a note";
   const activeNotePath = source?.note.path;
+
+  function updateDraft(next: string) {
+    localEditRevisionRef.current += 1;
+    setDraft(next);
+  }
+
+  function updateMetadata(next: NoteFrontmatter) {
+    localEditRevisionRef.current += 1;
+    setMetadataDraft(next);
+  }
 
   const recentNotes = useMemo(
     () => notes.slice(0, RECENTS_LIMIT),
@@ -415,13 +437,9 @@ function WorkspaceApp() {
     listNotes(undefined, 100).then((result) => {
       const nextNotes = mergeNoteSummaries(result.notes);
       setNotes(nextNotes);
-      setSelected((current) => {
-        const pendingPath = pendingCreatedNoteRef.current?.path;
-        return current && (nextNotes.some((note) => note.path === current) || current === pendingPath || createdNotePathsRef.current.has(current))
-          ? current
-          : nextNotes[0]?.path;
-      });
-      setTabs((current) => current.filter((path) => nextNotes.some((note) => note.path === path) || createdNotePathsRef.current.has(path)));
+      // This is a paged catalog. A page miss is not a deletion: tabs and the
+      // active document are authoritative identities independent of recents.
+      setSelected((current) => current ?? nextNotes[0]?.path);
     }).catch(() => undefined);
     getVaultTree().then((tree) => {
       setVaultTree(tree);
@@ -440,8 +458,7 @@ function WorkspaceApp() {
         if (notesResult.status === "fulfilled") {
           const nextNotes = mergeNoteSummaries(notesResult.value.notes);
           setNotes(nextNotes);
-          setSelected((current) => current && (nextNotes.some((note) => note.path === current) || current === path || createdNotePathsRef.current.has(current)) ? current : nextNotes[0]?.path);
-          setTabs((current) => current.filter((tabPath) => nextNotes.some((note) => note.path === tabPath) || createdNotePathsRef.current.has(tabPath)));
+          setSelected((current) => current ?? nextNotes[0]?.path);
         } else {
           failures.push(`notes list: ${notesResult.reason instanceof Error ? notesResult.reason.message : String(notesResult.reason)}`);
         }
@@ -508,6 +525,7 @@ function WorkspaceApp() {
 
   function applySource(next: ApiNoteSource, bumpContentRevision = false) {
     const nextMetadata = cloneMetadata(next.frontmatter);
+    localEditRevisionRef.current = 0;
     setSource(next);
     setDraft(next.body);
     setBase(next.body);
@@ -525,23 +543,42 @@ function WorkspaceApp() {
   }
 
   useEffect(() => {
+    if (!isTauri) return;
+    let active = true;
+    invoke<string | null>("load_session", { vaultId: vaultKey }).then((raw) => {
+      if (!active) return;
+      const restored = parseVaultSession(raw);
+      setSelected(restored.activeTabPath ?? undefined);
+      setTabs(restored.tabs);
+      setContextPanelOpen(restored.contextPanelOpen);
+      setExpandedTreePaths(new Set(restored.expandedTreePaths));
+      setPanel(restored.panel);
+      setMode(restored.mode);
+      setSessionReady(true);
+    }).catch(() => {
+      if (active) setSessionReady(true);
+    });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!sessionReady) return;
     refreshVaultData();
     if (isTauri) invoke<VaultRegistry>("list_vaults").then(setVaultRegistry).catch(() => setVaultRegistry(undefined));
     refreshWorkspaceSignals();
-  }, []);
+  }, [sessionReady]);
 
   // Restore the persisted per-vault session's active tab into the nav
   // history stack once, so Back/Forward has a starting point after a
   // restart (Desktop V2 Multi-Vault UX Contract: tabs/outline/panel state
   // are isolated and restored per vault).
   useEffect(() => {
-    if (initialSession.activeTabPath) {
-      setNavHistory({ stack: [initialSession.activeTabPath], index: 0 });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (!sessionReady || !selected) return;
+    setNavHistory((current) => current.index >= 0 ? current : { stack: [selected], index: 0 });
+  }, [sessionReady, selected]);
 
   useEffect(() => {
+    if (!sessionReady) return;
     const payload: VaultSession = { tabs, activeTabPath: selected ?? null, expandedTreePaths: [...expandedTreePaths], contextPanelOpen, panel, mode };
     try {
       localStorage.setItem(sessionStorageKey, JSON.stringify(payload));
@@ -549,7 +586,13 @@ function WorkspaceApp() {
       // Storage can be unavailable (private browsing, quota); session
       // restore is a convenience, not a correctness requirement.
     }
-  }, [tabs, selected, expandedTreePaths, contextPanelOpen, panel, mode]);
+    if (isTauri) {
+      const serialized = JSON.stringify(payload);
+      sessionSaveQueueRef.current = sessionSaveQueueRef.current
+        .then(() => invoke("save_session", { vaultId: vaultKey, sessionJson: serialized }))
+        .catch(() => undefined);
+    }
+  }, [sessionReady, tabs, selected, expandedTreePaths, contextPanelOpen, panel, mode]);
 
   useEffect(() => {
     if (!selected) return;
@@ -628,6 +671,13 @@ function WorkspaceApp() {
   useEffect(() => {
     return subscribeToChanges((events) => {
       if (isCreatingNote) return;
+      const deletedPaths = new Set(events.filter((event) => event.type === "delete").map((event) => event.path));
+      if (deletedPaths.size > 0) {
+        setTabs((current) => current.filter((path) => !deletedPaths.has(path)));
+        if (selected && deletedPaths.has(selected) && !isDirty) {
+          setSelected((current) => current && deletedPaths.has(current) ? undefined : current);
+        }
+      }
       if (events.length === 0 || events.some((event) => !event.repository)) refreshVaultData();
       // Empty batches are emitted when background workspace warming changes
       // phase; status/health are intentionally cheap enough to refresh here.
@@ -725,24 +775,46 @@ function WorkspaceApp() {
 
   async function save(): Promise<SaveResult> {
     if (!source || !metadataDraft || !isDirty) return { ok: true };
+    if (isSaving) return { ok: false, message: "A save is already in progress." };
+    const requestedPath = source.note.path;
+    const submittedRevision = localEditRevisionRef.current;
+    const requestId = ++saveRequestRef.current;
+    const expectedHash = source.note.content_hash;
+    const submittedDraft = draft;
+    const submittedMetadata = cloneMetadata(metadataDraft);
+    setIsSaving(true);
     setStatus("Saving...");
     try {
       const metadata: ApiNoteMetadataPatch = {
-        title: metadataDraft.title,
-        type: metadataDraft.type,
-        aliases: metadataDraft.aliases,
-        tags: metadataDraft.tags,
-        applies_to: metadataDraft.applies_to,
-        extra: metadataDraft.extra,
+        title: submittedMetadata.title,
+        type: submittedMetadata.type,
+        aliases: submittedMetadata.aliases,
+        tags: submittedMetadata.tags,
+        applies_to: submittedMetadata.applies_to,
+        extra: submittedMetadata.extra,
       };
-      const next = await updateNote(source.note.path, source.note.content_hash, draft, metadata);
-      applySource(next);
-      setStatus("Saved");
+      const next = await updateNote(requestedPath, expectedHash, submittedDraft, metadata);
+      if (selectedRef.current !== requestedPath || requestId !== saveRequestRef.current) return { ok: true };
+      if (localEditRevisionRef.current === submittedRevision) {
+        applySource(next);
+        setStatus("Saved");
+      } else {
+        // The disk acknowledgement is still the new base, but a newer local
+        // draft must remain in the editor. Applying the whole source here
+        // would silently discard that draft.
+        setSource(next);
+        setBase(next.body);
+        setBaseMetadata(cloneMetadata(next.frontmatter));
+        setNotes((current) => current.map((note) => note.path === next.note.path ? next.note : note));
+        setStatus("Saved previous revision; newer edits kept");
+      }
       return { ok: true };
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       setStatus(message);
       return { ok: false, message };
+    } finally {
+      setIsSaving(false);
     }
   }
 
@@ -875,6 +947,7 @@ function WorkspaceApp() {
     if (!confirmDiscard("You have unsaved changes. Discard them and switch vaults?")) return;
     setVaultMenuStatus("Starting vault runtime…");
     try {
+      await sessionSaveQueueRef.current;
       await openRegisteredVault(id);
     } catch (cause) {
       setVaultMenuStatus(String(cause));
@@ -1087,7 +1160,7 @@ function WorkspaceApp() {
                     </div>
                   ))}
                 </div>
-                {isDirty && <Button size="sm" className="shrink-0" onClick={() => void save()} disabled={!source || isCreatingNote}>Save</Button>}
+                {isDirty && <Button size="sm" className="shrink-0" onClick={() => void save()} disabled={!source || isCreatingNote || isSaving}>{isSaving ? "Saving…" : "Save"}</Button>}
                 <Button variant="ghost" size="sm" className="shrink-0 gap-1" data-testid="export-pdf" aria-label="Export PDF" onClick={() => void exportPdf()} disabled={!source || !metadataDraft?.title.trim() || isExportingPdf || isCreatingNote}>
                   <FileDownIcon className={isExportingPdf ? "animate-pulse" : undefined} />
                   <span className="hidden sm:inline">{isExportingPdf ? "Exporting…" : "Export PDF"}</span>
@@ -1140,8 +1213,8 @@ function WorkspaceApp() {
             {route === "graph" ? <section className="flex min-h-0 flex-1 flex-col bg-background"><GraphPane onOpenPath={openPath} onOpenCode={openGraphCode} onBackToNote={() => { if (!isCreatingNote) navigate("notes"); }} activeNoteLabel={source?.note.title} initialCenter={graphCenter} initialCenterLabel={currentTitle} /></section> : <div className="note-workspace flex min-h-0 flex-1 flex-col" aria-busy={isCreatingNote}>
               <div data-testid="note-document-scroll" className="note-document-scroll min-h-0 flex-1 overflow-auto overscroll-contain">
                 {creationIssue && <Alert data-testid="note-creation-status" variant="destructive" className="m-3"><AlertTitle>{creationIssue.kind === "save" ? "Could not create note" : creationIssue.kind === "load" ? "Note created but could not be opened" : creationIssue.kind === "refresh" ? "Note created but workspace refresh failed" : "Could not create note"}</AlertTitle><AlertDescription><p>{creationIssue.message}</p>{creationIssue.kind === "load" && <Button size="sm" variant="outline" disabled={isCreatingNote} onClick={() => void retryOpenCreatedNote()}>Open created note again</Button>}{creationIssue.kind === "refresh" && <Button size="sm" variant="outline" disabled={isRefreshingCreatedNote || isCreatingNote} onClick={() => void retryCreatedNoteRefresh()}>{isRefreshingCreatedNote ? "Refreshing…" : "Refresh"}</Button>}{creationIssue.kind === "create" && <Button size="sm" variant="outline" disabled={isRefreshing || isCreatingNote} onClick={() => void refreshIndex()}>Refresh</Button>}</AlertDescription></Alert>}
-                {source && metadataDraft ? <NoteMetadata metadata={metadataDraft} mode={mode} dirty={isDirty} notePath={activeNotePath} connectedFiles={context?.likely_files?.length ?? 0} disabled={isCreatingNote} focusTitleRequest={focusTitleRequest} onTitleFocusComplete={completeTitleFocus} onTitleEnter={focusBodyAfterTitle} onChange={setMetadataDraft} onModeChange={setMode} onToggleInspector={() => setContextPanelOpen(true)} /> : previewPath ? <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileIcon /></EmptyMedia><EmptyTitle>File preview unavailable</EmptyTitle><EmptyDescription>{previewPath} is not an indexed Markdown note.</EmptyDescription></EmptyHeader></Empty> : <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileTextIcon /></EmptyMedia><EmptyTitle>Choose a note</EmptyTitle><EmptyDescription>The indexed Markdown workspace will appear here.</EmptyDescription><Button data-testid="create-note-empty" onClick={() => void createNewNote()} disabled={isCreatingNote}><PlusIcon />Create note</Button></EmptyHeader></Empty>}
-                {source && <div className="note-editor-section flex border-t border-border/60"><Editor key={activeNotePath + ":" + (isCreatingNote ? "busy" : "ready")} value={draft} mode={mode} onChange={isCreatingNote ? () => undefined : setDraft} linkTargets={notes.map((note) => note.title)} notePath={activeNotePath} notes={notes} onOpenNote={openPath} sections={source.sections} contentRevision={contentRevision} jumpRequest={jumpRequest} disabled={isCreatingNote} focusRequest={focusBodyRequest} onFocusComplete={completeBodyFocus} /></div>}
+                {source && metadataDraft ? <NoteMetadata metadata={metadataDraft} mode={mode} dirty={isDirty} notePath={activeNotePath} connectedFiles={context?.likely_files?.length ?? 0} disabled={isCreatingNote} focusTitleRequest={focusTitleRequest} onTitleFocusComplete={completeTitleFocus} onTitleEnter={focusBodyAfterTitle} onChange={updateMetadata} onModeChange={setMode} onToggleInspector={() => setContextPanelOpen(true)} /> : previewPath ? <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileIcon /></EmptyMedia><EmptyTitle>File preview unavailable</EmptyTitle><EmptyDescription>{previewPath} is not an indexed Markdown note.</EmptyDescription></EmptyHeader></Empty> : <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileTextIcon /></EmptyMedia><EmptyTitle>Choose a note</EmptyTitle><EmptyDescription>The indexed Markdown workspace will appear here.</EmptyDescription><Button data-testid="create-note-empty" onClick={() => void createNewNote()} disabled={isCreatingNote}><PlusIcon />Create note</Button></EmptyHeader></Empty>}
+                {source && <div className="note-editor-section flex border-t border-border/60"><Editor key={activeNotePath + ":" + (isCreatingNote ? "busy" : "ready")} value={draft} mode={mode} onChange={isCreatingNote ? () => undefined : updateDraft} linkTargets={notes.map((note) => note.title)} notePath={activeNotePath} notes={notes} onOpenNote={openPath} sections={source.sections} contentRevision={contentRevision} jumpRequest={jumpRequest} disabled={isCreatingNote} focusRequest={focusBodyRequest} onFocusComplete={completeBodyFocus} /></div>}
               </div>
               {conflict && <Alert variant="destructive" className="m-3 shrink-0"><AlertTitle>External edit needs your decision</AlertTitle><AlertDescription><p>Conflicts: {conflict.sections.join(", ")}</p><div className="mt-2 flex gap-2"><Button size="sm" variant="outline" onClick={() => void takeTheirs()}>Take theirs</Button><Button size="sm" variant="outline" onClick={() => void keepMine()}>Keep mine</Button></div></AlertDescription></Alert>}
               <footer data-testid="workspace-status-footer" className="relative z-20 flex h-8 shrink-0 items-center gap-3 bg-background/92 px-4 text-[11px] text-muted-foreground backdrop-blur-md before:pointer-events-none before:absolute before:inset-x-0 before:-top-10 before:h-10 before:bg-gradient-to-b before:from-transparent before:via-background/65 before:to-background before:backdrop-blur-[2px] before:content-['']"><span className="relative z-10 flex items-center gap-1"><FilesIcon className="size-3" />{noteCount ?? notes.length} notes</span><span className="relative z-10 flex items-center gap-1"><DatabaseIcon className="size-3" />{workspaceStatus?.repositories.length ?? 0} repositories</span><span aria-live="polite" className={"relative z-10 ml-auto flex items-center gap-1.5" + ((indexNeedsRefresh || isIndexing || isRefreshing) ? " text-warning" : "")}>

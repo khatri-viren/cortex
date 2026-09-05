@@ -13,7 +13,7 @@ export type NoteSummary = {
   content_hash: string;
 };
 
-type ListNotesResponse = { notes: NoteSummary[]; truncated: boolean };
+export type ListNotesResponse = { notes: NoteSummary[]; truncated: boolean; next_cursor?: string };
 type SearchResponse = { hits: Array<{ note_id: string; title: string; path: string; snippet: string }>; truncated: boolean };
 type ProjectMapResponse = ApiGraph;
 type ReconcileResponse =
@@ -32,10 +32,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return await response.json() as T;
 }
 
-export function listNotes(prefix?: string, limit?: number): Promise<ListNotesResponse> {
+export function listNotes(prefix?: string, limit?: number, cursor?: string): Promise<ListNotesResponse> {
   const params = new URLSearchParams();
   if (prefix) params.set("prefix", prefix);
   if (limit) params.set("limit", String(limit));
+  if (cursor) params.set("cursor", cursor);
   const query = params.toString();
   return request<ListNotesResponse>("/api/notes" + (query ? "?" + query : ""));
 }

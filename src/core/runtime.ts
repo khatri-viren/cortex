@@ -35,6 +35,23 @@ const MAX_CONTEXT_BYTES = 6_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HASH_RE = /^[0-9a-f]{64}$/i;
 
+type NoteListCursor = { updatedAt: string; path: string };
+
+function decodeNoteCursor(value: string | undefined): NoteListCursor | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Partial<NoteListCursor>;
+    if (typeof parsed.updatedAt !== "string" || typeof parsed.path !== "string") throw new Error("invalid cursor");
+    return { updatedAt: parsed.updatedAt, path: parsed.path };
+  } catch {
+    throw new ServiceError("INVALID_INPUT", "Note list cursor is invalid.");
+  }
+}
+
+function encodeNoteCursor(cursor: NoteListCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
 function hashContent(content: Buffer | string): string {
   return createHash("sha256").update(content).digest("hex");
 }
@@ -595,10 +612,10 @@ export class VaultRuntime {
     return this.indexer.store.searchNotes(normalized, clamp(limit, 20, MAX_SEARCH_LIMIT));
   }
 
-  listNotes(prefix?: string, tag?: string, limit?: number): { notes: NoteRecord[]; truncated: boolean } {
+  listNotes(prefix?: string, tag?: string, limit?: number, cursor?: string): { notes: NoteRecord[]; truncated: boolean; next_cursor?: string } {
     const limitValue = clamp(limit, 20, MAX_LIST_LIMIT);
-    const result = this.indexer.store.indexedNotes({ prefix, tag, limit: limitValue });
-    return { notes: result.notes.map((row) => this.noteRow(row.id)), truncated: result.truncated };
+    const result = this.indexer.store.indexedNotes({ prefix, tag, limit: limitValue, cursor: decodeNoteCursor(cursor) });
+    return { notes: result.notes.map((row) => this.noteRow(row.id)), truncated: result.truncated, ...(result.nextCursor ? { next_cursor: encodeNoteCursor(result.nextCursor) } : {}) };
   }
 
   queryTable(selector: NoteSelector, sectionId?: string, contains?: Record<string, string>, limit?: number): { note: NoteRecord; headers: string[]; rows: string[][]; section_id?: string; truncated: boolean } {

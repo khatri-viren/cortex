@@ -5,6 +5,9 @@ test("dev vault URLs keep the Vite origin and identify the vault runtime", () =>
   expect(buildVaultUrl("http://127.0.0.1:5175", "vault-a", 43821)).toBe(
     "http://127.0.0.1:5175/?vault=vault-a&port=43821",
   );
+  expect(buildVaultUrl("http://127.0.0.1:43821/?vault=vault-a", "vault-b", 43822)).toBe(
+    "http://127.0.0.1:43822/?vault=vault-b&port=43822",
+  );
 });
 
 test("API requests target the selected per-vault sidecar in Tauri dev", () => {

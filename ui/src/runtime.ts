@@ -21,7 +21,12 @@ export function getApiOrigin(search: string): string {
 
 /** Build a Vite-origin URL for a vault runtime started by Tauri. */
 export function buildVaultUrl(origin: string, vaultId: string, port: number): string {
-  const url = new URL("/", origin);
+  // The Vite development shell is the stable app origin. A packaged app is
+  // initially served by the picker sidecar, so switching vaults must target
+  // the newly healthy sidecar instead of reloading the stopped origin.
+  const current = new URL(origin);
+  const targetOrigin = current.port === "5175" ? current.origin : `http://${LOCALHOST}:${port}`;
+  const url = new URL("/", targetOrigin);
   url.searchParams.set("vault", vaultId);
   url.searchParams.set("port", String(port));
   return url.toString();
