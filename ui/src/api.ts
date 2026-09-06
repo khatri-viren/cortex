@@ -181,7 +181,7 @@ export function reconcile(note: string, baseMarkdown: string, localMarkdown: str
 export type ApiChangeSet = {
   sequence: number;
   generation: number;
-  events: Array<{ type: string; path: string; repository?: string; scopes?: string[] }>;
+  events: Array<{ type: string; path: string; content_hash?: string; repository?: string; scopes?: string[] }>;
   resync_required?: boolean;
 };
 

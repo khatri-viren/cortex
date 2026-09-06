@@ -57,13 +57,128 @@ test("DP-03 keeps an edit made while the first save acknowledgement is pending",
     await expect(page.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
     expect(putCount).toBe(2);
 
-    const final = await page.request.get(`http://127.0.0.1:4170/api/note?selector=${encodeURIComponent(relativePath)}&source=true`).then((response) => response.json()) as { body: string };
-    expect(final.body).toContain("First revision.");
-    expect(final.body).toContain("Second revision while save is pending.");
+    await expect.poll(async () => {
+      const final = await page.request.get(`http://127.0.0.1:4170/api/note?selector=${encodeURIComponent(relativePath)}&source=true`).then((response) => response.json()) as { body: string };
+      return final.body;
+    }, { timeout: 5_000 }).toContain("First revision.");
+    await expect.poll(async () => {
+      const final = await page.request.get(`http://127.0.0.1:4170/api/note?selector=${encodeURIComponent(relativePath)}&source=true`).then((response) => response.json()) as { body: string };
+      return final.body;
+    }, { timeout: 5_000 }).toContain("Second revision while save is pending.");
   } finally {
     if (existsSync(absolutePath)) unlinkSync(absolutePath);
     await page.request.post("http://127.0.0.1:4170/api/index/rebuild").catch(() => undefined);
     await page.unroute("**/api/note");
+  }
+});
+
+test("saving a local edit does not surface its own filesystem event as a conflict", async ({ page }) => {
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const title = `S1 Save Conflict ${suffix}`;
+  const relativePath = `notes/s1-save-conflict-${suffix}.md`;
+  const absolutePath = path.join(SAMPLE_VAULT, relativePath);
+  let saveStarted = false;
+
+  const created = await page.request.post("http://127.0.0.1:4170/api/notes", {
+    data: { title, type: "note", path: relativePath, body: "Original body.\n" },
+  });
+  expect(created.ok()).toBe(true);
+
+  await page.route("**/api/note", async (route) => {
+    if (route.request().method() === "PUT") {
+      saveStarted = true;
+      return route.continue();
+    }
+    if (saveStarted && route.request().method() === "GET") {
+      // Delay the change-event refetch until after the save acknowledgement.
+      // This is the ordering that used to leave the false conflict banner
+      // visible after a successful local save.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    return route.continue();
+  });
+
+  try {
+    await page.goto("/?vault=phase-s1-save-conflict");
+    await page.getByLabel("Search notes").fill(title);
+    await page.getByTestId("search-result").filter({ hasText: title }).click();
+    await expect(page.getByRole("heading", { name: title, exact: true })).toBeVisible();
+    await page.getByRole("tab", { name: "Source", exact: true }).click();
+    await page.locator(".cm-content").click();
+    await page.keyboard.press("End");
+    await page.keyboard.type("\nLocal saved addition.");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await expect(page.getByText("External edit needs your decision")).not.toBeVisible();
+  } finally {
+    if (existsSync(absolutePath)) unlinkSync(absolutePath);
+    await page.request.post("http://127.0.0.1:4170/api/index/rebuild").catch(() => undefined);
+    await page.unroute("**/api/note");
+  }
+});
+
+test("Cmd+S saves the active note", async ({ page }) => {
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const title = `S1 Cmd Save ${suffix}`;
+  const relativePath = `notes/s1-cmd-save-${suffix}.md`;
+  const absolutePath = path.join(SAMPLE_VAULT, relativePath);
+  const created = await page.request.post("http://127.0.0.1:4170/api/notes", {
+    data: { title, type: "note", path: relativePath, body: "Original body.\n" },
+  });
+  expect(created.ok()).toBe(true);
+
+  try {
+    await page.goto("/?vault=phase-s1-cmd-save");
+    await page.getByLabel("Search notes").fill(title);
+    await page.getByTestId("search-result").filter({ hasText: title }).click();
+    await expect(page.getByRole("heading", { name: title, exact: true })).toBeVisible();
+    await page.getByRole("tab", { name: "Source", exact: true }).click();
+    await page.locator(".cm-content").click();
+    await page.keyboard.press("End");
+    await page.keyboard.type("\nSaved with Cmd+S.");
+    await page.keyboard.press("Meta+s");
+    await expect(page.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
+
+    await expect.poll(async () => {
+      const final = await page.request.get(`http://127.0.0.1:4170/api/note?selector=${encodeURIComponent(relativePath)}&source=true`).then((response) => response.json()) as { body: string };
+      return final.body;
+    }, { timeout: 5_000 }).toContain("Saved with Cmd+S.");
+  } finally {
+    if (existsSync(absolutePath)) unlinkSync(absolutePath);
+    await page.request.post("http://127.0.0.1:4170/api/index/rebuild").catch(() => undefined);
+  }
+});
+
+test("idle editing autosaves the active note", async ({ page }) => {
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const title = `S1 Autosave ${suffix}`;
+  const relativePath = `notes/s1-autosave-${suffix}.md`;
+  const absolutePath = path.join(SAMPLE_VAULT, relativePath);
+  const created = await page.request.post("http://127.0.0.1:4170/api/notes", {
+    data: { title, type: "note", path: relativePath, body: "Original body.\n" },
+  });
+  expect(created.ok()).toBe(true);
+
+  try {
+    await page.goto("/?vault=phase-s1-autosave");
+    await page.getByLabel("Search notes").fill(title);
+    await page.getByTestId("search-result").filter({ hasText: title }).click();
+    await expect(page.getByRole("heading", { name: title, exact: true })).toBeVisible();
+    await page.getByRole("tab", { name: "Source", exact: true }).click();
+    await page.locator(".cm-content").click();
+    await page.keyboard.press("End");
+    await page.keyboard.type("\nSaved after an idle pause.");
+    await expect(page.getByRole("button", { name: "Save", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Save", exact: true })).toHaveCount(0, { timeout: 5_000 });
+
+    await expect.poll(async () => {
+      const final = await page.request.get(`http://127.0.0.1:4170/api/note?selector=${encodeURIComponent(relativePath)}&source=true`).then((response) => response.json()) as { body: string };
+      return final.body;
+    }, { timeout: 5_000 }).toContain("Saved after an idle pause.");
+  } finally {
+    if (existsSync(absolutePath)) unlinkSync(absolutePath);
+    await page.request.post("http://127.0.0.1:4170/api/index/rebuild").catch(() => undefined);
   }
 });
 

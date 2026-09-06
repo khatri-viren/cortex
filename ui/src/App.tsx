@@ -103,6 +103,11 @@ type SaveResult =
   | { ok: true }
   | { ok: false; message: string };
 
+type PendingExternalChange = {
+  path: string;
+  contentHash?: string;
+};
+
 function destinationFor(node: ApiGraphNode): ContextDestination | undefined {
   if (node.kind === "note" && node.path) return { kind: "note", path: node.path };
   const repository = node.metadata?.repository_id;
@@ -129,6 +134,7 @@ const DEFAULT_SESSION: VaultSession = {
 };
 
 const RECENTS_LIMIT = 8;
+const AUTOSAVE_DELAY_MS = 1_000;
 
 function routeFromHash(hash: string): Route {
   return hash.replace(/^#\/?/, "").startsWith("graph") ? "graph" : "notes";
@@ -278,6 +284,8 @@ function WorkspaceApp() {
   const [expandedTreePaths, setExpandedTreePaths] = useState<Set<string>>(() => new Set(initialSession.expandedTreePaths));
   const [navHistory, setNavHistory] = useState<{ stack: string[]; index: number }>({ stack: [], index: -1 });
   const [source, setSource] = useState<ApiNoteSource>();
+  const sourceRef = useRef<ApiNoteSource | undefined>(undefined);
+  sourceRef.current = source;
   const {
     draft,
     metadataDraft,
@@ -347,6 +355,9 @@ function WorkspaceApp() {
   const saveRequestRef = useRef(0);
   const saveInFlightRef = useRef(false);
   const sessionSaveQueueRef = useRef(Promise.resolve());
+  const saveRef = useRef<() => Promise<SaveResult>>(async () => ({ ok: true }));
+  const pendingExternalChangeRef = useRef<PendingExternalChange | undefined>(undefined);
+  const handleExternalChangeRef = useRef<(change: PendingExternalChange) => void>(() => undefined);
 
   const currentTitle = metadataDraft?.title ?? source?.note.title ?? "Select a note";
   const activeNotePath = source?.note.path;
@@ -540,6 +551,36 @@ function WorkspaceApp() {
     if (bumpContentRevision) setContentRevision((revision) => revision + 1);
   }
 
+  // Filesystem notifications are also emitted for writes accepted through
+  // this UI. Defer an active-note notification while a save is in flight and
+  // compare the resulting source hash after the acknowledgement arrives. A
+  // matching hash is this editor's own write; a different hash is a genuine
+  // concurrent edit and still follows the explicit conflict path.
+  handleExternalChangeRef.current = (change) => {
+    if (selectedRef.current !== change.path || sourceRef.current?.note.path !== change.path) return;
+    if (change.contentHash && sourceRef.current.note.content_hash === change.contentHash) return;
+    if (saveInFlightRef.current) {
+      pendingExternalChangeRef.current = change;
+      return;
+    }
+    getNoteSource(change.path).then((next) => {
+      if (selectedRef.current !== change.path) return;
+      const current = sourceRef.current;
+      // The save acknowledgement may have updated the source while the
+      // change-event refetch was in flight. Do not turn that acknowledgement
+      // into a conflict after the fact.
+      if (current?.note.path === change.path && current.note.content_hash === next.note.content_hash) return;
+      if (!isDirtyRef.current) {
+        applySource(next, true);
+        if (next.note.path === activeNotePath) getContext("note:" + next.note.id).then(setContext).catch(() => undefined);
+        setStatus("Reloaded external change");
+        return;
+      }
+      setConflict({ remote: next.markdown, hash: next.note.content_hash, sections: next.sections.map((section) => section.heading) });
+      setStatus("Conflict requires review");
+    }).catch(() => setStatus("External change detected; reload failed"));
+  };
+
   useEffect(() => {
     if (!isTauri) return;
     let active = true;
@@ -699,20 +740,12 @@ function WorkspaceApp() {
       // and catalog. Empty batches represent projection status transitions.
       if (events.length === 0 || scopes.has("catalog") || scopes.has("tree")) refreshVaultData();
       if (events.length === 0 || scopes.has("projection") || scopes.has("repository")) refreshWorkspaceSignals();
-      if (!activeNotePath || !events.some((event) => eventMatchesPath(event.path, activeNotePath))) return;
+      const activeEvent = activeNotePath
+        ? events.find((event) => eventMatchesPath(event.path, activeNotePath))
+        : undefined;
+      if (!activeNotePath || !activeEvent) return;
       if (deletedPaths.has(activeNotePath)) return;
-      if (!isDirtyRef.current) {
-        getNoteSource(activeNotePath).then((next) => {
-          applySource(next, true);
-          if (scopes.has("graph")) getContext("note:" + next.note.id).then(setContext).catch(() => undefined);
-          setStatus("Reloaded external change");
-        }).catch(() => setStatus("External change detected; reload failed"));
-        return;
-      }
-      getNoteSource(activeNotePath).then((next) => {
-        setConflict({ remote: next.markdown, hash: next.note.content_hash, sections: next.sections.map((section) => section.heading) });
-        setStatus("Conflict requires review");
-      }).catch(() => setStatus("External change detected; reload failed"));
+      handleExternalChangeRef.current({ path: activeNotePath, contentHash: activeEvent.content_hash });
     });
   }, [activeNotePath, isDirty, isCreatingNote, selected, tabs]);
 
@@ -831,12 +864,37 @@ function WorkspaceApp() {
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       setStatus(message);
+      if (/stale/i.test(message) && selectedRef.current === requestedPath) {
+        void getNoteSource(requestedPath).then((next) => {
+          if (selectedRef.current !== requestedPath) return;
+          setConflict({ remote: next.markdown, hash: next.note.content_hash, sections: next.sections.map((section) => section.heading) });
+          setStatus("Conflict requires review");
+        }).catch(() => undefined);
+      }
       return { ok: false, message };
     } finally {
       saveInFlightRef.current = false;
       setIsSaving(false);
+      const pendingChange = pendingExternalChangeRef.current;
+      if (pendingChange?.path === requestedPath) {
+        pendingExternalChangeRef.current = undefined;
+        // Let React publish the save acknowledgement before checking the
+        // queued filesystem event. This makes the hash comparison observe
+        // the new base rather than the pre-save source snapshot.
+        window.setTimeout(() => handleExternalChangeRef.current(pendingChange), 0);
+      }
     }
   }
+
+  saveRef.current = save;
+
+  useEffect(() => {
+    if (!source || !isDirty || isCreatingNote || conflict || isSaving) return;
+    const timer = window.setTimeout(() => {
+      void saveRef.current();
+    }, AUTOSAVE_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [source?.note.path, draft, metadataDraft, isDirty, isCreatingNote, conflict, isSaving]);
 
   async function exportPdf() {
     const currentMetadata = metadataDraftRef.current;
@@ -934,6 +992,11 @@ function WorkspaceApp() {
     const onWindowShortcut = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat || !(event.metaKey || event.ctrlKey)) return;
       const key = event.key.toLowerCase();
+      if (key === "s") {
+        event.preventDefault();
+        if (!isCreatingNote && !isSaving) void save();
+        return;
+      }
       if (key === "n") {
         event.preventDefault();
         if (!isCreatingNote) void createNewNote();
@@ -951,7 +1014,7 @@ function WorkspaceApp() {
     // state; re-registering the single global listener when that state
     // changes keeps Cmd/Ctrl+N and Cmd/Ctrl+W race-free.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, tabs, isDirty, isCreatingNote]);
+  }, [selected, tabs, isDirty, isCreatingNote, isSaving]);
 
   function goBack() {
     if (isCreatingNote || !canGoBack) return;
@@ -986,8 +1049,12 @@ function WorkspaceApp() {
   async function keepMine() {
     const currentMetadata = metadataDraftRef.current;
     if (!source || !conflict || !currentMetadata) return;
+    const requestedPath = source.note.path;
+    saveInFlightRef.current = true;
+    setIsSaving(true);
+    setStatus("Saving...");
     try {
-      const next = await updateNote(source.note.path, conflict.hash, draftRef.current, {
+      const next = await updateNote(requestedPath, conflict.hash, draftRef.current, {
         title: currentMetadata.title,
         type: currentMetadata.type,
         aliases: currentMetadata.aliases,
@@ -999,6 +1066,14 @@ function WorkspaceApp() {
       setStatus("Kept local version");
     } catch (cause: unknown) {
       setStatus(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      saveInFlightRef.current = false;
+      setIsSaving(false);
+      const pendingChange = pendingExternalChangeRef.current;
+      if (pendingChange?.path === requestedPath) {
+        pendingExternalChangeRef.current = undefined;
+        window.setTimeout(() => handleExternalChangeRef.current(pendingChange), 0);
+      }
     }
   }
 
@@ -1069,7 +1144,7 @@ function WorkspaceApp() {
     setStatus("Preparing new note…");
 
     const saved = await save();
-    if (!saved.ok) {
+    if (saved.ok === false) {
       finishNoteCreation();
       navigate("notes");
       setCreationIssue({ kind: "save", message: `The current note could not be saved: ${saved.message}` });
@@ -1221,7 +1296,7 @@ function WorkspaceApp() {
                     </div>
                   ))}
                 </div>
-                {isDirty && <Button size="sm" className="shrink-0" onClick={() => void save()} disabled={!source || isCreatingNote || isSaving}>{isSaving ? "Saving…" : "Save"}</Button>}
+                {isDirty && <Button size="sm" className="shrink-0" title="Save (⌘S / Ctrl+S)" onClick={() => void save()} disabled={!source || isCreatingNote || isSaving}>{isSaving ? "Saving…" : "Save"}</Button>}
                 <Button variant="ghost" size="sm" className="shrink-0 gap-1" data-testid="export-pdf" aria-label="Export PDF" onClick={() => void exportPdf()} disabled={!source || !metadataDraft?.title.trim() || isExportingPdf || isCreatingNote}>
                   <FileDownIcon className={isExportingPdf ? "animate-pulse" : undefined} />
                   <span className="hidden sm:inline">{isExportingPdf ? "Exporting…" : "Export PDF"}</span>
