@@ -20,6 +20,16 @@ export type MarkdownPdfInput = {
   vaultRoot: string;
 };
 
+export type PdfRenderOptions = {
+  signal?: AbortSignal;
+  deadlineMs?: number;
+};
+
+export type PdfRenderer = {
+  id: string;
+  render(input: MarkdownPdfInput, options?: PdfRenderOptions): Promise<Buffer>;
+};
+
 export type NormalizedMarkdownPdf = {
   title: string;
   markdown: string;
@@ -225,33 +235,53 @@ function chromiumPath(): string | undefined {
   return discovered && existsSync(discovered) ? discovered : undefined;
 }
 
-async function withTimeout<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
+function abortReason(signal: AbortSignal | undefined, fallback: ServiceError): ServiceError {
+  const reason = signal?.reason;
+  return reason instanceof ServiceError ? reason : fallback;
+}
+
+async function withAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined, fallback: ServiceError): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) throw abortReason(signal, fallback);
+  let onAbort: (() => void) | undefined;
   try {
     return await Promise.race([
       promise,
       new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`PDF rendering exceeded ${milliseconds}ms.`)), milliseconds);
+        onAbort = () => reject(abortReason(signal, fallback));
+        signal.addEventListener("abort", onAbort, { once: true });
       }),
     ]);
   } finally {
-    if (timer) clearTimeout(timer);
+    if (onAbort) signal.removeEventListener("abort", onAbort);
   }
 }
 
-export async function renderMarkdownPdf(input: MarkdownPdfInput): Promise<Buffer> {
-  const { title, html } = await markdownToHtml(input);
-  const executablePath = chromiumPath();
-  if (!executablePath) {
-    throw new ServiceError("EXPORT_RENDERER_UNAVAILABLE", "PDF export requires a bundled Chromium executable. Set CORTEX_CHROMIUM_PATH for development.");
-  }
+export async function renderMarkdownPdf(input: MarkdownPdfInput, options: PdfRenderOptions = {}): Promise<Buffer> {
+  const deadlineMs = Math.max(1_000, options.deadlineMs ?? 30_000);
+  const deadline = new ServiceError("EXPORT_DEADLINE_EXCEEDED", `PDF export exceeded its ${deadlineMs}ms deadline.`);
+  const controller = new AbortController();
+  const deadlineTimer = setTimeout(() => controller.abort(deadline), deadlineMs);
+  const forwardAbort = () => controller.abort(abortReason(options.signal, new ServiceError("EXPORT_CANCELLED", "PDF export was cancelled.")));
+  options.signal?.addEventListener("abort", forwardAbort, { once: true });
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   try {
-    browser = await chromium.launch({ executablePath, headless: true });
+    const { title, html } = await withAbort(markdownToHtml(input), controller.signal, deadline);
+    const executablePath = chromiumPath();
+    if (!executablePath) {
+      throw new ServiceError("EXPORT_RENDERER_UNAVAILABLE", "PDF export requires a bundled Chromium executable. Set CORTEX_CHROMIUM_PATH for development.");
+    }
+    browser = await withAbort(chromium.launch({ executablePath, headless: true }), controller.signal, deadline);
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: "load", timeout: 10_000 });
-    await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => undefined);
-    return await withTimeout(page.pdf({
+    // PDF rendering is intentionally offline. Local images are embedded by
+    // markdownToHtml; any remaining network request is aborted at the page
+    // boundary so export cannot hang on or disclose remote resources.
+    await page.route("**/*", (route) => route.abort());
+    await withAbort(page.setContent(html, { waitUntil: "load", timeout: 10_000 }), controller.signal, deadline);
+    await withAbort(page.waitForLoadState("networkidle", { timeout: 5_000 }), controller.signal, deadline).catch((error) => {
+      if (error instanceof ServiceError) throw error;
+    });
+    const bytes = await withAbort(page.pdf({
       format: "A4",
       displayHeaderFooter: true,
       printBackground: true,
@@ -259,13 +289,29 @@ export async function renderMarkdownPdf(input: MarkdownPdfInput): Promise<Buffer
       margin: { top: "24mm", right: "18mm", bottom: "18mm", left: "18mm" },
       headerTemplate: `<div style="width:100%;padding:0 18mm;color:#64748b;font:8px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${escapeHtml(title)}</div>`,
       footerTemplate: `<div style="width:100%;padding:0 18mm;color:#64748b;font:8px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;text-align:right"><span class="pageNumber"></span> / <span class="totalPages"></span></div>`,
-    }), 15_000);
+    }), controller.signal, deadline);
+    return Buffer.from(bytes);
   } catch (cause) {
     if (cause instanceof ServiceError) throw cause;
     throw new ServiceError("EXPORT_RENDERER_UNAVAILABLE", `Could not render PDF: ${cause instanceof Error ? cause.message : String(cause)}`);
   } finally {
+    clearTimeout(deadlineTimer);
+    options.signal?.removeEventListener("abort", forwardAbort);
     await browser?.close().catch(() => undefined);
   }
+}
+
+export const chromiumPdfRenderer: PdfRenderer = {
+  id: "chromium",
+  render: renderMarkdownPdf,
+};
+
+export function pdfRendererInfo(): { id: string; offline: true; executableConfigured: boolean } {
+  return { id: "chromium", offline: true, executableConfigured: Boolean(chromiumPath()) };
+}
+
+export function pdfRendererExecutablePath(): string | undefined {
+  return chromiumPath();
 }
 
 export function exportFilename(title: string): string {

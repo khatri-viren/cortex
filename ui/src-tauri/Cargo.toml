@@ -1,5 +1,6 @@
 [package]
 name = "app"
+default-run = "app"
 version = "0.1.0"
 description = "A Tauri App"
 authors = ["you"]
@@ -7,6 +8,15 @@ license = ""
 repository = ""
 edition = "2021"
 rust-version = "1.77.2"
+
+[features]
+default = []
+projection-probe = []
+
+[[bin]]
+name = "projection_probe"
+path = "src/bin/projection_probe.rs"
+required-features = ["projection-probe"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

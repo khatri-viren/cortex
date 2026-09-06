@@ -31,6 +31,8 @@ export type NoteRecord = {
   content_hash: string;
 };
 
+export type NoteLinkSuggestion = Pick<NoteRecord, "id" | "path" | "title" | "aliases">;
+
 export type GraphNodeRecord = {
   nodeId: string;
   kind: string;
@@ -46,12 +48,23 @@ export type GraphEdgeRecord = {
   metadata: Record<string, unknown>;
 };
 
+export type VaultChangeScope = "content" | "catalog" | "tree" | "graph" | "repository" | "projection";
+
 export type VaultChangeEvent = {
   type: "create" | "update" | "delete";
   path: string;
   content_hash?: string;
   mtime?: string;
   repository?: string;
+  scopes: VaultChangeScope[];
+};
+
+export type VaultChangeSet = {
+  sequence: number;
+  generation: number;
+  events: VaultChangeEvent[];
+  /** Set when a subscriber must refetch current state before applying more events. */
+  resync_required?: boolean;
 };
 
 export type WorkspaceStatus = {
@@ -171,6 +184,10 @@ export type HealthResult = {
   phase: 3;
   index: IndexCounts;
   workspace: { active: boolean; phase: IndexPhase; error?: string };
+  watchers: {
+    vault: "starting" | "native" | "polling";
+    workspace: { native: number; polling: number };
+  };
 };
 
 export type HistoryResult = { path: string; commits: GitCommit[] };

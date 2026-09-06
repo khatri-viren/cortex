@@ -3,10 +3,11 @@
   "productName": "Cortex",
   "version": "0.1.0",
   "identifier": "dev.cortex.desktop",
+  "mainBinaryName": "app",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://127.0.0.1:5175",
-    "beforeBuildCommand": "bun run build && bun run desktop:sidecar && bun run ../scripts/prepare-chromium.ts",
+    "beforeBuildCommand": "bun run build && bun run desktop:sidecar && bun run ../scripts/prepare-watcher.ts && bun run ../scripts/prepare-chromium.ts",
     "frontendDist": "../shell"
   },
   "app": {
@@ -47,7 +48,8 @@
     "externalBin": ["binaries/cortex-sidecar"],
     "resources": {
       "../dist": "dist",
-      "../../resources/chromium": "chromium"
+      "../../resources/chromium": "chromium",
+      "../../resources/node_modules": "node_modules"
     },
     "android": {
       "debugApplicationIdSuffix": ".debug"

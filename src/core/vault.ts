@@ -17,18 +17,22 @@ export function requireGitVault(vaultRoot: string): string {
   return root;
 }
 
-function markdownFiles(root: string): string[] {
+export function vaultFiles(root: string): string[] {
   const result: string[] = [];
   const visit = (directory: string) => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       if (entry.name === ".git" || entry.name === RUNTIME_DIRECTORY || entry.name === "node_modules") continue;
       const path = join(directory, entry.name);
       if (entry.isDirectory()) visit(path);
-      else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) result.push(path);
+      else if (entry.isFile()) result.push(path);
     }
   };
-  visit(root);
+  visit(resolve(root));
   return result.sort();
+}
+
+function markdownFiles(root: string): string[] {
+  return vaultFiles(root).filter((path) => path.toLowerCase().endsWith(".md"));
 }
 
 export function scanVault(vaultRoot: string): VaultScan {

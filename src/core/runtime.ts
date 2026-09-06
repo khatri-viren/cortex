@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, extname, join, relative as relativePath, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { addMissingSectionMarkers, findSections, getSectionBody, parseMarkdown, replaceSectionBody } from "./markdown.js";
 import { createFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { repositoryRelativePath, projectNodeId, noteNodeId } from "./identity.js";
@@ -20,20 +21,40 @@ import { GitAdapter } from "./git.js";
 import { RUNTIME_DIRECTORY } from "./vault.js";
 import type { Diagnostic, NoteFrontmatter, Section } from "./types.js";
 import { ServiceError } from "./errors.js";
-import type { DiffResult, GraphDirection, GraphEdgeRecord, GraphNodeRecord, GraphQueryResult, HealthResult, HistoryResult, IndexPhase, IndexRefreshResult, NoteCreateInput, NoteRecord, NoteSelector, NoteSource, NoteUpdateInput, RepositoryDiffResult, RepositoryHistoryResult, RepositoryRestoreResult, VaultChangeEvent, VaultCheckResult, VaultTree, VaultTreeNode, WorkspaceStatus, WriteResult } from "./runtime-types.js";
+import type { DiffResult, GraphDirection, GraphEdgeRecord, GraphNodeRecord, GraphQueryResult, HealthResult, HistoryResult, IndexPhase, IndexRefreshResult, NoteCreateInput, NoteLinkSuggestion, NoteRecord, NoteSelector, NoteSource, NoteUpdateInput, RepositoryDiffResult, RepositoryHistoryResult, RepositoryRestoreResult, VaultChangeEvent, VaultChangeScope, VaultChangeSet, VaultCheckResult, VaultTree, VaultTreeNode, WorkspaceStatus, WriteResult } from "./runtime-types.js";
 import type { IndexReport } from "./index-types.js";
 import { startWatcher, type WatcherHandle } from "./watcher.js";
 import { isWorkspaceIgnored, loadWorkspaceConfig, workspaceIgnorePatterns, workspaceManifestPath, repositoryRelativePath as workspaceRepositoryRelativePath, type WorkspaceConfig, type WorkspaceRepository } from "./workspace.js";
 import { WorkspaceIndexer } from "./workspace-indexer.js";
 import { resolveWorkspaceAttachments, requireAppliesToRepository, type NoteAttachmentInput } from "./workspace-attachments.js";
-import { renderMarkdownPdf } from "./pdf-export.js";
+import { PdfExportJobManager, type PdfExportArtifact } from "./pdf-export-jobs.js";
 
 const MAX_SEARCH_LIMIT = 50;
 const MAX_LIST_LIMIT = 100;
 const MAX_GRAPH_LIMIT = 100;
 const MAX_CONTEXT_BYTES = 6_000;
+const MAX_GRAPH_RESPONSE_BYTES = 512_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HASH_RE = /^[0-9a-f]{64}$/i;
+const MAX_CHANGE_HISTORY = 128;
+const MAX_PENDING_WRITES = 256;
+
+type NoteListCursor = { updatedAt: string; path: string };
+
+function decodeNoteCursor(value: string | undefined): NoteListCursor | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Partial<NoteListCursor>;
+    if (typeof parsed.updatedAt !== "string" || typeof parsed.path !== "string") throw new Error("invalid cursor");
+    return { updatedAt: parsed.updatedAt, path: parsed.path };
+  } catch {
+    throw new ServiceError("INVALID_INPUT", "Note list cursor is invalid.");
+  }
+}
+
+function encodeNoteCursor(cursor: NoteListCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
 
 function hashContent(content: Buffer | string): string {
   return createHash("sha256").update(content).digest("hex");
@@ -108,11 +129,17 @@ export class VaultRuntime {
   private workspaceTask?: Promise<void>;
   private closing = false;
   private readonly writes = new AsyncMutex();
-  private readonly subscribers = new Set<(events: VaultChangeEvent[]) => void>();
+  private readonly subscribers = new Set<(changeSet: VaultChangeSet) => void>();
+  private readonly changeHistory: VaultChangeSet[] = [];
+  private readonly pendingWrites = new Map<string, string>();
+  private readonly pdfExports = new PdfExportJobManager();
+  private changeSequence = 0;
+  private projectionGeneration = 1;
 
   private constructor(vaultRoot: string, indexer: VaultIndexer) {
     this.vaultRoot = vaultRoot;
     this.indexer = indexer;
+    this.projectionGeneration = Number(indexer.store.getState("projection_generation") ?? "1") || 1;
   }
 
   /** Construct the vault Git adapter only for an operation that needs Git. */
@@ -124,7 +151,8 @@ export class VaultRuntime {
   static async start(vaultRoot: string, options?: { workspaceRoot?: string }): Promise<VaultRuntime> {
     const indexer = new VaultIndexer(vaultRoot);
     try {
-      indexer.fullRebuild();
+      const warm = indexer.warmRead();
+      if (!warm.valid) indexer.fullRebuild();
       const service = new VaultRuntime(indexer.vaultRoot, indexer);
       const workspaceRequested = Boolean(options?.workspaceRoot) || Boolean(process.env.CORTEX_WORKSPACE_ROOT) || existsSync(workspaceManifestPath(service.vaultRoot));
       if (workspaceRequested) await service.startWorkspace(options?.workspaceRoot);
@@ -150,8 +178,11 @@ export class VaultRuntime {
     this.workspacePhase = workspace.workspaceExists ? "warming" : "error";
     this.workspaceError = workspace.workspaceExists ? undefined : `Workspace root does not exist: ${workspace.workspaceRoot}`;
     const ignorePatterns = workspaceIgnorePatterns(workspace.manifest);
-    const watcherOptions = { ignorePath: (path: string) => isWorkspaceIgnored(path, ignorePatterns) };
-    await Promise.all(workspace.repositories.map(async (repository) => {
+    await Promise.all(workspace.repositories.map(async (repository, repositoryIndex) => {
+      const watcherOptions = {
+        ignorePath: (path: string) => isWorkspaceIgnored(path, ignorePatterns),
+        ...(process.env.CORTEX_PACKAGED === "1" ? { pollStartDelayMs: repositoryIndex * 1_000 } : {}),
+      };
       const handle = await startWatcher(repository.absolutePath, async (events) => {
         const normalized = events.map((event) => ({ ...event, path: this.normalizeEventPath(event.path, repository.absolutePath) }));
         this.workspacePhase = "rebuilding";
@@ -189,10 +220,8 @@ export class VaultRuntime {
   private async rebuildWorkspace(): Promise<void> {
     if (!this.workspaceIndexer || !this.workspace?.workspaceExists) return;
     try {
-      await this.writes.run(() => {
-        this.workspaceIndexer!.fullRebuild();
-        this.refreshWorkspaceAttachments();
-      });
+      await this.rebuildWorkspaceInBackground();
+      this.refreshWorkspaceAttachments();
       this.workspacePhase = "current";
       this.workspaceError = undefined;
       // An empty change batch is a status invalidation. It lets the UI learn
@@ -203,6 +232,19 @@ export class VaultRuntime {
       this.workspaceError = error instanceof Error ? error.message : String(error);
       this.publishChanges([]);
     }
+  }
+
+  /** Run the expensive workspace projection in a separate process so source,
+   * search, and health requests keep the main event loop available. */
+  private async rebuildWorkspaceInBackground(): Promise<void> {
+    if (!this.workspace) return;
+    const cliEntry = resolve(dirname(fileURLToPath(import.meta.url)), "../cli.ts");
+    const args = existsSync(cliEntry)
+      ? ["run", cliEntry, "workspace:rebuild", "--vault", this.vaultRoot, "--workspace", this.workspace.workspaceRoot]
+      : ["workspace:rebuild", "--vault", this.vaultRoot, "--workspace", this.workspace.workspaceRoot];
+    const child = Bun.spawn([process.execPath, ...args], { stdout: "ignore", stderr: "pipe" });
+    const exitCode = await child.exited;
+    if (exitCode !== 0) throw new Error(`Background workspace projection exited with code ${exitCode}.`);
   }
 
   private refreshWorkspaceAttachments(): void {
@@ -243,6 +285,7 @@ export class VaultRuntime {
 
   async close(): Promise<void> {
     this.closing = true;
+    this.pdfExports.close();
     await this.watcher?.stop();
     await this.watcher?.flushSnapshot();
     for (const handle of this.repoWatchers.values()) {
@@ -288,9 +331,22 @@ export class VaultRuntime {
     });
   }
 
-  subscribe(listener: (events: VaultChangeEvent[]) => void): () => void {
+  subscribe(listener: (changeSet: VaultChangeSet) => void): () => void {
     this.subscribers.add(listener);
     return () => this.subscribers.delete(listener);
+  }
+
+  /** Return buffered changes after a sequence, or require a state refetch when the buffer cannot bridge the gap. */
+  changesSince(sequence: number): { changes: VaultChangeSet[]; resyncRequired: boolean; sequence: number; generation: number } {
+    const currentSequence = this.changeSequence;
+    if (!Number.isInteger(sequence) || sequence < 0 || sequence > currentSequence) {
+      return { changes: [], resyncRequired: true, sequence: currentSequence, generation: this.projectionGeneration };
+    }
+    if (sequence === currentSequence) return { changes: [], resyncRequired: false, sequence: currentSequence, generation: this.projectionGeneration };
+    const changes = this.changeHistory.filter((change) => change.sequence > sequence);
+    const first = changes[0];
+    const contiguous = Boolean(first && first.sequence === sequence + 1);
+    return { changes: contiguous ? changes : [], resyncRequired: !contiguous, sequence: currentSequence, generation: this.projectionGeneration };
   }
 
   private normalizeEventPath(path: string, root: string = this.vaultRoot): string {
@@ -301,26 +357,50 @@ export class VaultRuntime {
     return resolve(root, relative);
   }
 
-  private publishChanges(events: Array<{ type: "create" | "update" | "delete"; path: string }>, repositoryId?: string): void {
+  private publishChanges(events: Array<{ type: "create" | "update" | "delete"; path: string; scopes?: VaultChangeScope[] }>, repositoryId?: string): void {
     const root = repositoryId ? this.requireRepository(repositoryId).absolutePath : this.vaultRoot;
-    const changes = events.map((event) => {
+    const changes = events.flatMap((event) => {
       const relative = repositoryRelativePath(root, event.path);
       const repository = repositoryId ? { repository: repositoryId } : {};
-      if (event.type === "delete" || !existsSync(event.path)) return { type: event.type, path: relative, ...repository } satisfies VaultChangeEvent;
+      const scopes: VaultChangeScope[] = repositoryId
+        ? ["repository", "graph"]
+        : event.type === "delete" || event.type === "create"
+          ? ["content", "catalog", "tree", "graph"]
+          : ["content", "graph"];
+      const eventScopes = event.scopes ?? scopes;
+      if (!repositoryId && event.type !== "delete" && this.pendingWrites.get(relative)) {
+        const expectedHash = this.pendingWrites.get(relative);
+        try {
+          if (expectedHash === hashContent(readFileSync(event.path))) {
+            this.pendingWrites.delete(relative);
+            return [];
+          }
+        } catch {
+          // The watcher may race a rename; retain the pending marker until a later event.
+        }
+      }
+      if (event.type === "delete" || !existsSync(event.path)) return { type: event.type, path: relative, scopes: eventScopes, ...repository } satisfies VaultChangeEvent;
       try {
         const stats = statSync(event.path);
         return {
           type: event.type,
           path: relative,
+          scopes: eventScopes,
           content_hash: hashContent(readFileSync(event.path)),
           mtime: new Date(stats.mtimeMs).toISOString(),
           ...repository,
         } satisfies VaultChangeEvent;
       } catch {
-        return { type: event.type, path: relative, ...repository } satisfies VaultChangeEvent;
+        return { type: event.type, path: relative, scopes: eventScopes, ...repository } satisfies VaultChangeEvent;
       }
-    });
-    for (const subscriber of this.subscribers) subscriber(changes);
+    }).flat();
+    if (events.length > 0 && changes.length === 0) return;
+    this.changeSequence += 1;
+    this.projectionGeneration += 1;
+    const changeSet: VaultChangeSet = { sequence: this.changeSequence, generation: this.projectionGeneration, events: changes };
+    this.changeHistory.push(changeSet);
+    if (this.changeHistory.length > MAX_CHANGE_HISTORY) this.changeHistory.splice(0, this.changeHistory.length - MAX_CHANGE_HISTORY);
+    for (const subscriber of this.subscribers) subscriber(changeSet);
   }
 
   private relativePath(input: string, allowMissing = false): { absolute: string; relative: string } {
@@ -379,7 +459,16 @@ export class VaultRuntime {
       for (const nodeId of frontier) {
         const outgoing = direction === "in" ? [] : this.indexer.store.unifiedEdgesFrom(nodeId);
         const incoming = direction === "out" ? [] : this.indexer.store.unifiedEdgesTo(nodeId);
-        for (const row of [...outgoing, ...incoming]) {
+        // SQLite does not promise row order. Stable traversal makes the
+        // bounded neighborhood reproducible and prevents a high-degree node
+        // from returning a different slice on each request.
+        const adjacent = [...outgoing, ...incoming].sort((left, right) =>
+          left.kind.localeCompare(right.kind)
+          || left.from_id.localeCompare(right.from_id)
+          || left.to_id.localeCompare(right.to_id)
+          || left.metadata_json.localeCompare(right.metadata_json),
+        );
+        for (const row of adjacent) {
           const edge = { fromId: row.from_id, toId: row.to_id, kind: row.kind, metadata: jsonMetadata(row.metadata_json) };
           edges.set(`${edge.fromId}|${edge.toId}|${edge.kind}|${row.metadata_json}`, edge);
           const neighbor = direction === "in" ? edge.fromId : edge.toId;
@@ -433,13 +522,18 @@ export class VaultRuntime {
     return { note, markdown, body: parsed.body, frontmatter, sections: parsed.sections, diagnostics: parsed.diagnostics };
   }
 
-  async exportPdf(selector: NoteSelector, body?: string, title?: string): Promise<Buffer> {
+  async exportPdf(selector: NoteSelector, body?: string, title?: string, options?: { signal?: AbortSignal; deadlineMs?: number }): Promise<Buffer> {
+    const artifact = await this.exportPdfArtifact(selector, body, title, options);
+    return artifact.pdf;
+  }
+
+  async exportPdfArtifact(selector: NoteSelector, body?: string, title?: string, options?: { signal?: AbortSignal; deadlineMs?: number }): Promise<PdfExportArtifact> {
     const note = this.noteRow(selector);
     const absolute = resolve(this.vaultRoot, note.path);
     const source = body === undefined || title === undefined ? this.getSource(selector) : undefined;
     const exportBody = body ?? source?.body ?? "";
     const exportTitle = (title ?? source?.frontmatter.title ?? note.title).trim();
-    return renderMarkdownPdf({ notePath: absolute, title: exportTitle, body: exportBody, vaultRoot: this.vaultRoot });
+    return this.pdfExports.submit({ notePath: absolute, title: exportTitle, body: exportBody, vaultRoot: this.vaultRoot }, options);
   }
 
   vaultTree(): VaultTree {
@@ -495,7 +589,7 @@ export class VaultRuntime {
       const body = replaceSectionBody(original, section, newContent.replace(/\r\n/g, "\n").replace(/^\n+|\n+$/g, ""));
       const updated = { ...parsed.frontmatter!, updated_at: new Date().toISOString() };
       const content = serializeFrontmatter(updated) + parseMarkdown(body).body;
-      return this.writeAndIndexLocked(note.path, content);
+      return this.writeAndIndexLocked(note.path, content, "update", ["content", "graph"]);
     });
   }
 
@@ -531,7 +625,10 @@ export class VaultRuntime {
       if (this.workspace) this.validateAppliesTo(frontmatter.applies_to);
       const body = input.body ?? parsed.body;
       const content = serializeFrontmatter(frontmatter) + body;
-      const result = this.writeAndIndexLocked(note.path, content);
+      const metadataScopes: VaultChangeScope[] = input.metadata
+        ? ["content", "catalog", "tree", "graph"]
+        : ["content", "graph"];
+      const result = this.writeAndIndexLocked(note.path, content, "update", metadataScopes);
       if (this.workspace) this.refreshWorkspaceAttachments();
       return result;
     });
@@ -546,7 +643,7 @@ export class VaultRuntime {
       const relative = input.path ? this.relativePath(input.path, true).relative : this.nextNotePath(slugify(frontmatter.title));
       if (extname(relative).toLocaleLowerCase() !== ".md") throw new ServiceError("INVALID_INPUT", "Notes must use a .md path.");
       if (existsSync(resolve(this.vaultRoot, relative))) throw new ServiceError("CONFLICT", `Note path '${relative}' already exists.`);
-      const result = this.writeAndIndexLocked(relative, content);
+      const result = this.writeAndIndexLocked(relative, content, "create", ["content", "catalog", "tree", "graph"]);
       if (this.workspace) this.refreshWorkspaceAttachments();
       return { ...result, id: frontmatter.id };
     });
@@ -560,7 +657,7 @@ export class VaultRuntime {
     }
   }
 
-  private writeAndIndexLocked(relative: string, content: string): WriteResult {
+  private writeAndIndexLocked(relative: string, content: string, eventType: "create" | "update" = "update", scopes?: VaultChangeScope[]): WriteResult {
     const { absolute } = this.relativePath(relative, true);
     mkdirSync(dirname(absolute), { recursive: true });
     const temporary = `${absolute}.cortex-${randomUUID()}.tmp`;
@@ -577,7 +674,14 @@ export class VaultRuntime {
       throw new ServiceError("INDEX_SYNC_FAILED", `File '${relative}' was written but indexing failed: ${error instanceof Error ? error.message : String(error)}`);
     }
     const stats = statSync(absolute);
-    return { path: relative, mtime: new Date(stats.mtimeMs).toISOString(), content_hash: hashContent(content), index };
+    const contentHash = hashContent(content);
+    this.publishChanges([{ type: eventType, path: absolute, scopes }]);
+    // Mark the accepted bytes after publishing the app-owned event. The
+    // watcher callback runs through the same mutex and will consume this
+    // marker to suppress its echo.
+    this.pendingWrites.set(relative, contentHash);
+    if (this.pendingWrites.size > MAX_PENDING_WRITES) this.pendingWrites.delete(this.pendingWrites.keys().next().value!);
+    return { path: relative, mtime: new Date(stats.mtimeMs).toISOString(), content_hash: contentHash, index };
   }
 
   private nextNotePath(slug: string): string {
@@ -595,10 +699,19 @@ export class VaultRuntime {
     return this.indexer.store.searchNotes(normalized, clamp(limit, 20, MAX_SEARCH_LIMIT));
   }
 
-  listNotes(prefix?: string, tag?: string, limit?: number): { notes: NoteRecord[]; truncated: boolean } {
+  listNotes(prefix?: string, tag?: string, limit?: number, cursor?: string): { notes: NoteRecord[]; truncated: boolean; next_cursor?: string } {
     const limitValue = clamp(limit, 20, MAX_LIST_LIMIT);
-    const result = this.indexer.store.indexedNotes({ prefix, tag, limit: limitValue });
-    return { notes: result.notes.map((row) => this.noteRow(row.id)), truncated: result.truncated };
+    const result = this.indexer.store.indexedNotes({ prefix, tag, limit: limitValue, cursor: decodeNoteCursor(cursor) });
+    return { notes: result.notes.map((row) => this.noteRow(row.id)), truncated: result.truncated, ...(result.nextCursor ? { next_cursor: encodeNoteCursor(result.nextCursor) } : {}) };
+  }
+
+  suggestNoteLinks(query = "", limit?: number): { matches: NoteLinkSuggestion[]; truncated: boolean } {
+    const limitValue = clamp(limit, 20, MAX_LIST_LIMIT);
+    const result = this.indexer.store.noteSuggestions(query, limitValue);
+    return {
+      matches: result.notes.map((note) => ({ id: note.id, path: note.path, title: note.title, aliases: note.aliases })),
+      truncated: result.truncated,
+    };
   }
 
   queryTable(selector: NoteSelector, sectionId?: string, contains?: Record<string, string>, limit?: number): { note: NoteRecord; headers: string[]; rows: string[][]; section_id?: string; truncated: boolean } {
@@ -615,11 +728,15 @@ export class VaultRuntime {
   }
 
   projectMap(selector = "project:root", depth?: number, limit?: number): GraphQueryResult {
-    return this.queryGraphInternal(selector, "neighbors", Math.max(1, Math.min(depth ?? 1, 3)), clamp(limit, 50, MAX_GRAPH_LIMIT));
+    const graph = this.queryGraphInternal(selector, "neighbors", Math.max(1, Math.min(depth ?? 1, 3)), clamp(limit, 50, MAX_GRAPH_LIMIT));
+    const bounded = trimPayload(graph, MAX_GRAPH_RESPONSE_BYTES);
+    return { ...bounded.value, truncated: graph.truncated || bounded.truncated };
   }
 
   graphQuery(selector: string, direction: GraphDirection, depth?: number, limit?: number): GraphQueryResult {
-    return this.queryGraphInternal(selector, direction, Math.max(1, Math.min(depth ?? 1, 4)), clamp(limit, 50, MAX_GRAPH_LIMIT));
+    const graph = this.queryGraphInternal(selector, direction, Math.max(1, Math.min(depth ?? 1, 4)), clamp(limit, 50, MAX_GRAPH_LIMIT));
+    const bounded = trimPayload(graph, MAX_GRAPH_RESPONSE_BYTES);
+    return { ...bounded.value, truncated: graph.truncated || bounded.truncated };
   }
 
   getContext(selector: string, taskHint?: string, limit?: number): Record<string, unknown> {
@@ -671,6 +788,7 @@ export class VaultRuntime {
       }
       const index = this.indexer.incrementalRebuild([resolve(this.vaultRoot, note.path)]);
       const stats = statSync(resolve(this.vaultRoot, note.path));
+      this.publishChanges([{ type: "update", path: resolve(this.vaultRoot, note.path), scopes: ["content", "catalog", "tree", "graph"] }]);
       return { path: note.path, revision, mtime: new Date(stats.mtimeMs).toISOString(), index };
     });
   }
@@ -688,6 +806,13 @@ export class VaultRuntime {
       phase: 3,
       index: this.indexer.store.counts(),
       workspace: { active: Boolean(this.workspace), phase: this.workspacePhase, error: this.workspaceError },
+      watchers: {
+        vault: this.watcher?.mode ?? "starting",
+        workspace: [...this.repoWatchers.values()].reduce((counts, watcher) => {
+          counts[watcher.mode] += 1;
+          return counts;
+        }, { native: 0, polling: 0 }),
+      },
     };
   }
 

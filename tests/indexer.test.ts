@@ -18,6 +18,27 @@ function git(vault: string, ...args: string[]): string {
   return result.stdout;
 }
 
+function normalizedProjection(indexer: VaultIndexer): Record<string, unknown[]> {
+  const rows = (sql: string): unknown[] => indexer.store.db.query(sql).all();
+  const graphEdges = rows("SELECT from_id, to_id, kind, metadata_json FROM graph_edges ORDER BY from_id, to_id, kind, metadata_json").map((row) => {
+    const value = row as { metadata_json: string };
+    const metadata = JSON.parse(value.metadata_json) as Record<string, unknown>;
+    delete metadata.rowId;
+    return { ...value, metadata_json: JSON.stringify(metadata) };
+  });
+  return {
+    notes: rows("SELECT note_id, path, title, type, created_at, updated_at FROM notes ORDER BY note_id"),
+    aliases: rows("SELECT note_id, alias FROM note_aliases ORDER BY note_id, alias"),
+    tags: rows("SELECT note_id, tag FROM note_tags ORDER BY note_id, tag"),
+    sections: rows("SELECT note_id, section_id, level, heading, start_line, end_line, revision FROM sections ORDER BY note_id, start_line"),
+    links: rows("SELECT source_note_id, target_title, target_note_id, target_section, display, line, column_number, status FROM links ORDER BY source_note_id, line"),
+    tableRows: rows("SELECT note_id, section_id, row_index, headers_json, values_json FROM table_rows ORDER BY note_id, row_index"),
+    graphNodes: rows("SELECT node_id, kind, path, name, metadata_json FROM graph_nodes ORDER BY node_id"),
+    graphEdges,
+    diagnostics: rows("SELECT path, severity, code, message, line, column_number FROM diagnostics ORDER BY path, code, line, message"),
+  };
+}
+
 describe("Phase 1 indexer", () => {
   test("builds notes, tables, FTS, and the project graph", () => {
     const vault = tempVault();
@@ -27,6 +48,9 @@ describe("Phase 1 indexer", () => {
     const indexer = new VaultIndexer(vault);
     const report = indexer.fullRebuild();
     expect(report.noteCount).toBe(2);
+    expect(report.work.scanNotes).toBe(2);
+    expect(report.work.projectionResets).toBe(1);
+    expect(report.work.projectionWrites).toBeGreaterThanOrEqual(2);
     expect(report.tableRowCount).toBe(0);
     expect(report.graphNodeCount).toBeGreaterThanOrEqual(8);
     expect(report.graphEdgeCount).toBeGreaterThanOrEqual(8);
@@ -51,6 +75,8 @@ describe("Phase 1 indexer", () => {
     writeFileSync(notePath, `${original}\nNow see [[Project Map]].\n`);
     const update = indexer.incrementalRebuild([notePath]);
     expect(update.mode).toBe("incremental");
+    expect(update.work.changedFilesRead).toBe(1);
+    expect(update.work.projectionWrites).toBe(1);
     expect((indexer.store.db.query("SELECT COUNT(*) as count FROM links WHERE target_title = 'Project Map' AND status = 'resolved'").get() as { count: number }).count).toBe(1);
     expect((indexer.store.db.query("SELECT COUNT(*) as count FROM notes_fts WHERE notes_fts MATCH 'diagnostics'").get() as { count: number }).count).toBe(1);
 
@@ -59,6 +85,68 @@ describe("Phase 1 indexer", () => {
     expect(indexer.store.counts().noteCount).toBe(1);
     expect((indexer.store.db.query("SELECT COUNT(*) as count FROM links WHERE target_title = 'Engine Notes' AND status = 'unresolved'").get() as { count: number }).count).toBe(1);
     expect((indexer.store.db.query("SELECT COUNT(*) as count FROM notes_fts WHERE notes_fts MATCH 'diagnostics'").get() as { count: number }).count).toBe(0);
+    indexer.close();
+  });
+
+  test("skips duplicate watcher bytes without reparsing or mutating the projection", () => {
+    const vault = tempVault();
+    const notePath = join(vault, "notes", "engine.md");
+    const indexer = new VaultIndexer(vault);
+    indexer.fullRebuild();
+
+    const report = indexer.incrementalRebuild([notePath]);
+    expect(report.work.changedFilesRead).toBe(1);
+    expect(report.work.scanFiles).toBe(0);
+    expect(report.work.scanNotes).toBe(0);
+    expect(report.work.projectionWrites).toBe(0);
+    expect(report.work.projectionDeletes).toBe(0);
+    expect(report.work.graphRebuilds).toBe(0);
+    expect(report.work.linkResolutionRuns).toBe(0);
+    expect(report.work.wikilinkEdgeRefreshes).toBe(0);
+    indexer.close();
+  });
+
+  test("validates a warm projection and falls back on source or generation drift", () => {
+    const vault = tempVault();
+    const notePath = join(vault, "notes", "engine.md");
+    const indexer = new VaultIndexer(vault);
+    indexer.fullRebuild();
+    expect(indexer.warmRead()).toMatchObject({ valid: true, reason: "validated" });
+    writeFileSync(notePath, readFileSync(notePath, "utf8") + "\nWarm read invalidation.\n");
+    expect(indexer.warmRead().valid).toBe(false);
+    indexer.fullRebuild();
+    indexer.store.setState("projection_generation_status", "building");
+    expect(indexer.warmRead()).toMatchObject({ valid: false, reason: "generation-incomplete" });
+    indexer.store.setState("projection_generation_status", "complete");
+    indexer.store.setState("projection_version", "stale");
+    expect(indexer.warmRead()).toMatchObject({ valid: false, reason: "projection-version" });
+    indexer.close();
+  });
+
+  test("reuses a validated projection across indexer restarts", () => {
+    const vault = tempVault();
+    const first = new VaultIndexer(vault);
+    const rebuilt = first.fullRebuild();
+    expect(rebuilt.work.projectionResets).toBe(1);
+    first.close();
+    const restarted = new VaultIndexer(vault);
+    expect(restarted.warmRead()).toMatchObject({ valid: true, reason: "validated" });
+    expect(restarted.store.counts().noteCount).toBe(2);
+    restarted.close();
+  });
+
+  test("keeps the path-local delta projection equivalent to a full rebuild", () => {
+    const vault = tempVault();
+    const notePath = join(vault, "notes", "engine.md");
+    const indexer = new VaultIndexer(vault);
+    indexer.fullRebuild();
+    writeFileSync(notePath, readFileSync(notePath, "utf8") + "\nA dependency-local body delta. [[Project Map]] [[Missing Delta Target]]\n");
+    const delta = indexer.incrementalRebuild([notePath]);
+    expect(delta.work.scanFiles).toBe(0);
+    expect(delta.work.graphRebuilds).toBe(0);
+    const incrementalProjection = normalizedProjection(indexer);
+    indexer.fullRebuild();
+    expect(normalizedProjection(indexer)).toEqual(incrementalProjection);
     indexer.close();
   });
 
@@ -172,7 +260,7 @@ describe("watcher", () => {
         firstCallbackStarted();
         await new Promise((resolve) => setTimeout(resolve, 800));
         activeCallbacks -= 1;
-      }, { pollIntervalMs: 25 });
+      }, { pollIntervalMs: 25, forcePolling: true });
 
       writeFileSync(watchedPath, `${readFileSync(watchedPath, "utf8")}\nfirst change\n`);
       await firstCallback;
@@ -184,6 +272,34 @@ describe("watcher", () => {
 
       await new Promise((resolve) => setTimeout(resolve, 900));
       expect(maximumActiveCallbacks).toBe(1);
+    } finally {
+      await handle?.stop();
+      if (previousPackagedMode === undefined) delete process.env.CORTEX_PACKAGED;
+      else process.env.CORTEX_PACKAGED = previousPackagedMode;
+    }
+  });
+
+  test("uses native packaged notifications when available and keeps polling as fallback", async () => {
+    const vault = tempVault();
+    const previousPackagedMode = process.env.CORTEX_PACKAGED;
+    process.env.CORTEX_PACKAGED = "1";
+    let handle: Awaited<ReturnType<typeof startWatcher>> | undefined;
+    try {
+      const eventPromise = new Promise<string>((resolve) => {
+        void startWatcher(vault, async (events) => {
+          const watched = events.find((event) => event.path.endsWith("native-watch.md"));
+          if (watched) resolve(watched.path);
+        }).then((value) => {
+          handle = value;
+          expect(value.mode).toBe("native");
+          writeFileSync(join(vault, "native-watch.md"), readFileSync(join(vault, "project-map.md"), "utf8"));
+        });
+      });
+      const eventPath = await Promise.race([
+        eventPromise,
+        new Promise<string>((_, reject) => setTimeout(() => reject(new Error("packaged watcher event timeout")), 4_000)),
+      ]);
+      expect(eventPath.endsWith("native-watch.md")).toBe(true);
     } finally {
       await handle?.stop();
       if (previousPackagedMode === undefined) delete process.env.CORTEX_PACKAGED;

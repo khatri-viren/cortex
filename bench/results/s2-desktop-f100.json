@@ -1,0 +1,1437 @@
+{
+  "schema": "cortex.desktop-baseline.v1",
+  "environment": {
+    "capturedAt": "2026-09-05T12:40:24.917Z",
+    "sourceRevision": "5f6f426633bad9e96c79b9548e6038581fc73fff",
+    "branch": "feat/desktop-performance-improvements",
+    "workingTreeDirty": true,
+    "platform": "darwin",
+    "osRelease": "25.6.0",
+    "architecture": "arm64",
+    "cpuModel": "Apple M1",
+    "cpuCount": 8,
+    "totalMemoryBytes": 17179869184,
+    "homeDirectoryRecorded": true,
+    "bunVersion": "1.3.6",
+    "nodeVersion": "v24.3.0",
+    "cwd": "/Users/khatri_viren/Developer/Projects/cortex"
+  },
+  "protocol": {
+    "launchRepetitions": 2,
+    "operationRepetitions": 20,
+    "fixtureIds": [
+      "F-100"
+    ],
+    "packagedBundle": null,
+    "nativeWindowMeasurement": "captured by companion scripts/native-desktop-baseline.ts; this protocol runner remains API/sidecar focused",
+    "noteContentsLogged": false
+  },
+  "results": [
+    {
+      "id": "F-100",
+      "notes": 100,
+      "repositoryFiles": 0,
+      "index": {
+        "coldCliFullRebuild": {
+          "timing": {
+            "samples": 2,
+            "medianMs": 411.99,
+            "p95Ms": 422.3,
+            "p99Ms": 422.3,
+            "minMs": 411.99,
+            "maxMs": 422.3
+          },
+          "rssBeforeBytes": 77201408,
+          "rssAfterBytes": 77774848,
+          "maxRssBytes": 77774848,
+          "requests": 2,
+          "reports": [
+            {
+              "mode": "full",
+              "changedPathCount": 102,
+              "changedPathSample": [
+                "/var/folders/1d/2h9dtxjx0ss6wc6js698tq8c0000gn/T/cortex-desktop-baseline-f-100-36e2e588-639e-4eb9-a91e-41c43a2852fd/notes/benchmark-00000.md",
+                "/var/folders/1d/2h9dtxjx0ss6wc6js698tq8c0000gn/T/cortex-desktop-baseline-f-100-36e2e588-639e-4eb9-a91e-41c43a2852fd/notes/benchmark-00001.md",
+                "/var/folders/1d/2h9dtxjx0ss6wc6js698tq8c0000gn/T/cortex-desktop-baseline-f-100-36e2e588-639e-4eb9-a91e-41c43a2852fd/notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 102,
+                "changedFilesRead": 103,
+                "projectionWrites": 103,
+                "projectionDeletes": 0,
+                "projectionResets": 1,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "full",
+              "changedPathCount": 102,
+              "changedPathSample": [
+                "/var/folders/1d/2h9dtxjx0ss6wc6js698tq8c0000gn/T/cortex-desktop-baseline-f-100-36e2e588-639e-4eb9-a91e-41c43a2852fd/notes/benchmark-00000.md",
+                "/var/folders/1d/2h9dtxjx0ss6wc6js698tq8c0000gn/T/cortex-desktop-baseline-f-100-36e2e588-639e-4eb9-a91e-41c43a2852fd/notes/benchmark-00001.md",
+                "/var/folders/1d/2h9dtxjx0ss6wc6js698tq8c0000gn/T/cortex-desktop-baseline-f-100-36e2e588-639e-4eb9-a91e-41c43a2852fd/notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 102,
+                "changedFilesRead": 103,
+                "projectionWrites": 103,
+                "projectionDeletes": 0,
+                "projectionResets": 1,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            }
+          ]
+        },
+        "warmFullRebuild": {
+          "timing": {
+            "samples": 3,
+            "medianMs": 42.68,
+            "p95Ms": 80.64,
+            "p99Ms": 80.64,
+            "minMs": 39.18,
+            "maxMs": 80.64
+          },
+          "rssBeforeBytes": 78249984,
+          "rssAfterBytes": 150388736,
+          "maxRssBytes": 150388736,
+          "requests": 3,
+          "reports": [
+            {
+              "mode": "full",
+              "changedPathCount": 102,
+              "changedPathSample": [
+                "/var/folders/1d/2h9dtxjx0ss6wc6js698tq8c0000gn/T/cortex-desktop-baseline-f-100-36e2e588-639e-4eb9-a91e-41c43a2852fd/notes/benchmark-00000.md",
+                "/var/folders/1d/2h9dtxjx0ss6wc6js698tq8c0000gn/T/cortex-desktop-baseline-f-100-36e2e588-639e-4eb9-a91e-41c43a2852fd/notes/benchmark-00001.md",
+                "/var/folders/1d/2h9dtxjx0ss6wc6js698tq8c0000gn/T/cortex-desktop-baseline-f-100-36e2e588-639e-4eb9-a91e-41c43a2852fd/notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 102,
+                "changedFilesRead": 103,
+                "projectionWrites": 103,
+                "projectionDeletes": 0,
+                "projectionResets": 1,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "full",
+              "changedPathCount": 102,
+              "changedPathSample": [
+                "/var/folders/1d/2h9dtxjx0ss6wc6js698tq8c0000gn/T/cortex-desktop-baseline-f-100-36e2e588-639e-4eb9-a91e-41c43a2852fd/notes/benchmark-00000.md",
+                "/var/folders/1d/2h9dtxjx0ss6wc6js698tq8c0000gn/T/cortex-desktop-baseline-f-100-36e2e588-639e-4eb9-a91e-41c43a2852fd/notes/benchmark-00001.md",
+                "/var/folders/1d/2h9dtxjx0ss6wc6js698tq8c0000gn/T/cortex-desktop-baseline-f-100-36e2e588-639e-4eb9-a91e-41c43a2852fd/notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 102,
+                "changedFilesRead": 103,
+                "projectionWrites": 103,
+                "projectionDeletes": 0,
+                "projectionResets": 1,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "full",
+              "changedPathCount": 102,
+              "changedPathSample": [
+                "/var/folders/1d/2h9dtxjx0ss6wc6js698tq8c0000gn/T/cortex-desktop-baseline-f-100-36e2e588-639e-4eb9-a91e-41c43a2852fd/notes/benchmark-00000.md",
+                "/var/folders/1d/2h9dtxjx0ss6wc6js698tq8c0000gn/T/cortex-desktop-baseline-f-100-36e2e588-639e-4eb9-a91e-41c43a2852fd/notes/benchmark-00001.md",
+                "/var/folders/1d/2h9dtxjx0ss6wc6js698tq8c0000gn/T/cortex-desktop-baseline-f-100-36e2e588-639e-4eb9-a91e-41c43a2852fd/notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 102,
+                "changedFilesRead": 103,
+                "projectionWrites": 103,
+                "projectionDeletes": 0,
+                "projectionResets": 1,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            }
+          ]
+        },
+        "noOpTenPathBatch": {
+          "timing": {
+            "samples": 20,
+            "medianMs": 0.42,
+            "p95Ms": 0.82,
+            "p99Ms": 0.87,
+            "minMs": 0.41,
+            "maxMs": 0.87
+          },
+          "rssBeforeBytes": 150388736,
+          "rssAfterBytes": 152649728,
+          "maxRssBytes": 152649728,
+          "requests": 20,
+          "reports": [
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 0,
+                "scanNotes": 0,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 0,
+                "projectionDeletes": 0,
+                "projectionResets": 0,
+                "graphRebuilds": 0,
+                "linkResolutionRuns": 0,
+                "wikilinkEdgeRefreshes": 0
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 0,
+                "scanNotes": 0,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 0,
+                "projectionDeletes": 0,
+                "projectionResets": 0,
+                "graphRebuilds": 0,
+                "linkResolutionRuns": 0,
+                "wikilinkEdgeRefreshes": 0
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 0,
+                "scanNotes": 0,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 0,
+                "projectionDeletes": 0,
+                "projectionResets": 0,
+                "graphRebuilds": 0,
+                "linkResolutionRuns": 0,
+                "wikilinkEdgeRefreshes": 0
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 0,
+                "scanNotes": 0,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 0,
+                "projectionDeletes": 0,
+                "projectionResets": 0,
+                "graphRebuilds": 0,
+                "linkResolutionRuns": 0,
+                "wikilinkEdgeRefreshes": 0
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 0,
+                "scanNotes": 0,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 0,
+                "projectionDeletes": 0,
+                "projectionResets": 0,
+                "graphRebuilds": 0,
+                "linkResolutionRuns": 0,
+                "wikilinkEdgeRefreshes": 0
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 0,
+                "scanNotes": 0,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 0,
+                "projectionDeletes": 0,
+                "projectionResets": 0,
+                "graphRebuilds": 0,
+                "linkResolutionRuns": 0,
+                "wikilinkEdgeRefreshes": 0
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 0,
+                "scanNotes": 0,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 0,
+                "projectionDeletes": 0,
+                "projectionResets": 0,
+                "graphRebuilds": 0,
+                "linkResolutionRuns": 0,
+                "wikilinkEdgeRefreshes": 0
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 0,
+                "scanNotes": 0,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 0,
+                "projectionDeletes": 0,
+                "projectionResets": 0,
+                "graphRebuilds": 0,
+                "linkResolutionRuns": 0,
+                "wikilinkEdgeRefreshes": 0
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 0,
+                "scanNotes": 0,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 0,
+                "projectionDeletes": 0,
+                "projectionResets": 0,
+                "graphRebuilds": 0,
+                "linkResolutionRuns": 0,
+                "wikilinkEdgeRefreshes": 0
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 0,
+                "scanNotes": 0,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 0,
+                "projectionDeletes": 0,
+                "projectionResets": 0,
+                "graphRebuilds": 0,
+                "linkResolutionRuns": 0,
+                "wikilinkEdgeRefreshes": 0
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 0,
+                "scanNotes": 0,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 0,
+                "projectionDeletes": 0,
+                "projectionResets": 0,
+                "graphRebuilds": 0,
+                "linkResolutionRuns": 0,
+                "wikilinkEdgeRefreshes": 0
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 0,
+                "scanNotes": 0,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 0,
+                "projectionDeletes": 0,
+                "projectionResets": 0,
+                "graphRebuilds": 0,
+                "linkResolutionRuns": 0,
+                "wikilinkEdgeRefreshes": 0
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 0,
+                "scanNotes": 0,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 0,
+                "projectionDeletes": 0,
+                "projectionResets": 0,
+                "graphRebuilds": 0,
+                "linkResolutionRuns": 0,
+                "wikilinkEdgeRefreshes": 0
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 0,
+                "scanNotes": 0,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 0,
+                "projectionDeletes": 0,
+                "projectionResets": 0,
+                "graphRebuilds": 0,
+                "linkResolutionRuns": 0,
+                "wikilinkEdgeRefreshes": 0
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 0,
+                "scanNotes": 0,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 0,
+                "projectionDeletes": 0,
+                "projectionResets": 0,
+                "graphRebuilds": 0,
+                "linkResolutionRuns": 0,
+                "wikilinkEdgeRefreshes": 0
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 0,
+                "scanNotes": 0,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 0,
+                "projectionDeletes": 0,
+                "projectionResets": 0,
+                "graphRebuilds": 0,
+                "linkResolutionRuns": 0,
+                "wikilinkEdgeRefreshes": 0
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 0,
+                "scanNotes": 0,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 0,
+                "projectionDeletes": 0,
+                "projectionResets": 0,
+                "graphRebuilds": 0,
+                "linkResolutionRuns": 0,
+                "wikilinkEdgeRefreshes": 0
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 0,
+                "scanNotes": 0,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 0,
+                "projectionDeletes": 0,
+                "projectionResets": 0,
+                "graphRebuilds": 0,
+                "linkResolutionRuns": 0,
+                "wikilinkEdgeRefreshes": 0
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 0,
+                "scanNotes": 0,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 0,
+                "projectionDeletes": 0,
+                "projectionResets": 0,
+                "graphRebuilds": 0,
+                "linkResolutionRuns": 0,
+                "wikilinkEdgeRefreshes": 0
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 0,
+                "scanNotes": 0,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 0,
+                "projectionDeletes": 0,
+                "projectionResets": 0,
+                "graphRebuilds": 0,
+                "linkResolutionRuns": 0,
+                "wikilinkEdgeRefreshes": 0
+              }
+            }
+          ]
+        },
+        "tenNoteBodyEditBatch": {
+          "timing": {
+            "samples": 20,
+            "medianMs": 35.37,
+            "p95Ms": 37.72,
+            "p99Ms": 44.76,
+            "minMs": 32.31,
+            "maxMs": 44.76
+          },
+          "rssBeforeBytes": 152649728,
+          "rssAfterBytes": 183451648,
+          "maxRssBytes": 183451648,
+          "requests": 20,
+          "reports": [
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 10,
+                "projectionDeletes": 10,
+                "projectionResets": 0,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 10,
+                "projectionDeletes": 10,
+                "projectionResets": 0,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 10,
+                "projectionDeletes": 10,
+                "projectionResets": 0,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 10,
+                "projectionDeletes": 10,
+                "projectionResets": 0,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 10,
+                "projectionDeletes": 10,
+                "projectionResets": 0,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 10,
+                "projectionDeletes": 10,
+                "projectionResets": 0,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 10,
+                "projectionDeletes": 10,
+                "projectionResets": 0,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 10,
+                "projectionDeletes": 10,
+                "projectionResets": 0,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 10,
+                "projectionDeletes": 10,
+                "projectionResets": 0,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 10,
+                "projectionDeletes": 10,
+                "projectionResets": 0,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 10,
+                "projectionDeletes": 10,
+                "projectionResets": 0,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 10,
+                "projectionDeletes": 10,
+                "projectionResets": 0,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 10,
+                "projectionDeletes": 10,
+                "projectionResets": 0,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 10,
+                "projectionDeletes": 10,
+                "projectionResets": 0,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 10,
+                "projectionDeletes": 10,
+                "projectionResets": 0,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 10,
+                "projectionDeletes": 10,
+                "projectionResets": 0,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 10,
+                "projectionDeletes": 10,
+                "projectionResets": 0,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 10,
+                "projectionDeletes": 10,
+                "projectionResets": 0,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 10,
+                "projectionDeletes": 10,
+                "projectionResets": 0,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            },
+            {
+              "mode": "incremental",
+              "changedPathCount": 10,
+              "changedPathSample": [
+                "notes/benchmark-00000.md",
+                "notes/benchmark-00001.md",
+                "notes/benchmark-00002.md"
+              ],
+              "noteCount": 102,
+              "sectionCount": 202,
+              "linkCount": 101,
+              "graphNodeCount": 105,
+              "graphEdgeCount": 205,
+              "diagnosticCount": 200,
+              "errorCount": 0,
+              "warningCount": 200,
+              "work": {
+                "scanFiles": 102,
+                "scanNotes": 102,
+                "changedPaths": 10,
+                "changedFilesRead": 10,
+                "projectionWrites": 10,
+                "projectionDeletes": 10,
+                "projectionResets": 0,
+                "graphRebuilds": 1,
+                "linkResolutionRuns": 1,
+                "wikilinkEdgeRefreshes": 1
+              }
+            }
+          ]
+        },
+        "sourceOpen": {
+          "timing": {
+            "samples": 20,
+            "medianMs": 0.03,
+            "p95Ms": 0.05,
+            "p99Ms": 0.21,
+            "minMs": 0.03,
+            "maxMs": 0.21
+          },
+          "rssBeforeBytes": 183451648,
+          "rssAfterBytes": 183500800,
+          "maxRssBytes": 183500800,
+          "requests": 20,
+          "reports": []
+        },
+        "search": {
+          "timing": {
+            "samples": 20,
+            "medianMs": 0.12,
+            "p95Ms": 0.35,
+            "p99Ms": 0.66,
+            "minMs": 0.11,
+            "maxMs": 0.66
+          },
+          "rssBeforeBytes": 183500800,
+          "rssAfterBytes": 183566336,
+          "maxRssBytes": 183566336,
+          "requests": 20,
+          "reports": []
+        }
+      }
+    }
+  ]
+}

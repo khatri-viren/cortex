@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { reconcileMarkdown } from "../core/reconcile.js";
@@ -5,7 +6,7 @@ import { ServiceError } from "../core/errors.js";
 import { VaultRuntime } from "../core/runtime.js";
 import { exportFilename } from "../core/pdf-export.js";
 import { logger } from "../logger.js";
-import type { VaultChangeEvent } from "../core/runtime-types.js";
+import type { VaultChangeSet } from "../core/runtime-types.js";
 import type { ApiNoteUpdateInput } from "./contracts.js";
 
 const JSON_HEADERS = {
@@ -15,13 +16,17 @@ const JSON_HEADERS = {
 
 type JsonObject = Record<string, unknown>;
 
+function stableId(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
 function json(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), { status, headers: JSON_HEADERS });
 }
 
 function errorResponse(cause: unknown): Response {
   if (cause instanceof ServiceError) {
-    const status = cause.code === "NOT_FOUND" ? 404 : cause.code === "CONFLICT" || cause.code === "GIT_DIRTY" ? 409 : cause.code === "VAULT_INVALID" ? 422 : cause.code === "EXPORT_RENDERER_UNAVAILABLE" ? 503 : 400;
+    const status = cause.code === "NOT_FOUND" ? 404 : cause.code === "CONFLICT" || cause.code === "GIT_DIRTY" ? 409 : cause.code === "VAULT_INVALID" ? 422 : cause.code === "EXPORT_RENDERER_UNAVAILABLE" ? 503 : cause.code === "EXPORT_TOO_LARGE" ? 413 : cause.code === "EXPORT_QUEUE_FULL" ? 429 : cause.code === "EXPORT_DEADLINE_EXCEEDED" ? 408 : cause.code === "EXPORT_CANCELLED" ? 499 : 400;
     return json({ error: { code: cause.code, message: cause.message, details: cause.details } }, status);
   }
   return json({ error: { code: "INTERNAL_ERROR", message: cause instanceof Error ? cause.message : String(cause) } }, 500);
@@ -69,21 +74,46 @@ function contentType(path: string): string {
   return "application/octet-stream";
 }
 
-function eventStream(runtime: VaultRuntime): Response {
+function eventStream(runtime: VaultRuntime, since?: number): Response {
   const encoder = new TextEncoder();
   let unsubscribe: () => void = () => undefined;
+  let controllerRef: ReadableStreamDefaultController<Uint8Array> | undefined;
+  let closed = false;
+  const queue: Uint8Array[] = [];
+  const maxQueue = 128;
+  const encode = (changeSet: VaultChangeSet): Uint8Array => encoder.encode("event: vault.change\ndata: " + JSON.stringify(changeSet) + "\n\n");
+  const flush = () => {
+    if (!controllerRef) return;
+    while (queue.length > 0 && (controllerRef.desiredSize === null || controllerRef.desiredSize > 0)) controllerRef.enqueue(queue.shift()!);
+  };
+  const enqueue = (changeSet: VaultChangeSet) => {
+    if (closed) return;
+    if (queue.length >= maxQueue) {
+      queue.length = 0;
+      queue.push(encode({ sequence: changeSet.sequence, generation: changeSet.generation, events: [], resync_required: true }));
+    } else {
+      queue.push(encode(changeSet));
+    }
+    flush();
+  };
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
+      controllerRef = controller;
       controller.enqueue(encoder.encode("retry: 1000\n\n"));
-      unsubscribe = runtime.subscribe((events: VaultChangeEvent[]) => {
-        try {
-          controller.enqueue(encoder.encode("event: vault.change\ndata: " + JSON.stringify({ events }) + "\n\n"));
-        } catch {
-          unsubscribe();
-        }
-      });
+      if (since !== undefined) {
+        const replay = runtime.changesSince(since);
+        if (replay.resyncRequired) enqueue({ sequence: replay.sequence, generation: replay.generation, events: [], resync_required: true });
+        else for (const changeSet of replay.changes) enqueue(changeSet);
+      }
+      unsubscribe = runtime.subscribe((changeSet: VaultChangeSet) => enqueue(changeSet));
+      flush();
+    },
+    pull() {
+      flush();
     },
     cancel() {
+      closed = true;
+      queue.length = 0;
       unsubscribe();
     },
   });
@@ -106,10 +136,12 @@ export function createApiServer(runtime: VaultRuntime, port: number, uiDist?: st
       const url = new URL(request.url);
       try {
         if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...JSON_HEADERS, "access-control-allow-methods": "GET,POST,PATCH,PUT,OPTIONS", "access-control-allow-headers": "content-type" } });
-        if (url.pathname === "/events" && request.method === "GET") return eventStream(runtime);
+        if (url.pathname === "/events" && request.method === "GET") return eventStream(runtime, numberParam(url, "since"));
+        if (url.pathname === "/api/changes" && request.method === "GET") return json(runtime.changesSince(numberParam(url, "since") ?? 0));
         if (url.pathname === "/api/health" && request.method === "GET") return json(runtime.health());
         if (url.pathname === "/api/index/rebuild" && request.method === "POST") return json(await runtime.rebuildIndex());
-        if (url.pathname === "/api/notes" && request.method === "GET") return json(runtime.listNotes(url.searchParams.get("prefix") ?? undefined, url.searchParams.get("tag") ?? undefined, numberParam(url, "limit")));
+        if (url.pathname === "/api/notes" && request.method === "GET") return json(runtime.listNotes(url.searchParams.get("prefix") ?? undefined, url.searchParams.get("tag") ?? undefined, numberParam(url, "limit"), url.searchParams.get("cursor") ?? undefined));
+        if (url.pathname === "/api/notes/suggest" && request.method === "GET") return json(runtime.suggestNoteLinks(url.searchParams.get("query") ?? "", numberParam(url, "limit")));
         if (url.pathname === "/api/vault/tree" && request.method === "GET") return json(runtime.vaultTree());
         if (url.pathname === "/api/note" && request.method === "GET") {
           const selector = url.searchParams.get("selector");
@@ -117,18 +149,22 @@ export function createApiServer(runtime: VaultRuntime, port: number, uiDist?: st
           return json(url.searchParams.get("source") === "true" ? runtime.getSource(selector) : runtime.getNote(selector));
         }
         if (url.pathname === "/api/note/export/pdf" && request.method === "POST") {
+          const contentLength = Number(request.headers.get("content-length") ?? "0");
+          if (Number.isFinite(contentLength) && contentLength > 8 * 1024 * 1024 + 64 * 1024) throw new ServiceError("EXPORT_TOO_LARGE", "PDF export request is too large.");
           const input = await body(request);
           const note = requiredString(input, "note");
           const markdownBody = input.body === undefined ? undefined : typeof input.body === "string" ? input.body : (() => { throw new ServiceError("INVALID_INPUT", "Field 'body' must be a string."); })();
           const title = input.title === undefined ? undefined : typeof input.title === "string" ? input.title : (() => { throw new ServiceError("INVALID_INPUT", "Field 'title' must be a string."); })();
-          logger.info({ note, title, bodyLength: markdownBody?.length ?? null }, "[PDF-EXPORT] server:start");
+          logger.info({ noteHash: stableId(note), titleLength: title?.length ?? null, bodyLength: markdownBody?.length ?? null }, "[PDF-EXPORT] server:start");
           try {
-            const pdf = await runtime.exportPdf(note, markdownBody, title);
+            const started = performance.now();
+            const artifact = await runtime.exportPdfArtifact(note, markdownBody, title, { signal: request.signal });
             const filename = title?.trim() || runtime.getNote(note).note.title;
-            logger.info({ note, filename: exportFilename(filename), bytes: pdf.length }, "[PDF-EXPORT] server:complete");
-            return new Response(new Uint8Array(pdf), { headers: { "content-type": "application/pdf", "content-disposition": `attachment; filename="${exportFilename(filename)}"`, "cache-control": "no-store", "access-control-allow-origin": "http://127.0.0.1:5175" } });
+            artifact.timings.deliveryMs = performance.now() - started;
+            logger.info({ noteHash: stableId(note), renderer: artifact.renderer, bytes: artifact.pdf.length, ...artifact.timings }, "[PDF-EXPORT] server:complete");
+            return new Response(new Uint8Array(artifact.pdf), { headers: { "content-type": "application/pdf", "content-length": String(artifact.pdf.length), "x-cortex-pdf-sha256": artifact.checksum, "x-cortex-pdf-renderer": artifact.renderer, "content-disposition": `attachment; filename="${exportFilename(filename)}"`, "cache-control": "no-store", "access-control-allow-origin": "http://127.0.0.1:5175" } });
           } catch (cause) {
-            logger.error({ note, err: cause }, "[PDF-EXPORT] server:failed");
+            logger.error({ noteHash: stableId(note), errorCode: cause instanceof ServiceError ? cause.code : "INTERNAL_ERROR", cancelled: cause instanceof ServiceError && cause.code === "EXPORT_CANCELLED", err: cause }, "[PDF-EXPORT] server:failed");
             throw cause;
           }
         }

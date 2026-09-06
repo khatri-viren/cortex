@@ -13,6 +13,21 @@ export type IndexReport = {
   graphEdgeCount: number;
   diagnostics: Diagnostic[];
   durationMs: number;
+  work: IndexWorkMetrics;
+};
+
+/** Counters for explaining index latency without exposing source contents. */
+export type IndexWorkMetrics = {
+  scanFiles: number;
+  scanNotes: number;
+  changedPaths: number;
+  changedFilesRead: number;
+  projectionWrites: number;
+  projectionDeletes: number;
+  projectionResets: number;
+  graphRebuilds: number;
+  linkResolutionRuns: number;
+  wikilinkEdgeRefreshes: number;
 };
 
 export type IndexedMarkdown = {

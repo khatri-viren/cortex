@@ -269,29 +269,18 @@
   --atomic-editor-hl-type: oklch(from var(--primary) l c calc(h - 80));
 }
 
-/* Reading mode's scroller uses macOS/Chromium overlay scrollbars, which are
-   invisible except while actively scrolling — long notes then look "cut off"
-   with no visible affordance that more content exists below. Force a slim,
-   always-visible themed scrollbar instead. */
+/* Reading/live mode is part of the note page rather than a nested editor
+   viewport. The package defaults are intentionally height-bounded, so these
+   consumer overrides let CodeMirror grow to its document and leave vertical
+   scrolling to .note-document-scroll (metadata and body move together). */
+.atomic-editor-host .atomic-cm-editor,
+.atomic-editor-host .cm-editor,
 .atomic-editor-host .cm-scroller {
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
+  height: auto !important;
 }
-.atomic-editor-host .cm-scroller::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-.atomic-editor-host .cm-scroller::-webkit-scrollbar-track {
-  background: transparent;
-}
-.atomic-editor-host .cm-scroller::-webkit-scrollbar-thumb {
-  background-color: var(--border);
-  border-radius: 999px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-.atomic-editor-host .cm-scroller::-webkit-scrollbar-thumb:hover {
-  background-color: var(--muted-foreground);
+
+.atomic-editor-host .cm-scroller {
+  overflow: visible !important;
 }
 
 /* Notes use the same surface above and below the metadata/editor boundary.
@@ -305,7 +294,6 @@
 }
 
 .note-editor-section {
-  height: max(440px, calc(100dvh - 84px));
   min-height: 440px;
   background-color: var(--cortex-reading-surface);
 }

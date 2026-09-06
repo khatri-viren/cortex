@@ -154,6 +154,19 @@ function runWorkspaceRemoveRepository(options: CliOptions): void {
   print({ manifest: removeWorkspaceRepository(vaultRoot, repositoryId) });
 }
 
+function runWorkspaceRebuild(options: CliOptions): void {
+  const vaultRoot = vaultArgument(options);
+  const workspace = loadWorkspaceConfig(vaultRoot, options.workspace);
+  const indexer = new VaultIndexer(vaultRoot);
+  try {
+    const report = new WorkspaceIndexer(indexer.store, workspace).fullRebuild();
+    print(report);
+    if (report.diagnostics.some((item) => item.severity === "error")) process.exitCode = 1;
+  } finally {
+    indexer.close();
+  }
+}
+
 function runWorkspaceSetupClaude(options: CliOptions): void {
   const vaultRoot = requireGitVault(vaultArgument(options));
   const workspace = loadWorkspaceConfig(vaultRoot, options.workspace);
@@ -247,6 +260,9 @@ async function main(): Promise<void> {
       return;
     case "workspace:remove-repository":
       runWorkspaceRemoveRepository(options);
+      return;
+    case "workspace:rebuild":
+      runWorkspaceRebuild(options);
       return;
     case "workspace:setup-claude":
       runWorkspaceSetupClaude(options);

@@ -1,5 +1,6 @@
-import type { ApiContext, ApiDiff, ApiGraph, ApiHealth, ApiHistory, ApiIndexRefreshResult, ApiNoteMetadataPatch, ApiNoteSource, ApiRepoRestoreResult, ApiVaultCheck, ApiVaultTree, ApiWorkspaceStatus } from "../../src/api/contracts";
-import { getApiOrigin } from "./runtime";
+import type { ApiContext, ApiDiff, ApiGraph, ApiHealth, ApiHistory, ApiIndexRefreshResult, ApiNoteLinkSuggestion, ApiNoteMetadataPatch, ApiNoteSource, ApiRepoRestoreResult, ApiVaultCheck, ApiVaultTree, ApiWorkspaceStatus } from "../../src/api/contracts";
+export type NoteLinkSuggestion = ApiNoteLinkSuggestion;
+import { getRuntimeConnection } from "./runtime";
 
 export type NoteSummary = {
   id: string;
@@ -13,15 +14,14 @@ export type NoteSummary = {
   content_hash: string;
 };
 
-type ListNotesResponse = { notes: NoteSummary[]; truncated: boolean };
+export type ListNotesResponse = { notes: NoteSummary[]; truncated: boolean; next_cursor?: string };
 type SearchResponse = { hits: Array<{ note_id: string; title: string; path: string; snippet: string }>; truncated: boolean };
 type ProjectMapResponse = ApiGraph;
 type ReconcileResponse =
   | { status: "merged"; markdown: string; changedSections: string[]; remote_markdown: string; remote_hash: string }
   | { status: "conflict"; conflicts: string[]; remote_markdown: string; remote_hash: string };
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const origin = typeof window === "undefined" ? "" : getApiOrigin(window.location.search);
-  const response = await fetch(origin + path, { headers: { "content-type": "application/json" }, ...init });
+  const response = await getRuntimeConnection().request(path, { headers: { "content-type": "application/json" }, ...init });
   if (!response.ok) {
     const payload: unknown = await response.json().catch(() => ({}));
     const message = payload && typeof payload === "object" && "error" in payload
@@ -32,12 +32,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return await response.json() as T;
 }
 
-export function listNotes(prefix?: string, limit?: number): Promise<ListNotesResponse> {
+export function listNotes(prefix?: string, limit?: number, cursor?: string): Promise<ListNotesResponse> {
   const params = new URLSearchParams();
   if (prefix) params.set("prefix", prefix);
   if (limit) params.set("limit", String(limit));
+  if (cursor) params.set("cursor", cursor);
   const query = params.toString();
   return request<ListNotesResponse>("/api/notes" + (query ? "?" + query : ""));
+}
+
+export function suggestNoteLinks(query = "", limit = 20): Promise<{ matches: ApiNoteLinkSuggestion[]; truncated: boolean }> {
+  return request<{ matches: ApiNoteLinkSuggestion[]; truncated: boolean }>(`/api/notes/suggest?query=${encodeURIComponent(query)}&limit=${encodeURIComponent(String(limit))}`);
 }
 
 export function getVaultTree(): Promise<ApiVaultTree> {
@@ -48,7 +53,7 @@ export function searchNotes(query: string): Promise<SearchResponse> {
   return request<SearchResponse>("/api/search?query=" + encodeURIComponent(query) + "&limit=20");
 }
 
-export function createNote(input: { title: string; type?: "note" | "map" | "table"; path?: string }): Promise<{ path: string; id: string }> {
+export function createNote(input: { title: string; type?: "note" | "map" | "table"; aliases?: string[]; tags?: string[]; applies_to?: ApiNoteMetadataPatch["applies_to"]; body?: string; path?: string }): Promise<{ path: string; id: string }> {
   return request<{ path: string; id: string }>("/api/notes", {
     method: "POST",
     body: JSON.stringify(input),
@@ -134,12 +139,14 @@ export function updateNote(
   });
 }
 
-export async function exportNotePdf(note: string, body: string, title: string): Promise<{ blob: Blob; filename: string }> {
-  const origin = typeof window === "undefined" ? "" : getApiOrigin(window.location.search);
-  console.info("[PDF-EXPORT] request:start", { note, title, bodyLength: body.length, origin });
-  const response = await fetch(origin + "/api/note/export/pdf", {
+export async function exportNotePdf(note: string, body: string, title: string, signal?: AbortSignal): Promise<{ blob: Blob; filename: string; checksum?: string }> {
+  const connection = getRuntimeConnection();
+  const origin = connection.origin;
+  console.info("[PDF-EXPORT] request:start", { bodyLength: body.length, titleLength: title.length, origin });
+  const response = await connection.request("/api/note/export/pdf", {
     method: "POST",
     headers: { "content-type": "application/json" },
+    signal,
     body: JSON.stringify({ note, body, title }),
   });
   console.info("[PDF-EXPORT] request:response", { status: response.status, contentType: response.headers.get("content-type") });
@@ -154,8 +161,14 @@ export async function exportNotePdf(note: string, body: string, title: string): 
   const match = disposition.match(/filename="([^"]+)"/i);
   const blob = await response.blob();
   const filename = match?.[1] ?? "untitled-note.pdf";
-  console.info("[PDF-EXPORT] request:complete", { filename, bytes: blob.size, type: blob.type });
-  return { blob, filename };
+  const checksum = response.headers.get("x-cortex-pdf-sha256") ?? undefined;
+  if (checksum && typeof crypto !== "undefined" && crypto.subtle) {
+    const digest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+    const actual = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    if (actual !== checksum.toLowerCase()) throw new Error("PDF checksum verification failed.");
+  }
+  console.info("[PDF-EXPORT] request:complete", { bytes: blob.size, type: blob.type, checksumVerified: Boolean(checksum) });
+  return { blob, filename, checksum };
 }
 
 export function reconcile(note: string, baseMarkdown: string, localMarkdown: string): Promise<ReconcileResponse> {
@@ -165,20 +178,44 @@ export function reconcile(note: string, baseMarkdown: string, localMarkdown: str
   });
 }
 
-export function subscribeToChanges(onChange: (events: Array<{ type: string; path: string; repository?: string }>) => void): () => void {
-  const origin = typeof window === "undefined" ? "" : getApiOrigin(window.location.search);
-  const source = new EventSource(origin + "/events");
-  const handle = (event: MessageEvent<string>) => {
+export type ApiChangeSet = {
+  sequence: number;
+  generation: number;
+  events: Array<{ type: string; path: string; content_hash?: string; repository?: string; scopes?: string[] }>;
+  resync_required?: boolean;
+};
+
+export function subscribeToChanges(onChange: (changeSet: ApiChangeSet) => void): () => void {
+  let source: EventSource | undefined;
+  let stopped = false;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastSequence = 0;
+  const connect = () => {
+    if (stopped) return;
+    const suffix = lastSequence > 0 ? `?since=${lastSequence}` : "";
+    source = getRuntimeConnection().events("/events" + suffix);
+    source.addEventListener("vault.change", handle);
+    source.onerror = () => {
+      source?.close();
+      if (!stopped && !reconnectTimer) reconnectTimer = setTimeout(() => { reconnectTimer = undefined; connect(); }, 250);
+    };
+  };
+  const handle = (event: Event) => {
     try {
-      const payload = JSON.parse(event.data) as { events?: Array<{ type: string; path: string; repository?: string }> };
-      onChange(payload.events ?? []);
+      const payload = JSON.parse((event as MessageEvent<string>).data) as Partial<ApiChangeSet>;
+      if (!Array.isArray(payload.events) || typeof payload.sequence !== "number" || typeof payload.generation !== "number") return;
+      if (payload.sequence <= lastSequence) return;
+      lastSequence = payload.sequence;
+      onChange({ sequence: payload.sequence, generation: payload.generation, events: payload.events, resync_required: payload.resync_required });
     } catch {
       // A malformed event cannot safely update an open buffer.
     }
   };
-  source.addEventListener("vault.change", handle);
+  connect();
   return () => {
-    source.removeEventListener("vault.change", handle);
-    source.close();
+    stopped = true;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    source?.removeEventListener("vault.change", handle);
+    source?.close();
   };
 }

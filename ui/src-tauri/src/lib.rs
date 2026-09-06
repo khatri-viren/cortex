@@ -1,11 +1,12 @@
 mod preferences;
+mod session;
 mod sidecar;
 mod vault_registry;
 
 use serde::Serialize;
 use std::path::Path;
 use std::process::Child;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::menu::{MenuBuilder, MenuItem};
@@ -22,7 +23,7 @@ struct AppState {
     runtimes: Mutex<RuntimeRegistry>,
     preferences: Mutex<AppPreferences>,
     shutdown_started: AtomicBool,
-    open_generation: AtomicU64,
+    open_generation: Arc<AtomicU64>,
 }
 
 #[derive(Serialize)]
@@ -149,6 +150,16 @@ fn get_preferences(state: State<'_, AppState>) -> Result<AppPreferences, String>
         .lock()
         .map(|preferences| preferences.clone())
         .map_err(|_| "preferences lock poisoned".to_string())
+}
+
+#[tauri::command]
+fn load_session(app: AppHandle, vault_id: String) -> Result<Option<String>, String> {
+    session::load(&app, &vault_id)
+}
+
+#[tauri::command]
+fn save_session(app: AppHandle, vault_id: String, session_json: String) -> Result<(), String> {
+    session::save(&app, &vault_id, &session_json)
 }
 
 #[tauri::command]
@@ -294,6 +305,7 @@ async fn open_vault(
         return Err("Cortex is shutting down.".to_string());
     }
     let open_generation = state.open_generation.fetch_add(1, Ordering::AcqRel) + 1;
+    let generation_source = state.open_generation.clone();
 
     // Switching vaults: dispose whatever is currently running first so the
     // previous vault's watchers, DB handles, and in-memory graph state can
@@ -315,10 +327,11 @@ async fn open_vault(
         move || -> Result<(Child, u16, serde_json::Value), String> {
             let port = sidecar::find_free_port()?;
             let mut child = sidecar::spawn(&vault_path, port, resource_dir.as_deref())?;
-            match sidecar::wait_for_health(
+            match sidecar::wait_for_health_until(
                 &mut child,
                 port,
                 Duration::from_secs(sidecar::DEFAULT_STARTUP_TIMEOUT_SECS),
+                || generation_source.load(Ordering::Acquire) != open_generation,
             ) {
                 Ok(health) => Ok((child, port, health)),
                 Err(e) => {
@@ -422,7 +435,7 @@ pub fn run() {
                 runtimes: Mutex::new(RuntimeRegistry::default()),
                 preferences: Mutex::new(preferences.clone()),
                 shutdown_started: AtomicBool::new(false),
-                open_generation: AtomicU64::new(0),
+                open_generation: Arc::new(AtomicU64::new(0)),
             });
 
             if preferences.show_tray_icon {
@@ -466,6 +479,8 @@ pub fn run() {
             reveal_vault,
             open_vault,
             get_preferences,
+            load_session,
+            save_session,
             set_preferences,
             close_main_window,
             save_pdf,

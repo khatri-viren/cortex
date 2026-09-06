@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
 import {
   ArrowLeftIcon,
@@ -19,13 +19,14 @@ import {
 } from "lucide-react";
 import type { ApiContext, ApiGraphEdge, ApiGraphNode, ApiHistory, ApiNoteMetadataPatch, ApiNoteSource, ApiSection, ApiVaultCheck, ApiVaultTree, ApiVaultTreeNode, ApiWorkspaceStatus } from "../../src/api/contracts";
 import type { NoteFrontmatter } from "../../src/core/types";
-import { Editor } from "./Editor";
-import { GraphPane } from "./GraphPane";
+const Editor = lazy(() => import("./Editor").then((module) => ({ default: module.Editor })));
+const GraphPane = lazy(() => import("./GraphPane").then((module) => ({ default: module.GraphPane })));
 import { VaultPicker } from "./VaultPicker";
 import { NoteMetadata } from "./components/note-metadata";
 import { InspectorDrawer } from "./components/inspector-drawer";
 import { ThemeToggle } from "./components/theme-toggle";
 import { VaultTree } from "./components/vault-tree";
+import { useDocumentSession } from "./document-session";
 import { closeMainWindow, openRegisteredVault, invoke, type VaultEntry, type VaultRegistry } from "./vault-registry";
 import type { Mode } from "./types";
 import {
@@ -45,6 +46,7 @@ import {
   rebuildIndex,
   restoreNote,
   searchNotes,
+  suggestNoteLinks,
   subscribeToChanges,
   type NoteSummary,
   updateNote,
@@ -101,6 +103,11 @@ type SaveResult =
   | { ok: true }
   | { ok: false; message: string };
 
+type PendingExternalChange = {
+  path: string;
+  contentHash?: string;
+};
+
 function destinationFor(node: ApiGraphNode): ContextDestination | undefined {
   if (node.kind === "note" && node.path) return { kind: "note", path: node.path };
   const repository = node.metadata?.repository_id;
@@ -127,6 +134,7 @@ const DEFAULT_SESSION: VaultSession = {
 };
 
 const RECENTS_LIMIT = 8;
+const AUTOSAVE_DELAY_MS = 1_000;
 
 function routeFromHash(hash: string): Route {
   return hash.replace(/^#\/?/, "").startsWith("graph") ? "graph" : "notes";
@@ -222,9 +230,8 @@ const vaultKey = typeof window !== "undefined"
   : "default";
 const sessionStorageKey = "cortex.vaultSession." + vaultKey;
 
-function loadVaultSession(): VaultSession {
+function parseVaultSession(raw: string | null): VaultSession {
   try {
-    const raw = localStorage.getItem(sessionStorageKey);
     if (!raw) return DEFAULT_SESSION;
     const parsed = JSON.parse(raw) as Partial<VaultSession>;
     return {
@@ -235,6 +242,14 @@ function loadVaultSession(): VaultSession {
       panel: parsed.panel === "git" || parsed.panel === "outline" || parsed.panel === "diagnostics" ? parsed.panel : "context",
       mode: parsed.mode === "source" || parsed.mode === "live" ? parsed.mode : "reading",
     };
+  } catch {
+    return DEFAULT_SESSION;
+  }
+}
+
+function loadVaultSession(): VaultSession {
+  try {
+    return parseVaultSession(localStorage.getItem(sessionStorageKey));
   } catch {
     return DEFAULT_SESSION;
   }
@@ -254,6 +269,7 @@ function WorkspaceApp() {
   const [route, graphCenter, navigate] = useRoute();
   const [notes, setNotes] = useState<NoteSummary[]>([]);
   const initialSession = useMemo(loadVaultSession, []);
+  const [sessionReady, setSessionReady] = useState(!isTauri);
   const [selected, setSelected] = useState<string | undefined>(initialSession.activeTabPath ?? undefined);
   // useEffect cleanup (which flips a closure's `stale` flag) is a *passive*
   // effect: React defers running it until after paint, whereas a fast local
@@ -268,10 +284,21 @@ function WorkspaceApp() {
   const [expandedTreePaths, setExpandedTreePaths] = useState<Set<string>>(() => new Set(initialSession.expandedTreePaths));
   const [navHistory, setNavHistory] = useState<{ stack: string[]; index: number }>({ stack: [], index: -1 });
   const [source, setSource] = useState<ApiNoteSource>();
-  const [draft, setDraft] = useState("");
-  const [base, setBase] = useState("");
-  const [metadataDraft, setMetadataDraft] = useState<NoteFrontmatter>();
-  const [baseMetadata, setBaseMetadata] = useState<NoteFrontmatter>();
+  const sourceRef = useRef<ApiNoteSource | undefined>(undefined);
+  sourceRef.current = source;
+  const {
+    draft,
+    metadataDraft,
+    isDirty,
+    localRevision: localEditRevisionRef,
+    draftRef,
+    metadataDraftRef,
+    isDirtyRef,
+    updateDraft,
+    updateMetadata,
+    replace: replaceDocument,
+    acknowledge: acknowledgeDocument,
+  } = useDocumentSession();
   const [mode, setMode] = useState<Mode>(initialSession.mode);
   const [vaultTree, setVaultTree] = useState<ApiVaultTree>();
   const [previewPath, setPreviewPath] = useState<string>();
@@ -283,6 +310,7 @@ function WorkspaceApp() {
   const [searchResults, setSearchResults] = useState<Array<{ title: string; path: string; snippet: string }>>([]);
   const [status, setStatus] = useState("Ready");
   const [conflict, setConflict] = useState<{ remote: string; hash: string; sections: string[] }>();
+  const [deletedNote, setDeletedNote] = useState<{ path: string }>();
   const [context, setContext] = useState<ApiContext>();
   const [history, setHistory] = useState<ApiHistory>();
   const [selectedRevision, setSelectedRevision] = useState<string>();
@@ -292,8 +320,10 @@ function WorkspaceApp() {
   const [noteCount, setNoteCount] = useState<number>();
   const [vaultCheck, setVaultCheck] = useState<ApiVaultCheck>();
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [indexRefreshError, setIndexRefreshError] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const pdfAbortRef = useRef<AbortController | undefined>(undefined);
   const [isCreatingNote, setIsCreatingNote] = useState(false);
   const [isRefreshingCreatedNote, setIsRefreshingCreatedNote] = useState(false);
   const [creationIssue, setCreationIssue] = useState<NoteCreationIssue>();
@@ -322,8 +352,13 @@ function WorkspaceApp() {
   // to force the rendered pane to pick up the new content instead of going
   // stale (see Editor.tsx's contentRevision prop).
   const [contentRevision, setContentRevision] = useState(0);
+  const saveRequestRef = useRef(0);
+  const saveInFlightRef = useRef(false);
+  const sessionSaveQueueRef = useRef(Promise.resolve());
+  const saveRef = useRef<() => Promise<SaveResult>>(async () => ({ ok: true }));
+  const pendingExternalChangeRef = useRef<PendingExternalChange | undefined>(undefined);
+  const handleExternalChangeRef = useRef<(change: PendingExternalChange) => void>(() => undefined);
 
-  const isDirty = draft !== base || JSON.stringify(metadataDraft) !== JSON.stringify(baseMetadata);
   const currentTitle = metadataDraft?.title ?? source?.note.title ?? "Select a note";
   const activeNotePath = source?.note.path;
 
@@ -415,13 +450,9 @@ function WorkspaceApp() {
     listNotes(undefined, 100).then((result) => {
       const nextNotes = mergeNoteSummaries(result.notes);
       setNotes(nextNotes);
-      setSelected((current) => {
-        const pendingPath = pendingCreatedNoteRef.current?.path;
-        return current && (nextNotes.some((note) => note.path === current) || current === pendingPath || createdNotePathsRef.current.has(current))
-          ? current
-          : nextNotes[0]?.path;
-      });
-      setTabs((current) => current.filter((path) => nextNotes.some((note) => note.path === path) || createdNotePathsRef.current.has(path)));
+      // This is a paged catalog. A page miss is not a deletion: tabs and the
+      // active document are authoritative identities independent of recents.
+      setSelected((current) => current ?? nextNotes[0]?.path);
     }).catch(() => undefined);
     getVaultTree().then((tree) => {
       setVaultTree(tree);
@@ -440,8 +471,7 @@ function WorkspaceApp() {
         if (notesResult.status === "fulfilled") {
           const nextNotes = mergeNoteSummaries(notesResult.value.notes);
           setNotes(nextNotes);
-          setSelected((current) => current && (nextNotes.some((note) => note.path === current) || current === path || createdNotePathsRef.current.has(current)) ? current : nextNotes[0]?.path);
-          setTabs((current) => current.filter((tabPath) => nextNotes.some((note) => note.path === tabPath) || createdNotePathsRef.current.has(tabPath)));
+          setSelected((current) => current ?? nextNotes[0]?.path);
         } else {
           failures.push(`notes list: ${notesResult.reason instanceof Error ? notesResult.reason.message : String(notesResult.reason)}`);
         }
@@ -507,12 +537,8 @@ function WorkspaceApp() {
   }
 
   function applySource(next: ApiNoteSource, bumpContentRevision = false) {
-    const nextMetadata = cloneMetadata(next.frontmatter);
     setSource(next);
-    setDraft(next.body);
-    setBase(next.body);
-    setMetadataDraft(nextMetadata);
-    setBaseMetadata(cloneMetadata(nextMetadata));
+    replaceDocument(next);
     if (createdNotePathsRef.current.has(next.note.path)) {
       createdNoteSummariesRef.current.set(next.note.path, next.note);
       setNotes((current) => [next.note, ...current.filter((note) => note.path !== next.note.path)]);
@@ -520,28 +546,78 @@ function WorkspaceApp() {
       setNotes((current) => current.map((note) => note.path === next.note.path ? next.note : note));
     }
     setConflict(undefined);
+    setDeletedNote(undefined);
     setPreviewPath(undefined);
     if (bumpContentRevision) setContentRevision((revision) => revision + 1);
   }
 
+  // Filesystem notifications are also emitted for writes accepted through
+  // this UI. Defer an active-note notification while a save is in flight and
+  // compare the resulting source hash after the acknowledgement arrives. A
+  // matching hash is this editor's own write; a different hash is a genuine
+  // concurrent edit and still follows the explicit conflict path.
+  handleExternalChangeRef.current = (change) => {
+    if (selectedRef.current !== change.path || sourceRef.current?.note.path !== change.path) return;
+    if (change.contentHash && sourceRef.current.note.content_hash === change.contentHash) return;
+    if (saveInFlightRef.current) {
+      pendingExternalChangeRef.current = change;
+      return;
+    }
+    getNoteSource(change.path).then((next) => {
+      if (selectedRef.current !== change.path) return;
+      const current = sourceRef.current;
+      // The save acknowledgement may have updated the source while the
+      // change-event refetch was in flight. Do not turn that acknowledgement
+      // into a conflict after the fact.
+      if (current?.note.path === change.path && current.note.content_hash === next.note.content_hash) return;
+      if (!isDirtyRef.current) {
+        applySource(next, true);
+        if (next.note.path === activeNotePath) getContext("note:" + next.note.id).then(setContext).catch(() => undefined);
+        setStatus("Reloaded external change");
+        return;
+      }
+      setConflict({ remote: next.markdown, hash: next.note.content_hash, sections: next.sections.map((section) => section.heading) });
+      setStatus("Conflict requires review");
+    }).catch(() => setStatus("External change detected; reload failed"));
+  };
+
   useEffect(() => {
+    if (!isTauri) return;
+    let active = true;
+    invoke<string | null>("load_session", { vaultId: vaultKey }).then((raw) => {
+      if (!active) return;
+      const restored = parseVaultSession(raw);
+      setSelected(restored.activeTabPath ?? undefined);
+      setTabs(restored.tabs);
+      setContextPanelOpen(restored.contextPanelOpen);
+      setExpandedTreePaths(new Set(restored.expandedTreePaths));
+      setPanel(restored.panel);
+      setMode(restored.mode);
+      setSessionReady(true);
+    }).catch(() => {
+      if (active) setSessionReady(true);
+    });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!sessionReady) return;
     refreshVaultData();
     if (isTauri) invoke<VaultRegistry>("list_vaults").then(setVaultRegistry).catch(() => setVaultRegistry(undefined));
     refreshWorkspaceSignals();
-  }, []);
+  }, [sessionReady]);
 
   // Restore the persisted per-vault session's active tab into the nav
   // history stack once, so Back/Forward has a starting point after a
   // restart (Desktop V2 Multi-Vault UX Contract: tabs/outline/panel state
   // are isolated and restored per vault).
   useEffect(() => {
-    if (initialSession.activeTabPath) {
-      setNavHistory({ stack: [initialSession.activeTabPath], index: 0 });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (!sessionReady || !selected) return;
+    setNavHistory((current) => current.index >= 0 ? current : { stack: [selected], index: 0 });
+  }, [sessionReady, selected]);
 
   useEffect(() => {
+    if (!sessionReady) return;
     const payload: VaultSession = { tabs, activeTabPath: selected ?? null, expandedTreePaths: [...expandedTreePaths], contextPanelOpen, panel, mode };
     try {
       localStorage.setItem(sessionStorageKey, JSON.stringify(payload));
@@ -549,7 +625,13 @@ function WorkspaceApp() {
       // Storage can be unavailable (private browsing, quota); session
       // restore is a convenience, not a correctness requirement.
     }
-  }, [tabs, selected, expandedTreePaths, contextPanelOpen, panel, mode]);
+    if (isTauri) {
+      const serialized = JSON.stringify(payload);
+      sessionSaveQueueRef.current = sessionSaveQueueRef.current
+        .then(() => invoke("save_session", { vaultId: vaultKey, sessionJson: serialized }).then(() => undefined))
+        .catch(() => undefined);
+    }
+  }, [sessionReady, tabs, selected, expandedTreePaths, contextPanelOpen, panel, mode]);
 
   useEffect(() => {
     if (!selected) return;
@@ -626,26 +708,46 @@ function WorkspaceApp() {
   }, [contextPanelOpen, panel, workspaceStatus?.active, workspaceGitLoaded]);
 
   useEffect(() => {
-    return subscribeToChanges((events) => {
+    return subscribeToChanges((changeSet) => {
       if (isCreatingNote) return;
-      if (events.length === 0 || events.some((event) => !event.repository)) refreshVaultData();
-      // Empty batches are emitted when background workspace warming changes
-      // phase; status/health are intentionally cheap enough to refresh here.
-      refreshWorkspaceSignals();
-      if (!activeNotePath || !events.some((event) => event.path === activeNotePath)) return;
-      if (!isDirty) {
-        getNoteSource(activeNotePath).then((next) => {
-          applySource(next, true);
-          setStatus("Reloaded external change");
-        }).catch(() => setStatus("External change detected; reload failed"));
+      const events = changeSet.events;
+      if (changeSet.resync_required) {
+        refreshVaultData();
+        refreshWorkspaceSignals();
+        if (activeNotePath && !isDirty) getNoteSource(activeNotePath).then((next) => applySource(next, true)).catch(() => undefined);
         return;
       }
-      getNoteSource(activeNotePath).then((next) => {
-        setConflict({ remote: next.markdown, hash: next.note.content_hash, sections: next.sections.map((section) => section.heading) });
-        setStatus("Conflict requires review");
-      }).catch(() => setStatus("External change detected; reload failed"));
+      const scopes = new Set(events.flatMap((event) => event.scopes ?? []));
+      const eventMatchesPath = (eventPath: string, candidate: string): boolean => {
+        const normalized = eventPath.replaceAll("\\", "/").replace(/^\.\//, "");
+        return normalized === candidate || normalized.endsWith("/" + candidate);
+      };
+      const knownPaths = [...new Set([...tabs, ...(selected ? [selected] : [])])];
+      const deletedPaths = new Set(events.filter((event) => event.type === "delete").flatMap((event) => knownPaths.filter((path) => eventMatchesPath(event.path, path))));
+      if (deletedPaths.size > 0) {
+        const dirtyDeletedPath = activeNotePath && isDirtyRef.current && deletedPaths.has(activeNotePath) ? activeNotePath : undefined;
+        setTabs((current) => current.filter((path) => !deletedPaths.has(path) || path === dirtyDeletedPath));
+        if (dirtyDeletedPath) {
+          setDeletedNote({ path: dirtyDeletedPath });
+          setStatus("Note deleted externally; local draft is preserved");
+        } else if (selected && deletedPaths.has(selected)) {
+          setSelected((current) => current && deletedPaths.has(current) ? undefined : current);
+          setSource(undefined);
+          setPreviewPath(undefined);
+        }
+      }
+      // Versioned scopes keep body-only edits from refetching the whole tree
+      // and catalog. Empty batches represent projection status transitions.
+      if (events.length === 0 || scopes.has("catalog") || scopes.has("tree")) refreshVaultData();
+      if (events.length === 0 || scopes.has("projection") || scopes.has("repository")) refreshWorkspaceSignals();
+      const activeEvent = activeNotePath
+        ? events.find((event) => eventMatchesPath(event.path, activeNotePath))
+        : undefined;
+      if (!activeNotePath || !activeEvent) return;
+      if (deletedPaths.has(activeNotePath)) return;
+      handleExternalChangeRef.current({ path: activeNotePath, contentHash: activeEvent.content_hash });
     });
-  }, [activeNotePath, isDirty, isCreatingNote]);
+  }, [activeNotePath, isDirty, isCreatingNote, selected, tabs]);
 
   useEffect(() => {
     if (panel !== "git" || codeTarget || !source || !selectedRevision) {
@@ -724,29 +826,78 @@ function WorkspaceApp() {
   }, [query]);
 
   async function save(): Promise<SaveResult> {
-    if (!source || !metadataDraft || !isDirty) return { ok: true };
+    if (!source || !metadataDraftRef.current || !isDirtyRef.current) return { ok: true };
+    if (saveInFlightRef.current) return { ok: false, message: "A save is already in progress." };
+    const requestedPath = source.note.path;
+    const submittedRevision = localEditRevisionRef.current;
+    const requestId = ++saveRequestRef.current;
+    const expectedHash = source.note.content_hash;
+    const submittedDraft = draftRef.current;
+    const submittedMetadata = cloneMetadata(metadataDraftRef.current);
+    saveInFlightRef.current = true;
+    setIsSaving(true);
     setStatus("Saving...");
     try {
       const metadata: ApiNoteMetadataPatch = {
-        title: metadataDraft.title,
-        type: metadataDraft.type,
-        aliases: metadataDraft.aliases,
-        tags: metadataDraft.tags,
-        applies_to: metadataDraft.applies_to,
-        extra: metadataDraft.extra,
+        title: submittedMetadata.title,
+        type: submittedMetadata.type,
+        aliases: submittedMetadata.aliases,
+        tags: submittedMetadata.tags,
+        applies_to: submittedMetadata.applies_to,
+        extra: submittedMetadata.extra,
       };
-      const next = await updateNote(source.note.path, source.note.content_hash, draft, metadata);
-      applySource(next);
-      setStatus("Saved");
+      const next = await updateNote(requestedPath, expectedHash, submittedDraft, metadata);
+      if (selectedRef.current !== requestedPath || requestId !== saveRequestRef.current) return { ok: true };
+      if (localEditRevisionRef.current === submittedRevision) {
+        applySource(next);
+        setStatus("Saved");
+      } else {
+        // The disk acknowledgement is still the new base, but a newer local
+        // draft must remain in the editor. Applying the whole source here
+        // would silently discard that draft.
+        setSource(next);
+        acknowledgeDocument(next, true);
+        setNotes((current) => current.map((note) => note.path === next.note.path ? next.note : note));
+        setStatus("Saved previous revision; newer edits kept");
+      }
       return { ok: true };
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       setStatus(message);
+      if (/stale/i.test(message) && selectedRef.current === requestedPath) {
+        void getNoteSource(requestedPath).then((next) => {
+          if (selectedRef.current !== requestedPath) return;
+          setConflict({ remote: next.markdown, hash: next.note.content_hash, sections: next.sections.map((section) => section.heading) });
+          setStatus("Conflict requires review");
+        }).catch(() => undefined);
+      }
       return { ok: false, message };
+    } finally {
+      saveInFlightRef.current = false;
+      setIsSaving(false);
+      const pendingChange = pendingExternalChangeRef.current;
+      if (pendingChange?.path === requestedPath) {
+        pendingExternalChangeRef.current = undefined;
+        // Let React publish the save acknowledgement before checking the
+        // queued filesystem event. This makes the hash comparison observe
+        // the new base rather than the pre-save source snapshot.
+        window.setTimeout(() => handleExternalChangeRef.current(pendingChange), 0);
+      }
     }
   }
 
+  saveRef.current = save;
+
+  useEffect(() => {
+    if (!source || !isDirty || isCreatingNote || conflict || isSaving) return;
+    const timer = window.setTimeout(() => {
+      void saveRef.current();
+    }, AUTOSAVE_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [source?.note.path, draft, metadataDraft, isDirty, isCreatingNote, conflict, isSaving]);
+
   async function exportPdf() {
+    const currentMetadata = metadataDraftRef.current;
     console.info("[PDF-EXPORT] click", {
       isTauri,
       hasSource: Boolean(source),
@@ -754,24 +905,26 @@ function WorkspaceApp() {
       titleLength: metadataDraft?.title.trim().length ?? 0,
       isExportingPdf,
     });
-    if (!source || !metadataDraft || !metadataDraft.title.trim() || isExportingPdf) {
+    if (!source || !currentMetadata || !currentMetadata.title.trim() || isExportingPdf) {
       console.warn("[PDF-EXPORT] click:guarded");
       return;
     }
     setIsExportingPdf(true);
+    const abortController = new AbortController();
+    pdfAbortRef.current = abortController;
     setStatus("Exporting PDF...");
     try {
-      const result = await exportNotePdf(source.note.path, draft, metadataDraft.title);
+      const result = await exportNotePdf(source.note.path, draftRef.current, currentMetadata.title, abortController.signal);
       const nativeWindow = window as Window & { __TAURI__?: unknown };
       console.info("[PDF-EXPORT] delivery:detect", { isTauri, hasGlobalTauri: Boolean(nativeWindow.__TAURI__) });
       if (nativeWindow.__TAURI__) {
         const bytes = Array.from(new Uint8Array(await result.blob.arrayBuffer()));
-        console.info("[PDF-EXPORT] delivery:native-start", { filename: result.filename, bytes: bytes.length });
+        console.info("[PDF-EXPORT] delivery:native-start", { bytes: bytes.length });
         const savedPath = await invoke<string | null>("save_pdf", { filename: result.filename, bytes });
-        console.info("[PDF-EXPORT] delivery:native-complete", { savedPath });
+        console.info("[PDF-EXPORT] delivery:native-complete", { saved: Boolean(savedPath) });
         setStatus(savedPath ? `PDF saved to ${savedPath}` : "PDF export canceled");
       } else {
-        console.info("[PDF-EXPORT] delivery:browser-start", { filename: result.filename, bytes: result.blob.size });
+        console.info("[PDF-EXPORT] delivery:browser-start", { bytes: result.blob.size });
         const url = URL.createObjectURL(result.blob);
         const anchor = document.createElement("a");
         anchor.href = url;
@@ -780,15 +933,21 @@ function WorkspaceApp() {
         anchor.click();
         anchor.remove();
         URL.revokeObjectURL(url);
-        console.info("[PDF-EXPORT] delivery:browser-complete", { filename: result.filename });
+        console.info("[PDF-EXPORT] delivery:browser-complete", { bytes: result.blob.size });
         setStatus("PDF exported");
       }
     } catch (cause: unknown) {
       console.error("[PDF-EXPORT] failed", cause);
       setStatus(cause instanceof Error ? `PDF export failed: ${cause.message}` : `PDF export failed: ${String(cause)}`);
     } finally {
+      if (pdfAbortRef.current === abortController) pdfAbortRef.current = undefined;
       setIsExportingPdf(false);
     }
+  }
+
+  function cancelPdfExport() {
+    pdfAbortRef.current?.abort();
+    setStatus("Cancelling PDF export…");
   }
 
   function confirmDiscard(message: string): boolean {
@@ -815,10 +974,10 @@ function WorkspaceApp() {
     navigate("notes");
   }
 
-  function closeTab(path: string, event?: Pick<MouseEvent, "stopPropagation">, options?: { closeWindowWhenLast?: boolean }) {
+  function closeTab(path: string, event?: Pick<MouseEvent, "stopPropagation">, options?: { closeWindowWhenLast?: boolean; skipConfirm?: boolean }) {
     event?.stopPropagation();
     if (isCreatingNote) return;
-    if (path === selected && !confirmDiscard("You have unsaved changes. Discard them and close this tab?")) return;
+    if (path === selected && !options?.skipConfirm && !confirmDiscard("You have unsaved changes. Discard them and close this tab?")) return;
     const index = tabs.indexOf(path);
     const next = tabs.filter((existing) => existing !== path);
     if (options?.closeWindowWhenLast && next.length === 0) {
@@ -833,6 +992,11 @@ function WorkspaceApp() {
     const onWindowShortcut = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat || !(event.metaKey || event.ctrlKey)) return;
       const key = event.key.toLowerCase();
+      if (key === "s") {
+        event.preventDefault();
+        if (!isCreatingNote && !isSaving) void save();
+        return;
+      }
       if (key === "n") {
         event.preventDefault();
         if (!isCreatingNote) void createNewNote();
@@ -850,7 +1014,7 @@ function WorkspaceApp() {
     // state; re-registering the single global listener when that state
     // changes keeps Cmd/Ctrl+N and Cmd/Ctrl+W race-free.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, tabs, isDirty, isCreatingNote]);
+  }, [selected, tabs, isDirty, isCreatingNote, isSaving]);
 
   function goBack() {
     if (isCreatingNote || !canGoBack) return;
@@ -875,6 +1039,7 @@ function WorkspaceApp() {
     if (!confirmDiscard("You have unsaved changes. Discard them and switch vaults?")) return;
     setVaultMenuStatus("Starting vault runtime…");
     try {
+      await sessionSaveQueueRef.current;
       await openRegisteredVault(id);
     } catch (cause) {
       setVaultMenuStatus(String(cause));
@@ -882,20 +1047,33 @@ function WorkspaceApp() {
   }
 
   async function keepMine() {
-    if (!source || !conflict || !metadataDraft) return;
+    const currentMetadata = metadataDraftRef.current;
+    if (!source || !conflict || !currentMetadata) return;
+    const requestedPath = source.note.path;
+    saveInFlightRef.current = true;
+    setIsSaving(true);
+    setStatus("Saving...");
     try {
-      const next = await updateNote(source.note.path, conflict.hash, draft, {
-        title: metadataDraft.title,
-        type: metadataDraft.type,
-        aliases: metadataDraft.aliases,
-        tags: metadataDraft.tags,
-        applies_to: metadataDraft.applies_to,
-        extra: metadataDraft.extra,
+      const next = await updateNote(requestedPath, conflict.hash, draftRef.current, {
+        title: currentMetadata.title,
+        type: currentMetadata.type,
+        aliases: currentMetadata.aliases,
+        tags: currentMetadata.tags,
+        applies_to: currentMetadata.applies_to,
+        extra: currentMetadata.extra,
       });
       applySource(next);
       setStatus("Kept local version");
     } catch (cause: unknown) {
       setStatus(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      saveInFlightRef.current = false;
+      setIsSaving(false);
+      const pendingChange = pendingExternalChangeRef.current;
+      if (pendingChange?.path === requestedPath) {
+        pendingExternalChangeRef.current = undefined;
+        window.setTimeout(() => handleExternalChangeRef.current(pendingChange), 0);
+      }
     }
   }
 
@@ -966,7 +1144,7 @@ function WorkspaceApp() {
     setStatus("Preparing new note…");
 
     const saved = await save();
-    if (!saved.ok) {
+    if (saved.ok === false) {
       finishNoteCreation();
       navigate("notes");
       setCreationIssue({ kind: "save", message: `The current note could not be saved: ${saved.message}` });
@@ -1058,6 +1236,37 @@ function WorkspaceApp() {
     }
   }
 
+  async function recreateDeletedNote() {
+    if (!deletedNote || !source || source.note.path !== deletedNote.path || !metadataDraftRef.current) return;
+    setStatus("Restoring local draft…");
+    try {
+      const metadata = metadataDraftRef.current;
+      const created = await createNote({
+        title: metadata.title,
+        type: metadata.type,
+        aliases: metadata.aliases,
+        tags: metadata.tags,
+        applies_to: metadata.applies_to,
+        body: draftRef.current,
+        path: deletedNote.path,
+      });
+      const next = await getNoteSource(created.path);
+      applySource(next, true);
+      setDeletedNote(undefined);
+      setStatus("Local draft restored");
+    } catch (cause) {
+      setStatus(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  function discardDeletedNote() {
+    if (!deletedNote) return;
+    closeTab(deletedNote.path, undefined, { closeWindowWhenLast: true, skipConfirm: true });
+    setDeletedNote(undefined);
+    setConflict(undefined);
+    setStatus("Deleted note closed");
+  }
+
   const activeVaultId = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("vault") : null;
   const activeVault = vaultRegistry?.vaults.find((vault) => vault.id === activeVaultId);
   const vaultName = activeVault?.name ?? vaultTree?.rootName ?? "Vault";
@@ -1087,11 +1296,12 @@ function WorkspaceApp() {
                     </div>
                   ))}
                 </div>
-                {isDirty && <Button size="sm" className="shrink-0" onClick={() => void save()} disabled={!source || isCreatingNote}>Save</Button>}
+                {isDirty && <Button size="sm" className="shrink-0" title="Save (⌘S / Ctrl+S)" onClick={() => void save()} disabled={!source || isCreatingNote || isSaving}>{isSaving ? "Saving…" : "Save"}</Button>}
                 <Button variant="ghost" size="sm" className="shrink-0 gap-1" data-testid="export-pdf" aria-label="Export PDF" onClick={() => void exportPdf()} disabled={!source || !metadataDraft?.title.trim() || isExportingPdf || isCreatingNote}>
                   <FileDownIcon className={isExportingPdf ? "animate-pulse" : undefined} />
                   <span className="hidden sm:inline">{isExportingPdf ? "Exporting…" : "Export PDF"}</span>
                 </Button>
+                {isExportingPdf && <Button variant="ghost" size="sm" className="shrink-0" aria-label="Cancel PDF export" onClick={cancelPdfExport}>Cancel</Button>}
                 <Tooltip>
                   <TooltipTrigger
                     render={<Button variant="ghost" size="icon-sm" className="shrink-0" aria-label="New note" data-testid="new-note-button" disabled={isCreatingNote} onClick={() => void createNewNote()} />}
@@ -1137,13 +1347,14 @@ function WorkspaceApp() {
           </Sidebar>
 
           <SidebarInset data-testid="workspace" className="relative min-w-0">
-            {route === "graph" ? <section className="flex min-h-0 flex-1 flex-col bg-background"><GraphPane onOpenPath={openPath} onOpenCode={openGraphCode} onBackToNote={() => { if (!isCreatingNote) navigate("notes"); }} activeNoteLabel={source?.note.title} initialCenter={graphCenter} initialCenterLabel={currentTitle} /></section> : <div className="note-workspace flex min-h-0 flex-1 flex-col" aria-busy={isCreatingNote}>
+            {route === "graph" ? <section className="flex min-h-0 flex-1 flex-col bg-background"><Suspense fallback={<div className="grid min-h-0 flex-1 place-items-center text-sm text-muted-foreground">Loading graph tools…</div>}><GraphPane onOpenPath={openPath} onOpenCode={openGraphCode} onBackToNote={() => { if (!isCreatingNote) navigate("notes"); }} activeNoteLabel={source?.note.title} initialCenter={graphCenter} initialCenterLabel={currentTitle} /></Suspense></section> : <div className="note-workspace flex min-h-0 flex-1 flex-col" aria-busy={isCreatingNote}>
               <div data-testid="note-document-scroll" className="note-document-scroll min-h-0 flex-1 overflow-auto overscroll-contain">
                 {creationIssue && <Alert data-testid="note-creation-status" variant="destructive" className="m-3"><AlertTitle>{creationIssue.kind === "save" ? "Could not create note" : creationIssue.kind === "load" ? "Note created but could not be opened" : creationIssue.kind === "refresh" ? "Note created but workspace refresh failed" : "Could not create note"}</AlertTitle><AlertDescription><p>{creationIssue.message}</p>{creationIssue.kind === "load" && <Button size="sm" variant="outline" disabled={isCreatingNote} onClick={() => void retryOpenCreatedNote()}>Open created note again</Button>}{creationIssue.kind === "refresh" && <Button size="sm" variant="outline" disabled={isRefreshingCreatedNote || isCreatingNote} onClick={() => void retryCreatedNoteRefresh()}>{isRefreshingCreatedNote ? "Refreshing…" : "Refresh"}</Button>}{creationIssue.kind === "create" && <Button size="sm" variant="outline" disabled={isRefreshing || isCreatingNote} onClick={() => void refreshIndex()}>Refresh</Button>}</AlertDescription></Alert>}
-                {source && metadataDraft ? <NoteMetadata metadata={metadataDraft} mode={mode} dirty={isDirty} notePath={activeNotePath} connectedFiles={context?.likely_files?.length ?? 0} disabled={isCreatingNote} focusTitleRequest={focusTitleRequest} onTitleFocusComplete={completeTitleFocus} onTitleEnter={focusBodyAfterTitle} onChange={setMetadataDraft} onModeChange={setMode} onToggleInspector={() => setContextPanelOpen(true)} /> : previewPath ? <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileIcon /></EmptyMedia><EmptyTitle>File preview unavailable</EmptyTitle><EmptyDescription>{previewPath} is not an indexed Markdown note.</EmptyDescription></EmptyHeader></Empty> : <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileTextIcon /></EmptyMedia><EmptyTitle>Choose a note</EmptyTitle><EmptyDescription>The indexed Markdown workspace will appear here.</EmptyDescription><Button data-testid="create-note-empty" onClick={() => void createNewNote()} disabled={isCreatingNote}><PlusIcon />Create note</Button></EmptyHeader></Empty>}
-                {source && <div className="note-editor-section flex border-t border-border/60"><Editor key={activeNotePath + ":" + (isCreatingNote ? "busy" : "ready")} value={draft} mode={mode} onChange={isCreatingNote ? () => undefined : setDraft} linkTargets={notes.map((note) => note.title)} notePath={activeNotePath} notes={notes} onOpenNote={openPath} sections={source.sections} contentRevision={contentRevision} jumpRequest={jumpRequest} disabled={isCreatingNote} focusRequest={focusBodyRequest} onFocusComplete={completeBodyFocus} /></div>}
+                {source && metadataDraft ? <NoteMetadata metadata={metadataDraft} mode={mode} dirty={isDirty} notePath={activeNotePath} connectedFiles={context?.likely_files?.length ?? 0} disabled={isCreatingNote} focusTitleRequest={focusTitleRequest} onTitleFocusComplete={completeTitleFocus} onTitleEnter={focusBodyAfterTitle} onChange={updateMetadata} onModeChange={setMode} onToggleInspector={() => setContextPanelOpen(true)} /> : previewPath ? <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileIcon /></EmptyMedia><EmptyTitle>File preview unavailable</EmptyTitle><EmptyDescription>{previewPath} is not an indexed Markdown note.</EmptyDescription></EmptyHeader></Empty> : <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileTextIcon /></EmptyMedia><EmptyTitle>Choose a note</EmptyTitle><EmptyDescription>The indexed Markdown workspace will appear here.</EmptyDescription><Button data-testid="create-note-empty" onClick={() => void createNewNote()} disabled={isCreatingNote}><PlusIcon />Create note</Button></EmptyHeader></Empty>}
+                {source && <div className="note-editor-section flex border-t border-border/60"><Suspense fallback={<div className="grid min-h-[440px] flex-1 place-items-center text-sm text-muted-foreground">Loading editor…</div>}><Editor key={activeNotePath + ":" + (isCreatingNote ? "busy" : "ready")} value={draft} mode={mode} onChange={isCreatingNote ? () => undefined : updateDraft} linkTargets={notes.map((note) => note.title)} notePath={activeNotePath} notes={notes} suggestNoteLinks={suggestNoteLinks} onOpenNote={openPath} sections={source.sections} contentRevision={contentRevision} jumpRequest={jumpRequest} disabled={isCreatingNote} focusRequest={focusBodyRequest} onFocusComplete={completeBodyFocus} /></Suspense></div>}
               </div>
               {conflict && <Alert variant="destructive" className="m-3 shrink-0"><AlertTitle>External edit needs your decision</AlertTitle><AlertDescription><p>Conflicts: {conflict.sections.join(", ")}</p><div className="mt-2 flex gap-2"><Button size="sm" variant="outline" onClick={() => void takeTheirs()}>Take theirs</Button><Button size="sm" variant="outline" onClick={() => void keepMine()}>Keep mine</Button></div></AlertDescription></Alert>}
+              {deletedNote && activeNotePath === deletedNote.path && <Alert variant="destructive" className="m-3 shrink-0" data-testid="deleted-note-recovery"><AlertTitle>Note deleted externally</AlertTitle><AlertDescription><p>Your unsaved draft is preserved. Restore it at the original path or close this tab.</p><div className="mt-2 flex gap-2"><Button size="sm" variant="outline" onClick={() => void recreateDeletedNote()}>Restore local draft</Button><Button size="sm" variant="outline" onClick={discardDeletedNote}>Close tab</Button></div></AlertDescription></Alert>}
               <footer data-testid="workspace-status-footer" className="relative z-20 flex h-8 shrink-0 items-center gap-3 bg-background/92 px-4 text-[11px] text-muted-foreground backdrop-blur-md before:pointer-events-none before:absolute before:inset-x-0 before:-top-10 before:h-10 before:bg-gradient-to-b before:from-transparent before:via-background/65 before:to-background before:backdrop-blur-[2px] before:content-['']"><span className="relative z-10 flex items-center gap-1"><FilesIcon className="size-3" />{noteCount ?? notes.length} notes</span><span className="relative z-10 flex items-center gap-1"><DatabaseIcon className="size-3" />{workspaceStatus?.repositories.length ?? 0} repositories</span><span aria-live="polite" className={"relative z-10 ml-auto flex items-center gap-1.5" + ((indexNeedsRefresh || isIndexing || isRefreshing) ? " text-warning" : "")}>
                 {indexNeedsRefresh || isRefreshing ? <button type="button" data-testid="refresh-index" aria-label={isRefreshing ? "Refreshing index" : "Refresh index"} title={isRefreshing ? "Refreshing index…" : "Refresh index"} disabled={isRefreshing} onClick={() => void refreshIndex()} className="group/refresh inline-flex size-5 items-center justify-center rounded-sm text-warning transition-colors hover:bg-warning/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-warning/40 disabled:cursor-wait"><RefreshCwIcon className={"size-3 transition-transform " + (isRefreshing ? "animate-spin" : "group-hover/refresh:rotate-45")} aria-hidden="true" /><span className="sr-only">{isRefreshing ? "Refreshing index" : "Refresh index"}</span></button> : isIndexing ? <Loader2Icon className="size-3 animate-spin" aria-hidden="true" /> : <span className="size-1.5 rounded-full bg-primary" aria-hidden="true" />}
                 <span>{isRefreshing ? "Refreshing index…" : isIndexing ? (workspaceStatus?.phase === "warming" ? "Workspace warming…" : "Index rebuilding…") : indexError || indexRefreshError ? "Index error" : isStale ? "Index stale" : "Index current"}</span>

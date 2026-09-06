@@ -30,7 +30,11 @@ impl Default for RuntimeRegistry {
 
 impl RuntimeRegistry {
     pub fn insert(&mut self, window_label: &str, handle: SidecarHandle) {
-        self.runtimes.insert(window_label.to_string(), handle);
+        if let Some(mut previous) = self.runtimes.insert(window_label.to_string(), handle) {
+            // Replacement is itself a lifecycle seam: callers should not have
+            // to remember a second cleanup path when a new generation wins.
+            dispose(&mut previous);
+        }
     }
 
     pub fn dispose_window(&mut self, window_label: &str) {
@@ -97,6 +101,10 @@ pub fn packaged_chromium_path(resource_dir: &Path) -> PathBuf {
             .unwrap_or_else(|| candidates[0].clone());
     }
     resource_dir.join("chromium").join(if cfg!(windows) { "chrome.exe" } else { "chrome" })
+}
+
+pub fn packaged_node_modules_path(resource_dir: &Path) -> PathBuf {
+    resource_dir.join("node_modules")
 }
 
 pub fn resolve_packaged_sidecar(resource_dir: &Path) -> Result<PathBuf, String> {
@@ -239,6 +247,7 @@ pub fn spawn(vault_path: &str, port: u16, resource_dir: Option<&Path>) -> Result
             .env("CORTEX_UI_DIST", packaged_ui_dist(resource_dir))
             .env("CORTEX_PACKAGED_CHROMIUM_PATH", packaged_chromium_path(resource_dir))
             .env("CORTEX_PACKAGED", "1")
+            .env("NODE_PATH", packaged_node_modules_path(resource_dir))
             .current_dir(resource_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -277,10 +286,23 @@ pub fn spawn(vault_path: &str, port: u16, resource_dir: Option<&Path>) -> Result
 }
 
 /// Poll GET /api/health until it responds 200 or `timeout` elapses.
+#[allow(dead_code)]
 pub fn wait_for_health(
     child: &mut Child,
     port: u16,
     timeout: Duration,
+) -> Result<serde_json::Value, String> {
+    wait_for_health_until(child, port, timeout, || false)
+}
+
+/// Poll health while allowing the owning supervisor to cancel a superseded
+/// start. Cancellation kills and joins the child before returning, so a
+/// generation change cannot leave a startup process running in the background.
+pub fn wait_for_health_until<F: Fn() -> bool>(
+    child: &mut Child,
+    port: u16,
+    timeout: Duration,
+    cancelled: F,
 ) -> Result<serde_json::Value, String> {
     let url = format!("http://127.0.0.1:{port}/api/health");
     let deadline = Instant::now() + timeout;
@@ -290,6 +312,11 @@ pub fn wait_for_health(
         .build();
 
     loop {
+        if cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("Cortex sidecar startup on port {port} was cancelled."));
+        }
         match child.try_wait() {
             Ok(Some(status)) => {
                 return Err(format!(
@@ -355,7 +382,7 @@ pub fn dispose(handle: &mut SidecarHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
+    use std::process::{Command, Stdio};
 
     fn repo_root() -> PathBuf {
         resolve_cli_path()
@@ -386,6 +413,48 @@ mod tests {
             .expect("vault:init should spawn");
         assert!(status.success(), "vault:init failed for {dir:?}");
         dir
+    }
+
+    #[test]
+    fn cancelled_health_wait_joins_the_starting_child() {
+        let mut child = Command::new("sleep").arg("30").spawn().expect("sleep should start");
+        let result = wait_for_health_until(&mut child, 9_999, Duration::from_secs(5), || true);
+        assert!(result.expect_err("cancelled startup should fail").contains("cancelled"));
+        assert!(child.try_wait().expect("child status should be readable").is_some());
+    }
+
+    #[test]
+    fn rapid_superseded_startups_are_all_joined() {
+        for _ in 0..20 {
+            let mut child = Command::new("sleep").arg("30").spawn().expect("sleep should start");
+            let result = wait_for_health_until(&mut child, 9_999, Duration::from_secs(5), || true);
+            assert!(result.expect_err("superseded startup should fail").contains("cancelled"));
+            assert!(child.try_wait().expect("child status should be readable").is_some());
+        }
+    }
+
+    #[test]
+    fn dispose_hard_kills_a_child_that_ignores_sigterm() {
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg("trap '' TERM; sleep 30")
+            .spawn()
+            .expect("test child should spawn");
+        let mut handle = SidecarHandle { child, port: 9_998, vault_id: "ignored-term".into() };
+        dispose(&mut handle);
+        assert!(handle.child.try_wait().expect("child status should be readable").is_some());
+    }
+
+    #[test]
+    fn replacing_a_window_runtime_disposes_the_previous_child() {
+        let first = Command::new("sleep").arg("30").spawn().expect("first child should start");
+        let first_pid = first.id();
+        let mut registry = RuntimeRegistry::default();
+        registry.insert("main", SidecarHandle { child: first, port: 9_997, vault_id: "first".into() });
+        let second = Command::new("sleep").arg("30").spawn().expect("second child should start");
+        registry.insert("main", SidecarHandle { child: second, port: 9_996, vault_id: "second".into() });
+        assert!(matches!(Command::new("kill").arg("-0").arg(first_pid.to_string()).stderr(Stdio::null()).status(), Ok(status) if !status.success()));
+        registry.dispose_all();
     }
 
     #[test]
@@ -423,6 +492,12 @@ mod tests {
         } else {
             assert!(path.ends_with(if cfg!(windows) { "chromium/chrome.exe" } else { "chromium/chrome" }));
         }
+    }
+
+    #[test]
+    fn packaged_node_modules_matches_tauri_resource_target() {
+        let resources = PathBuf::from("/Applications/Cortex.app/Contents/Resources");
+        assert_eq!(packaged_node_modules_path(&resources), resources.join("node_modules"));
     }
 
     #[test]

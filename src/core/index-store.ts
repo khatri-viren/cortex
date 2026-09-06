@@ -1,10 +1,12 @@
 import { mkdirSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { Database, constants } from "bun:sqlite";
 import type { Diagnostic, ParsedNote, NoteType } from "./types.js";
 import type { FileKind, GraphBuild, IndexedMarkdown, IndexedNoteHeader, IndexedNoteRecord, IndexSearchResult } from "./index-types.js";
+import { directoryNodeId, noteNodeId } from "./identity.js";
 
-const SCHEMA_VERSION = "1";
+export const SCHEMA_VERSION = "1";
+export const PROJECTION_VERSION = "1";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -98,6 +100,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
   tags
 );
 CREATE INDEX IF NOT EXISTS idx_notes_path ON notes(path);
+CREATE INDEX IF NOT EXISTS idx_notes_updated_path ON notes(updated_at DESC, path ASC);
 CREATE INDEX IF NOT EXISTS idx_links_target ON links(target_note_id);
 CREATE INDEX IF NOT EXISTS idx_links_source ON links(source_note_id);
 CREATE INDEX IF NOT EXISTS idx_sections_note ON sections(note_id);
@@ -287,18 +290,41 @@ export class IndexStore {
     return this.db.query<IndexedNoteHeader, []>("SELECT note_id, path, title, type, updated_at FROM notes ORDER BY path").all();
   }
 
-  indexedNotes(options: { prefix?: string; tag?: string; limit: number }): { notes: IndexedNoteRecord[]; truncated: boolean } {
-    const rows = this.db.query<{ note_id: string }, [string | null, string | null, string | null, string | null, number]>(
-      "SELECT notes.note_id FROM notes WHERE (?1 IS NULL OR notes.path LIKE ?2 OR lower(notes.title) LIKE lower(?3)) AND (?4 IS NULL OR EXISTS (SELECT 1 FROM note_tags WHERE note_tags.note_id = notes.note_id AND note_tags.tag = ?4)) ORDER BY notes.updated_at DESC LIMIT ?5",
+  indexedNotes(options: { prefix?: string; tag?: string; limit: number; cursor?: { updatedAt: string; path: string } }): { notes: IndexedNoteRecord[]; truncated: boolean; nextCursor?: { updatedAt: string; path: string } } {
+    const rows = this.db.query<{ note_id: string; updated_at: string; path: string }, [string | null, string | null, string | null, string | null, string | null, string | null, number]>(
+      "SELECT notes.note_id, notes.updated_at, notes.path FROM notes WHERE (?1 IS NULL OR notes.path LIKE ?2 OR lower(notes.title) LIKE lower(?3)) AND (?4 IS NULL OR EXISTS (SELECT 1 FROM note_tags WHERE note_tags.note_id = notes.note_id AND note_tags.tag = ?4)) AND (?5 IS NULL OR notes.updated_at < ?5 OR (notes.updated_at = ?5 AND notes.path > ?6)) ORDER BY notes.updated_at DESC, notes.path ASC LIMIT ?7",
     ).all(
       options.prefix ?? null,
       options.prefix ? `${options.prefix}%` : null,
       options.prefix ? `${options.prefix}%` : null,
       options.tag ?? null,
+      options.cursor?.updatedAt ?? null,
+      options.cursor?.path ?? null,
       options.limit + 1,
     );
     const truncated = rows.length > options.limit;
-    return { notes: rows.slice(0, options.limit).map((row) => this.indexedNote(row.note_id)).filter((row): row is IndexedNoteRecord => Boolean(row)), truncated };
+    const page = rows.slice(0, options.limit);
+    const last = page.at(-1);
+    return { notes: page.map((row) => this.indexedNote(row.note_id)).filter((row): row is IndexedNoteRecord => Boolean(row)), truncated, nextCursor: truncated && last ? { updatedAt: last.updated_at, path: last.path } : undefined };
+  }
+
+  /**
+   * Return bounded note identities for editor wikilink completion and
+   * resolution. The catalog page is intentionally not used here: aliases and
+   * filename stems must resolve even when the note is outside the first
+   * recents page.
+   */
+  noteSuggestions(query: string, limit: number): { notes: IndexedNoteRecord[]; truncated: boolean } {
+    const normalized = query.trim().toLocaleLowerCase();
+    const pattern = `%${normalized.replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
+    const rows = this.db.query<{ note_id: string }, [string, string, number]>(
+      "SELECT DISTINCT notes.note_id FROM notes LEFT JOIN note_aliases ON note_aliases.note_id = notes.note_id WHERE (?1 = '' OR lower(notes.title) LIKE ?2 ESCAPE '\\' OR lower(notes.path) LIKE ?2 ESCAPE '\\' OR lower(note_aliases.alias) LIKE ?2 ESCAPE '\\') ORDER BY notes.updated_at DESC, notes.path ASC LIMIT ?3",
+    ).all(normalized, pattern, limit + 1);
+    const truncated = rows.length > limit;
+    return {
+      notes: rows.slice(0, limit).map((row) => this.indexedNote(row.note_id)).filter((row): row is IndexedNoteRecord => Boolean(row)),
+      truncated,
+    };
   }
 
   searchNotes(query: string, limit: number): IndexSearchResult {
@@ -317,6 +343,10 @@ export class IndexStore {
 
   fileHash(path: string): string | undefined {
     return this.db.query<{ content_hash: string }, [string]>("SELECT content_hash FROM files WHERE path = ?1").get(path)?.content_hash;
+  }
+
+  fileSnapshots(): Array<{ path: string; size: number; mtimeMs: number }> {
+    return this.db.query<{ path: string; size: number; mtimeMs: number }, []>("SELECT path, size, mtime_ms as mtimeMs FROM files ORDER BY path").all();
   }
 
   graphPaths(): Array<{ path: string; kind: string; name: string }> {
@@ -482,6 +512,73 @@ export class IndexStore {
     for (const link of links) {
       this.db.query("INSERT OR IGNORE INTO graph_edges (from_id, to_id, kind, metadata_json) VALUES (?1, ?2, 'wikilink', ?3)").run(`note:${link.source_note_id}`, `note:${link.target_note_id}`, JSON.stringify({ rowId: link.row_id, section: link.target_section }));
     }
+  }
+
+  /** Return the title, aliases, and filename stem used to resolve links for a note. */
+  noteLinkKeys(noteId: string): string[] {
+    const row = this.db.query<{ title: string; path: string }, [string]>("SELECT title, path FROM notes WHERE note_id = ?1").get(noteId);
+    if (!row) return [];
+    const aliases = this.db.query<{ alias: string }, [string]>("SELECT alias FROM note_aliases WHERE note_id = ?1").all(noteId).map((item) => item.alias);
+    return [basename(row.path, ".md"), row.title, ...aliases];
+  }
+
+  /** Resolve only links owned by or pointing at the supplied key set. */
+  resolveLinksFor(sourceNoteIds: string[], targetKeys: string[]): void {
+    const sourceIds = [...new Set(sourceNoteIds)];
+    const keys = [...new Set(targetKeys.map((key) => key.toLocaleLowerCase()))];
+    if (sourceIds.length === 0 && keys.length === 0) return;
+    const targets = new Map<string, string>();
+    for (const row of this.db.query<{ note_id: string; title: string; path: string }, []>("SELECT note_id, title, path FROM notes").all()) {
+      targets.set(basename(row.path, ".md").toLocaleLowerCase(), row.note_id);
+      targets.set(row.title.toLocaleLowerCase(), row.note_id);
+    }
+    for (const row of this.db.query<{ note_id: string; alias: string }, []>("SELECT note_id, alias FROM note_aliases").all()) targets.set(row.alias.toLocaleLowerCase(), row.note_id);
+    const predicates: string[] = [];
+    const values: string[] = [];
+    if (sourceIds.length > 0) {
+      predicates.push(`source_note_id IN (${sourceIds.map(() => "?").join(",")})`);
+      values.push(...sourceIds);
+    }
+    if (keys.length > 0) {
+      predicates.push(`lower(target_title) IN (${keys.map(() => "?").join(",")})`);
+      values.push(...keys);
+    }
+    const links = this.db.query<{ row_id: number; target_title: string }, string[]>(`SELECT row_id, target_title FROM links WHERE ${predicates.join(" OR ")}`).all(...values);
+    for (const link of links) {
+      const noteId = targets.get(link.target_title.toLocaleLowerCase());
+      this.db.query("UPDATE links SET target_note_id = ?1, status = ?2 WHERE row_id = ?3").run(noteId ?? null, noteId ? "resolved" : "unresolved", link.row_id);
+    }
+  }
+
+  /** Recompute unresolved-link diagnostics for only the changed note sources. */
+  refreshUnresolvedLinkDiagnostics(sourceNoteIds: string[]): void {
+    for (const noteId of [...new Set(sourceNoteIds)]) {
+      const path = this.db.query<{ path: string }, [string]>("SELECT path FROM notes WHERE note_id = ?1").get(noteId)?.path;
+      if (!path) continue;
+      const diagnosticPath = join(this.vaultRoot, path);
+      this.db.query("DELETE FROM diagnostics WHERE path = ?1 AND code = 'unresolved-wikilink'").run(diagnosticPath);
+      const unresolved = this.db.query<{ target_title: string; line: number; column_number: number }, [string]>("SELECT target_title, line, column_number FROM links WHERE source_note_id = ?1 AND status = 'unresolved'").all(noteId);
+      for (const link of unresolved) this.db.query("INSERT INTO diagnostics (path, severity, code, message, line, column_number) VALUES (?1, 'warning', 'unresolved-wikilink', ?2, ?3, ?4)").run(diagnosticPath, `Unresolved wikilink '${link.target_title}'.`, link.line, link.column_number);
+    }
+  }
+
+  /** Refresh only wikilink edges whose source or target is in the affected note set. */
+  refreshWikilinkEdgesFor(noteIds: string[]): void {
+    const ids = [...new Set(noteIds.filter(Boolean))];
+    if (ids.length === 0) return;
+    const placeholders = ids.map(() => "?").join(",");
+    this.db.query(`DELETE FROM graph_edges WHERE kind = 'wikilink' AND (from_id IN (${ids.map(() => "?").join(",")}) OR to_id IN (${ids.map(() => "?").join(",")}))`).run(...ids.map(noteNodeId), ...ids.map(noteNodeId));
+    const links = this.db.query<{ source_note_id: string; target_note_id: string; target_section: string | null; row_id: number }, string[]>(`SELECT source_note_id, target_note_id, target_section, row_id FROM links WHERE target_note_id IS NOT NULL AND (source_note_id IN (${placeholders}) OR target_note_id IN (${placeholders}))`).all(...ids, ...ids);
+    for (const link of links) this.db.query("INSERT OR IGNORE INTO graph_edges (from_id, to_id, kind, metadata_json) VALUES (?1, ?2, 'wikilink', ?3)").run(`note:${link.source_note_id}`, `note:${link.target_note_id}`, JSON.stringify({ rowId: link.row_id, section: link.target_section }));
+  }
+
+  /** Restore the changed note node and its directory containment edge after a path-local replacement. */
+  upsertNoteGraphNode(note: IndexedNoteRecord): void {
+    const nodeId = noteNodeId(note.id);
+    this.db.query("INSERT OR REPLACE INTO graph_nodes (node_id, kind, path, name, metadata_json) VALUES (?1, 'note', ?2, ?3, ?4)").run(nodeId, note.path, note.title, JSON.stringify({ type: note.type }));
+    const parent = dirname(note.path);
+    const parentId = parent === "." ? "project:root" : directoryNodeId(this.vaultRoot, join(this.vaultRoot, parent));
+    this.db.query("INSERT OR IGNORE INTO graph_edges (from_id, to_id, kind, metadata_json) VALUES (?1, ?2, 'contains', '{}')").run(parentId, nodeId);
   }
 
   counts(): { noteCount: number; sectionCount: number; linkCount: number; tableRowCount: number; graphNodeCount: number; graphEdgeCount: number; diagnosticCount: number } {

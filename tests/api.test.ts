@@ -6,6 +6,7 @@ import { createApiServer } from "../src/api/server.js";
 import { reconcileMarkdown } from "../src/core/reconcile.js";
 import { initVault } from "../src/core/vault.js";
 import { VaultRuntime } from "../src/core/runtime.js";
+import { pdfRendererExecutablePath } from "../src/core/pdf-export.js";
 
 function temporaryVault(): string {
   return initVault(join(mkdtempSync(join(tmpdir(), "cortex-phase3-api-")), "vault"));
@@ -29,7 +30,9 @@ describe("Phase 3 local API", () => {
     await withApi(async (base) => {
       const health = await fetch(base + "/api/health");
       expect(health.status).toBe(200);
-      expect((await health.json()).phase).toBe(3);
+      const healthPayload = await health.json();
+      expect(healthPayload.phase).toBe(3);
+      expect(healthPayload.watchers).toEqual({ vault: "native", workspace: { native: 0, polling: 0 } });
       expect((await (await fetch(base + "/api/health")).json()).workspace.phase).toBe("disabled");
 
       const rebuilt = await fetch(base + "/api/index/rebuild", { method: "POST" });
@@ -50,6 +53,21 @@ describe("Phase 3 local API", () => {
       const invalid = await fetch(base + "/api/note");
       expect(invalid.status).toBe(400);
       expect((await invalid.json()).error.code).toBe("INVALID_INPUT");
+    });
+  });
+
+  test("returns a deterministic, bounded graph neighborhood", async () => {
+    await withApi(async (base) => {
+      const responses = await Promise.all([
+        fetch(base + "/api/project-map?depth=3&limit=50"),
+        fetch(base + "/api/project-map?depth=3&limit=50"),
+      ]);
+      const payloads = await Promise.all(responses.map((response) => response.json() as Promise<{ anchor: { nodeId: string }; nodes: unknown[]; edges: unknown[]; truncated: boolean }>));
+      expect(payloads[0]?.anchor.nodeId).toBe("project:root");
+      expect(payloads[0]?.nodes.length).toBeLessThanOrEqual(50);
+      expect(payloads[0]?.nodes).toEqual(payloads[1]?.nodes);
+      expect(payloads[0]?.edges).toEqual(payloads[1]?.edges);
+      expect(typeof payloads[0]?.truncated).toBe("boolean");
     });
   });
 
@@ -84,6 +102,37 @@ describe("Phase 3 local API", () => {
     });
   });
 
+  test("paginates note metadata with an opaque cursor", async () => {
+    await withApi(async (base) => {
+      const first = await (await fetch(base + "/api/notes?limit=1")).json() as { notes: Array<{ path: string }>; truncated: boolean; next_cursor?: string };
+      expect(first.notes).toHaveLength(1);
+      expect(first.truncated).toBe(true);
+      expect(first.next_cursor).toBeTruthy();
+
+      const second = await (await fetch(base + "/api/notes?limit=1&cursor=" + encodeURIComponent(first.next_cursor!))).json() as { notes: Array<{ path: string }>; truncated: boolean };
+      expect(second.notes).toHaveLength(1);
+      expect(second.notes[0]?.path).not.toBe(first.notes[0]?.path);
+
+      const invalid = await fetch(base + "/api/notes?cursor=not-a-cursor");
+      expect(invalid.status).toBe(400);
+      expect((await invalid.json()).error.code).toBe("INVALID_INPUT");
+    });
+  });
+
+  test("resolves wikilink suggestions beyond the paged catalog by title, alias, and filename stem", async () => {
+    await withApi(async (base, vault) => {
+      const extra = join(vault, "notes", "deep-link-target.md");
+      writeFileSync(extra, `---\nid: 9f91a1a1-1111-4111-8111-111111111111\ntitle: Deep Link Target\ntype: note\ncreated_at: 2026-01-01T00:00:00.000Z\nupdated_at: 2026-01-01T00:00:00.000Z\naliases:\n  - Hidden Destination\ntags: []\napplies_to: []\n---\n# Deep Link Target\n`);
+      await fetch(base + "/api/index/rebuild", { method: "POST" });
+
+      const byAlias = await (await fetch(base + "/api/notes/suggest?query=hidden%20destination&limit=20")).json() as { matches: Array<{ path: string; title: string; aliases: string[] }> };
+      expect(byAlias.matches.some((match) => match.path === "notes/deep-link-target.md" && match.aliases.includes("Hidden Destination"))).toBe(true);
+
+      const byStem = await (await fetch(base + "/api/notes/suggest?query=deep-link-target&limit=20")).json() as { matches: Array<{ path: string }> };
+      expect(byStem.matches.some((match) => match.path === "notes/deep-link-target.md")).toBe(true);
+    });
+  });
+
   test("validates PDF export input without mutating the source note", async () => {
     await withApi(async (base) => {
       const before = await (await fetch(base + "/api/note?selector=project-map.md&source=true")).json() as { note: { content_hash: string }; body: string };
@@ -97,6 +146,33 @@ describe("Phase 3 local API", () => {
       const after = await (await fetch(base + "/api/note?selector=project-map.md&source=true")).json() as { note: { content_hash: string } };
       expect(after.note.content_hash).toBe(before.note.content_hash);
     });
+  });
+
+  test("delivers PDF bytes with a checksum and explicit length", async () => {
+    const executable = pdfRendererExecutablePath();
+    if (!executable) return;
+    const previous = process.env.CORTEX_CHROMIUM_PATH;
+    process.env.CORTEX_CHROMIUM_PATH = executable;
+    try {
+      await withApi(async (base) => {
+        const response = await fetch(base + "/api/note/export/pdf", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ note: "project-map.md", body: "# Export\n\nBounded bytes.", title: "Export" }),
+        });
+        expect(response.status).toBe(200);
+        expect(response.headers.get("content-type")).toContain("application/pdf");
+        expect(response.headers.get("content-length")).toBeTruthy();
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        expect(Number(response.headers.get("content-length"))).toBe(bytes.length);
+        const checksum = await crypto.subtle.digest("SHA-256", bytes);
+        const actual = Array.from(new Uint8Array(checksum), (byte) => byte.toString(16).padStart(2, "0")).join("");
+        expect(response.headers.get("x-cortex-pdf-sha256")).toBe(actual);
+      });
+    } finally {
+      if (previous === undefined) delete process.env.CORTEX_CHROMIUM_PATH;
+      else process.env.CORTEX_CHROMIUM_PATH = previous;
+    }
   });
 
   test("reconciles disjoint sections and reports overlapping conflicts", () => {
@@ -154,7 +230,44 @@ Two
       await reader.cancel();
       expect(received).toContain("project-map.md");
       expect(received).not.toContain(vault);
+      const data = received.split("\n").find((line) => line.startsWith("data: "));
+      const changeSet = JSON.parse(data?.slice("data: ".length) ?? "{}") as { sequence?: number; generation?: number; events?: Array<{ scopes?: string[] }> };
+      expect(changeSet.sequence).toBeGreaterThan(0);
+      expect(changeSet.generation).toBeGreaterThan(0);
+      expect(changeSet.events?.[0]?.scopes).toEqual(expect.arrayContaining(["content", "graph"]));
       expect(existsSync(path)).toBe(true);
     });
   }, 10_000);
+
+  test("replays versioned changes and emits one app-owned write event", async () => {
+    await withApi(async (base) => {
+      const source = await (await fetch(base + "/api/note?selector=project-map.md&source=true")).json() as { note: { content_hash: string }; body: string };
+      const update = await fetch(base + "/api/note", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ note: "project-map.md", expected_file_hash: source.note.content_hash, body: source.body + "\nApp-owned event.\n" }),
+      });
+      expect(update.status).toBe(200);
+      const replay = await (await fetch(base + "/api/changes?since=0")).json() as { changes: Array<{ events: Array<{ path: string }> }>; resyncRequired: boolean };
+      expect(replay.resyncRequired).toBe(false);
+      const matching = replay.changes.flatMap((change) => change.events).filter((event) => event.path === "project-map.md");
+      expect(matching).toHaveLength(1);
+
+      const stream = await fetch(base + "/events?since=0");
+      const reader = stream.body!.getReader();
+      const decoder = new TextDecoder();
+      let replayed = "";
+      const deadline = Date.now() + 1000;
+      while (!replayed.includes("project-map.md") && Date.now() < deadline) {
+        const next = await reader.read();
+        if (next.done) break;
+        replayed += decoder.decode(next.value);
+      }
+      await reader.cancel();
+      expect(replayed).toContain("project-map.md");
+
+      const stale = await (await fetch(base + "/api/changes?since=999")).json() as { resyncRequired: boolean };
+      expect(stale.resyncRequired).toBe(true);
+    });
+  });
 });
