@@ -260,7 +260,7 @@ describe("watcher", () => {
         firstCallbackStarted();
         await new Promise((resolve) => setTimeout(resolve, 800));
         activeCallbacks -= 1;
-      }, { pollIntervalMs: 25 });
+      }, { pollIntervalMs: 25, forcePolling: true });
 
       writeFileSync(watchedPath, `${readFileSync(watchedPath, "utf8")}\nfirst change\n`);
       await firstCallback;
@@ -291,6 +291,7 @@ describe("watcher", () => {
           if (watched) resolve(watched.path);
         }).then((value) => {
           handle = value;
+          expect(value.mode).toBe("native");
           writeFileSync(join(vault, "native-watch.md"), readFileSync(join(vault, "project-map.md"), "utf8"));
         });
       });

@@ -79,7 +79,14 @@ export function useDocumentSession() {
     isDirtyRef.current = keepNewerDraft && (draftRef.current !== baseRef.current || JSON.stringify(metadataDraftRef.current) !== JSON.stringify(baseMetadataRef.current));
     setBase(source.body);
     setBaseMetadata(cloneMetadata(nextMetadata));
-    if (!keepNewerDraft) {
+    if (keepNewerDraft) {
+      // A keystroke can land between the request snapshot and the response
+      // before the coalesced animation-frame state update runs. Publish the
+      // ref-owned draft now so the shell cannot briefly believe the document
+      // is clean and hide the second Save action.
+      setDraftState(draftRef.current);
+      setMetadataDraftState(metadataDraftRef.current);
+    } else {
       localRevision.current = 0;
       setDraftState(source.body);
       setMetadataDraftState(nextMetadata);
@@ -87,7 +94,15 @@ export function useDocumentSession() {
   }, []);
 
   const isDirty = useMemo(
-    () => draft !== base || JSON.stringify(metadataDraft) !== JSON.stringify(baseMetadata),
+    // The refs are updated synchronously by replace/acknowledge before their
+    // React state snapshots flush. During that narrow window the old draft can
+    // be rendered next to a new base and look dirty even though no user edit
+    // exists. The ref is the authoritative protocol state; the snapshots only
+    // provide the values for the comparison and rerender after a real edit.
+    () => {
+      const dirty = isDirtyRef.current && (draft !== base || JSON.stringify(metadataDraft) !== JSON.stringify(baseMetadata));
+      return dirty;
+    },
     [base, baseMetadata, draft, metadataDraft],
   );
 

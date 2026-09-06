@@ -5,7 +5,7 @@ import { RUNTIME_DIRECTORY } from "./vault.js";
 type ParcelWatcher = typeof import("@parcel/watcher");
 
 const DEFAULT_EVENT_FLUSH_DELAY_MS = 100;
-const DEFAULT_PACKAGED_POLL_INTERVAL_MS = 1_000;
+export const DEFAULT_PACKAGED_POLL_INTERVAL_MS = 15_000;
 
 export type WatchEvent = {
   type: "create" | "update" | "delete";
@@ -13,6 +13,7 @@ export type WatchEvent = {
 };
 
 export type WatcherHandle = {
+  mode: "native" | "polling";
   stop: () => Promise<void>;
   flushSnapshot: () => Promise<void>;
 };
@@ -22,6 +23,10 @@ export type WatcherOptions = {
   ignorePath?: (relativePath: string) => boolean;
   /** Override the packaged polling interval for controlled callers and tests. */
   pollIntervalMs?: number;
+  /** Stagger expensive fallback scans when several repository watchers start together. */
+  pollStartDelayMs?: number;
+  /** Internal recovery/test seam for exercising the polling adapter. */
+  forcePolling?: boolean;
 };
 
 function ignored(relativePath: string, options?: WatcherOptions): boolean {
@@ -135,7 +140,7 @@ async function startPollingWatcher(
   let previous = fileSnapshot(vaultRoot, options);
   const eventQueue = createEventQueue(vaultRoot, onEvents, options);
 
-  const interval = setInterval(() => {
+  const poll = () => {
     const current = fileSnapshot(vaultRoot, options);
     const events: WatchEvent[] = [];
     for (const [path, signature] of current) {
@@ -148,11 +153,17 @@ async function startPollingWatcher(
     }
     previous = current;
     if (events.length > 0) eventQueue.queue(events);
-  }, options?.pollIntervalMs ?? DEFAULT_PACKAGED_POLL_INTERVAL_MS);
+  };
+  let interval: ReturnType<typeof setInterval> | undefined;
+  const startTimer = setTimeout(() => {
+    interval = setInterval(poll, options?.pollIntervalMs ?? DEFAULT_PACKAGED_POLL_INTERVAL_MS);
+  }, options?.pollStartDelayMs ?? 0);
 
   return {
+    mode: "polling",
     async stop() {
-      clearInterval(interval);
+      clearTimeout(startTimer);
+      if (interval) clearInterval(interval);
       await eventQueue.stop();
     },
     async flushSnapshot() {
@@ -166,11 +177,17 @@ export async function startWatcher(
   onEvents: (events: WatchEvent[]) => Promise<void>,
   options?: WatcherOptions,
 ): Promise<WatcherHandle> {
-  if (process.env.CORTEX_PACKAGED === "1" && options?.pollIntervalMs !== undefined) {
-    return startPollingWatcher(vaultRoot, onEvents, options);
+  if (options?.forcePolling) return startPollingWatcher(vaultRoot, onEvents, options);
+  let parcelWatcher: ParcelWatcher;
+  try {
+    parcelWatcher = await import("@parcel/watcher");
+  } catch (error) {
+    if (process.env.CORTEX_PACKAGED === "1") {
+      console.error(`Native filesystem watcher unavailable; using bounded polling fallback: ${error instanceof Error ? error.message : String(error)}`);
+      return startPollingWatcher(vaultRoot, onEvents, options);
+    }
+    throw error;
   }
-
-  const parcelWatcher: ParcelWatcher = await import("@parcel/watcher");
   const snapshotPath = join(vaultRoot, RUNTIME_DIRECTORY, "watcher.snapshot");
   mkdirSync(join(vaultRoot, RUNTIME_DIRECTORY), { recursive: true });
   const eventQueue = createEventQueue(vaultRoot, onEvents, options);
@@ -198,6 +215,7 @@ export async function startWatcher(
   }
 
   return {
+    mode: "native",
     async stop() {
       await eventQueue.stop();
       await subscription.unsubscribe();

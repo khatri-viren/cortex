@@ -31,6 +31,8 @@ export type NoteRecord = {
   content_hash: string;
 };
 
+export type NoteLinkSuggestion = Pick<NoteRecord, "id" | "path" | "title" | "aliases">;
+
 export type GraphNodeRecord = {
   nodeId: string;
   kind: string;
@@ -182,6 +184,10 @@ export type HealthResult = {
   phase: 3;
   index: IndexCounts;
   workspace: { active: boolean; phase: IndexPhase; error?: string };
+  watchers: {
+    vault: "starting" | "native" | "polling";
+    workspace: { native: number; polling: number };
+  };
 };
 
 export type HistoryResult = { path: string; commits: GitCommit[] };

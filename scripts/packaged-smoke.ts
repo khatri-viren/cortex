@@ -67,7 +67,9 @@ async function stopProcess(process: Bun.Subprocess): Promise<void> {
 
 async function runSmoke(args: SmokeArguments): Promise<void> {
   const sidecar = join(args.bundle, "Contents", "MacOS", "cortex-sidecar");
-  const uiDist = join(args.bundle, "Contents", "Resources", "dist");
+  const resources = join(args.bundle, "Contents", "Resources");
+  const uiDist = join(resources, "dist");
+  const nodeModules = join(resources, "node_modules");
   const packagedChromium = process.platform === "darwin"
     ? join(args.bundle, "Contents", "Resources", "chromium", "Chromium.app", "Contents", "MacOS", "Google Chrome for Testing")
     : join(args.bundle, "Contents", "Resources", "chromium", process.platform === "win32" ? "chrome.exe" : "chrome");
@@ -83,8 +85,8 @@ async function runSmoke(args: SmokeArguments): Promise<void> {
     const ports = await Promise.all([freePort(), freePort()]);
     for (const [vault, port] of [[vaultA, ports[0]], [vaultB, ports[1]]] as const) {
       const child = Bun.spawn([sidecar, "dev", "--vault", vault, "--port", String(port)], {
-        cwd: uiDist,
-        env: { ...Bun.env, CORTEX_PACKAGED: "1", CORTEX_UI_DIST: uiDist, CORTEX_PACKAGED_CHROMIUM_PATH: packagedChromium },
+        cwd: resources,
+        env: { ...Bun.env, CORTEX_PACKAGED: "1", CORTEX_UI_DIST: uiDist, CORTEX_PACKAGED_CHROMIUM_PATH: packagedChromium, NODE_PATH: nodeModules },
         stdout: "ignore",
         stderr: "ignore",
       });
@@ -92,6 +94,9 @@ async function runSmoke(args: SmokeArguments): Promise<void> {
     }
     const health = await Promise.all(ports.map(waitForHealth));
     if (health.some((item) => item.status !== "ok")) throw new Error("A packaged vault runtime did not report status=ok.");
+    if (health.some((item) => (item.watchers as { vault?: string } | undefined)?.vault !== "native")) {
+      throw new Error("A packaged vault runtime did not load the native filesystem watcher.");
+    }
     const responses = await Promise.all(ports.map((port) => fetch(`http://127.0.0.1:${port}/`)));
     if (responses.some((response) => !response.ok)) throw new Error("A packaged runtime did not serve the bundled UI.");
     const html = await Promise.all(responses.map((response) => response.text()));

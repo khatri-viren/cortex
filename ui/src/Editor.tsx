@@ -21,8 +21,9 @@ import {
   highlightSpecialChars,
   keymap,
   lineNumbers,
+  ViewPlugin,
 } from "@codemirror/view";
-import type { NoteSummary } from "./api";
+import type { NoteLinkSuggestion, NoteSummary } from "./api";
 import type { ApiSection } from "../../src/api/contracts";
 import { SectionOutline } from "./components/section-outline";
 
@@ -89,11 +90,6 @@ function normalizeHeadingText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-function isScrollable(element: HTMLElement): boolean {
-  const overflowY = window.getComputedStyle(element).overflowY;
-  return (overflowY === "auto" || overflowY === "scroll") && element.scrollHeight > element.clientHeight;
-}
-
 type EditorProps = {
   value: string;
   mode: "source" | "reading" | "live";
@@ -101,6 +97,7 @@ type EditorProps = {
   linkTargets?: string[];
   notePath?: string;
   notes?: NoteSummary[];
+  suggestNoteLinks?: (query: string) => Promise<{ matches: NoteLinkSuggestion[]; truncated: boolean }>;
   onOpenNote?: (path: string) => void;
   sections?: ApiSection[];
   // Bumped by the caller whenever `value` was replaced by something other
@@ -126,6 +123,7 @@ export const Editor = memo(function Editor({
   linkTargets = [],
   notePath,
   notes = [],
+  suggestNoteLinks,
   onOpenNote,
   sections = [],
   contentRevision = 0,
@@ -137,6 +135,8 @@ export const Editor = memo(function Editor({
   const view = useRef<EditorView | null>(null);
   const editorHandleRef = useRef<AtomicCodeMirrorEditorHandle | null>(null);
   const readingHostRef = useRef<HTMLDivElement | null>(null);
+  const readingViewRef = useRef<EditorView | null>(null);
+  const scheduleActiveSectionRef = useRef<() => void>(() => undefined);
   const [activeSectionIndex, setActiveSectionIndex] = useState(0);
   const disabledRef = useRef(disabled);
   const onFocusCompleteRef = useRef(onFocusComplete);
@@ -150,14 +150,49 @@ export const Editor = memo(function Editor({
         .sort((a, b) => a.startLine - b.startLine),
     [sections],
   );
+  const outlineSectionLines = useMemo(() => {
+    const bodyLines = value.split(/\r?\n/);
+    const bodyHeadings = bodyLines.flatMap((line, index) => {
+      const match = line.match(/^(#{1,2})\s+(.+?)\s*#*\s*$/);
+      return match
+        ? [{ level: match[1].length, heading: normalizeHeadingText(match[2]), line: index + 1 }]
+        : [];
+    });
+    let cursor = 0;
+    return outlineSections.map((section, sectionIndex) => {
+      const matchIndex = bodyHeadings.findIndex((heading, index) => (
+        index >= cursor
+        && heading.level === section.level
+        && heading.heading === normalizeHeadingText(section.heading)
+      ));
+      if (matchIndex >= 0) {
+        cursor = matchIndex + 1;
+        return bodyHeadings[matchIndex].line;
+      }
+      // Keep tracking useful while a heading is being renamed in Live mode:
+      // its ordinal is more accurate than the API's file-absolute startLine,
+      // which includes frontmatter that is not present in the editor body.
+      const ordinalMatch = bodyHeadings[sectionIndex];
+      if (ordinalMatch) {
+        cursor = Math.max(cursor, sectionIndex + 1);
+        return ordinalMatch.line;
+      }
+      return Math.max(1, Math.min(section.startLine, bodyLines.length));
+    });
+  }, [outlineSections, value]);
   const outlineSectionsRef = useRef<ApiSection[]>([]);
+  const outlineSectionLinesRef = useRef<number[]>([]);
   const modeRef = useRef(mode);
-  outlineSectionsRef.current = outlineSections;
-  modeRef.current = mode;
+  useEffect(() => {
+    outlineSectionsRef.current = outlineSections;
+    outlineSectionLinesRef.current = outlineSectionLines;
+    modeRef.current = mode;
+  }, [mode, outlineSectionLines, outlineSections]);
   const onChangeRef = useRef(onChange);
   const linkTargetsRef = useRef(linkTargets);
   const notesRef = useRef(notes);
   const onOpenNoteRef = useRef(onOpenNote);
+  const suggestNoteLinksRef = useRef(suggestNoteLinks);
   // attachSourceHost is a useCallback with empty deps, memoized once for the
   // Editor instance's whole lifetime — its closure over `value` would
   // otherwise be frozen from whichever render first created it, so every
@@ -170,6 +205,9 @@ export const Editor = memo(function Editor({
   valueRef.current = value;
   notesRef.current = notes;
   onOpenNoteRef.current = onOpenNote;
+  useEffect(() => {
+    suggestNoteLinksRef.current = suggestNoteLinks;
+  }, [suggestNoteLinks]);
 
   function wikilinkCompletions(
     context: CompletionContext,
@@ -240,56 +278,72 @@ export const Editor = memo(function Editor({
   function findNoteByTitle(title: string): NoteSummary | undefined {
     const lowered = title.toLocaleLowerCase();
     return notesRef.current.find(
-      (note) => note.title.toLocaleLowerCase() === lowered,
+      (note) => note.title.toLocaleLowerCase() === lowered
+        || note.aliases.some((alias) => alias.toLocaleLowerCase() === lowered)
+        || note.path.replace(/\.md$/i, "").split("/").at(-1)?.toLocaleLowerCase() === lowered,
     );
   }
 
+  const remoteLinkMatchesRef = useRef(new Map<string, NoteLinkSuggestion>());
+
   const readingExtensions = useMemo(
     () => [
-      // CodeMirror reports document and viewport transactions even while its
-      // virtualized line DOM is being replaced. Resolve the active heading
-      // from document line blocks here so duplicate headings and unsaved
-      // edits retain their section identity without a mutation observer.
-      EditorView.updateListener.of((update) => {
-        if (!(update.docChanged || update.viewportChanged || update.geometryChanged)) return;
-        requestAnimationFrame(() => {
-          if (modeRef.current === "source") return;
-          const currentSections = outlineSectionsRef.current;
-          if (currentSections.length < 2) return;
-          const scroller = update.view.scrollDOM;
-          const activationLine = scroller.getBoundingClientRect().top + Math.min(160, scroller.clientHeight * 0.3);
-          const maxScroll = scroller.scrollHeight - scroller.clientHeight;
-          if (maxScroll <= 0 || scroller.scrollTop >= maxScroll - 2) {
-            setActiveSectionIndex((current) => current === currentSections.length - 1 ? current : currentSections.length - 1);
-            return;
-          }
-          let next = 0;
-          for (let index = 0; index < currentSections.length; index += 1) {
-            const lineNumber = Math.max(1, Math.min(currentSections[index].startLine, update.view.state.doc.lines));
-            const coords = update.view.coordsAtPos(update.view.state.doc.line(lineNumber).from);
-            if (coords && coords.top <= activationLine) next = index;
-            else if (coords) break;
-          }
-          setActiveSectionIndex((current) => current === next ? current : next);
-        });
+      // Keep a direct reference to the reading view. Section tracking uses
+      // CM6's line blocks (including estimated off-screen positions), which
+      // remain stable across virtualization and preserve duplicate-heading
+      // identity through the section's source line.
+      ViewPlugin.define((editorView) => {
+        readingViewRef.current = editorView;
+        const initialFrame = requestAnimationFrame(() => scheduleActiveSectionRef.current());
+        return {
+          update(update) {
+            if (update.docChanged || update.viewportChanged || update.geometryChanged) {
+              scheduleActiveSectionRef.current();
+            }
+          },
+          destroy() {
+            cancelAnimationFrame(initialFrame);
+            if (readingViewRef.current === editorView) readingViewRef.current = null;
+          },
+        };
       }),
       wikiLinks({
         suggest: async (query) => {
           const lowered = query.toLocaleLowerCase();
-          return notesRef.current
+          const local = notesRef.current
             .filter((note) => note.title.toLocaleLowerCase().includes(lowered))
             .slice(0, 20)
             .map((note) => ({ target: note.title, label: note.title }));
+          const remote = suggestNoteLinksRef.current ? await suggestNoteLinksRef.current(query) : undefined;
+          remote?.matches.forEach((note) => {
+            remoteLinkMatchesRef.current.set(note.title.toLocaleLowerCase(), note);
+            note.aliases.forEach((alias) => remoteLinkMatchesRef.current.set(alias.toLocaleLowerCase(), note));
+            remoteLinkMatchesRef.current.set(note.path.replace(/\.md$/i, "").split("/").at(-1)?.toLocaleLowerCase() ?? note.path.toLocaleLowerCase(), note);
+          });
+          if (!remote) return local;
+          return remote.matches.map((note) => ({ target: note.title, label: note.title }));
         },
         resolve: async (target) => {
           const note = findNoteByTitle(target);
-          return note
-            ? { target, label: note.title, status: "resolved" as const }
-            : { target, label: target, status: "missing" as const };
+          if (note) return { target, label: note.title, status: "resolved" as const };
+          const lowered = target.toLocaleLowerCase();
+          const cached = remoteLinkMatchesRef.current.get(lowered);
+          if (cached) return { target, label: cached.title, status: "resolved" as const };
+          if (suggestNoteLinksRef.current) {
+            const remote = await suggestNoteLinksRef.current(target);
+            const exact = remote.matches.find((candidate) => candidate.title.toLocaleLowerCase() === lowered || candidate.aliases.some((alias) => alias.toLocaleLowerCase() === lowered) || candidate.path.replace(/\.md$/i, "").split("/").at(-1)?.toLocaleLowerCase() === lowered);
+            if (exact) {
+              remoteLinkMatchesRef.current.set(lowered, exact);
+              return { target, label: exact.title, status: "resolved" as const };
+            }
+          }
+          return { target, label: target, status: "missing" as const };
         },
         onOpen: (target) => {
           const note = findNoteByTitle(target);
+          const remote = remoteLinkMatchesRef.current.get(target.toLocaleLowerCase());
           if (note) onOpenNoteRef.current?.(note.path);
+          else if (remote) onOpenNoteRef.current?.(remote.path);
         },
         openOnClick: true,
       }),
@@ -303,58 +357,55 @@ export const Editor = memo(function Editor({
     if (mode === "source" || outlineSections.length < 2) return;
     const hostElement = readingHostRef.current;
     if (!hostElement) return;
+    const viewportElement = hostElement.closest<HTMLElement>(".note-document-scroll");
+    if (!viewportElement) return;
+    const viewport: HTMLElement = viewportElement;
 
-    function getScroller(): HTMLElement | undefined {
-      return readingHostRef.current?.querySelector<HTMLElement>(".cm-scroller") ?? undefined;
+    let bottomPinned = false;
+
+    function bottomTolerance() {
+      return Math.max(2, Math.min(160, viewport.clientHeight * 0.25));
     }
 
     function updateActive() {
-      const scroller = getScroller();
-      if (!scroller) return;
+      const editorView = readingViewRef.current;
+      if (!editorView || modeRef.current === "source") return;
+      const currentSections = outlineSectionsRef.current;
+      if (currentSections.length < 2) return;
 
+      const scroller = editorView.scrollDOM;
       const scrollerRect = scroller.getBoundingClientRect();
-      const activationLine = scrollerRect.top + Math.min(160, scroller.clientHeight * 0.3);
-      const renderedHeadings = Array.from(
-        scroller.querySelectorAll<HTMLElement>(".cm-line.cm-atomic-h1, .cm-line.cm-atomic-h2"),
-      );
-      const maxScroll = scroller.scrollHeight - scroller.clientHeight;
+      const viewportRect = viewport.getBoundingClientRect();
+      const visibleTop = Math.max(scrollerRect.top, viewportRect.top);
+      const visibleBottom = Math.min(scrollerRect.bottom, viewportRect.bottom);
+      const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+      const activationLine = visibleTop + Math.min(160, visibleHeight * 0.3);
+      const maxScroll = viewport.scrollHeight - viewport.clientHeight;
+      // CodeMirror can refine its virtualized document height for a frame as
+      // the last lines are mounted. Treat the final viewport-sized sliver as
+      // the document end so the rail does not stay on the previous heading
+      // while that estimate settles.
+      const endTolerance = bottomTolerance();
 
       // The final heading can remain below the activation line when the
       // document has reached its scroll limit. Clamp to the final section so
       // the rail does not leave the previous heading active at the bottom.
-      if (maxScroll <= 0 || scroller.scrollTop >= maxScroll - 2) {
-        const lastSection = outlineSections.length - 1;
+      if (maxScroll <= 0 || bottomPinned || viewport.scrollTop >= maxScroll - endTolerance) {
+        bottomPinned = true;
+        const lastSection = currentSections.length - 1;
         setActiveSectionIndex((current) => current === lastSection ? current : lastSection);
         return;
       }
 
-      let sectionCursor = 0;
-      let renderedActive: number | undefined;
-
-      for (const heading of renderedHeadings) {
-        const level = heading.classList.contains("cm-atomic-h1") ? 1 : 2;
-        const headingText = normalizeHeadingText(heading.textContent ?? "");
-        const sectionIndex = outlineSections.findIndex((section, index) => (
-          index >= sectionCursor && section.level === level && normalizeHeadingText(section.heading) === headingText
-        ));
-        if (sectionIndex < 0) continue;
-        sectionCursor = sectionIndex + 1;
-        if (heading.getBoundingClientRect().top <= activationLine) renderedActive = sectionIndex;
-      }
-
-      if (renderedActive !== undefined) {
-        setActiveSectionIndex((current) => current === renderedActive ? current : renderedActive);
-        return;
-      }
-
-      // CM6 virtualizes the document. If no rendered heading is close enough
-      // to the activation line yet, use the scroll fraction as a stable
-      // fallback until the next batch of heading lines is mounted.
-      const fraction = maxScroll > 0 ? scroller.scrollTop / maxScroll : 0;
-      const approxLine = 1 + fraction * (value.split("\n").length - 1);
       let next = 0;
-      for (let i = 0; i < outlineSections.length; i += 1) {
-        if (outlineSections[i].startLine <= approxLine) next = i;
+      for (let index = 0; index < currentSections.length; index += 1) {
+        const lineNumber = Math.max(1, Math.min(
+          outlineSectionLinesRef.current[index] ?? currentSections[index].startLine,
+          editorView.state.doc.lines,
+        ));
+        const block = editorView.lineBlockAt(editorView.state.doc.line(lineNumber).from);
+        const headingTop = scrollerRect.top - scroller.scrollTop + block.top;
+        if (headingTop <= activationLine) next = index;
         else break;
       }
       setActiveSectionIndex((current) => current === next ? current : next);
@@ -362,6 +413,10 @@ export const Editor = memo(function Editor({
 
     let frame = 0;
     function scheduleUpdate() {
+      const maxScroll = viewport.scrollHeight - viewport.clientHeight;
+      const tolerance = bottomTolerance();
+      if (maxScroll > 0 && viewport.scrollTop >= maxScroll - tolerance) bottomPinned = true;
+      else if (maxScroll > 0 && viewport.scrollTop < maxScroll - tolerance * 2) bottomPinned = false;
       if (frame) return;
       frame = requestAnimationFrame(() => {
         frame = 0;
@@ -369,23 +424,21 @@ export const Editor = memo(function Editor({
       });
     }
 
-    const scrollAncestors: HTMLElement[] = [];
-    let ancestor = hostElement.parentElement;
-    while (ancestor) {
-      if (isScrollable(ancestor)) scrollAncestors.push(ancestor);
-      ancestor = ancestor.parentElement;
-    }
-    hostElement.addEventListener("scroll", scheduleUpdate, true);
-    for (const scrollAncestor of scrollAncestors) scrollAncestor.addEventListener("scroll", scheduleUpdate);
+    scheduleActiveSectionRef.current = scheduleUpdate;
+    viewport.addEventListener("scroll", scheduleUpdate);
     window.addEventListener("resize", scheduleUpdate);
+    const resizeObserver = new ResizeObserver(scheduleUpdate);
+    resizeObserver.observe(viewport);
+    resizeObserver.observe(hostElement);
     scheduleUpdate();
     return () => {
-      hostElement.removeEventListener("scroll", scheduleUpdate, true);
-      for (const scrollAncestor of scrollAncestors) scrollAncestor.removeEventListener("scroll", scheduleUpdate);
+      scheduleActiveSectionRef.current = () => undefined;
+      viewport.removeEventListener("scroll", scheduleUpdate);
       window.removeEventListener("resize", scheduleUpdate);
+      resizeObserver.disconnect();
       if (frame) cancelAnimationFrame(frame);
     };
-  }, [mode, outlineSections, value]);
+  }, [mode, outlineSections]);
 
   // Plain heading text collides with any earlier prose that happens to
   // repeat it (e.g. a link labeled the same as its own target heading), so
@@ -427,10 +480,10 @@ export const Editor = memo(function Editor({
 
   if (mode !== "source") {
     return (
-      <div className="relative flex h-full min-h-[440px] min-w-0 w-full flex-1 max-[700px]:min-h-[420px]">
+      <div className="relative flex min-h-[440px] min-w-0 w-full max-[700px]:min-h-[420px]">
         <div
           ref={readingHostRef}
-          className="atomic-editor-host h-full min-w-0 flex-1 overflow-auto"
+          className="atomic-editor-host min-h-[440px] min-w-0 flex-1 overflow-visible max-[700px]:min-h-[420px]"
           aria-label="Markdown editor"
         >
           <AtomicCodeMirrorEditor

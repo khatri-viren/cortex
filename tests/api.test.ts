@@ -30,7 +30,9 @@ describe("Phase 3 local API", () => {
     await withApi(async (base) => {
       const health = await fetch(base + "/api/health");
       expect(health.status).toBe(200);
-      expect((await health.json()).phase).toBe(3);
+      const healthPayload = await health.json();
+      expect(healthPayload.phase).toBe(3);
+      expect(healthPayload.watchers).toEqual({ vault: "native", workspace: { native: 0, polling: 0 } });
       expect((await (await fetch(base + "/api/health")).json()).workspace.phase).toBe("disabled");
 
       const rebuilt = await fetch(base + "/api/index/rebuild", { method: "POST" });
@@ -114,6 +116,20 @@ describe("Phase 3 local API", () => {
       const invalid = await fetch(base + "/api/notes?cursor=not-a-cursor");
       expect(invalid.status).toBe(400);
       expect((await invalid.json()).error.code).toBe("INVALID_INPUT");
+    });
+  });
+
+  test("resolves wikilink suggestions beyond the paged catalog by title, alias, and filename stem", async () => {
+    await withApi(async (base, vault) => {
+      const extra = join(vault, "notes", "deep-link-target.md");
+      writeFileSync(extra, `---\nid: 9f91a1a1-1111-4111-8111-111111111111\ntitle: Deep Link Target\ntype: note\ncreated_at: 2026-01-01T00:00:00.000Z\nupdated_at: 2026-01-01T00:00:00.000Z\naliases:\n  - Hidden Destination\ntags: []\napplies_to: []\n---\n# Deep Link Target\n`);
+      await fetch(base + "/api/index/rebuild", { method: "POST" });
+
+      const byAlias = await (await fetch(base + "/api/notes/suggest?query=hidden%20destination&limit=20")).json() as { matches: Array<{ path: string; title: string; aliases: string[] }> };
+      expect(byAlias.matches.some((match) => match.path === "notes/deep-link-target.md" && match.aliases.includes("Hidden Destination"))).toBe(true);
+
+      const byStem = await (await fetch(base + "/api/notes/suggest?query=deep-link-target&limit=20")).json() as { matches: Array<{ path: string }> };
+      expect(byStem.matches.some((match) => match.path === "notes/deep-link-target.md")).toBe(true);
     });
   });
 

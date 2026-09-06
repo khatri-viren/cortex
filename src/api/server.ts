@@ -141,6 +141,7 @@ export function createApiServer(runtime: VaultRuntime, port: number, uiDist?: st
         if (url.pathname === "/api/health" && request.method === "GET") return json(runtime.health());
         if (url.pathname === "/api/index/rebuild" && request.method === "POST") return json(await runtime.rebuildIndex());
         if (url.pathname === "/api/notes" && request.method === "GET") return json(runtime.listNotes(url.searchParams.get("prefix") ?? undefined, url.searchParams.get("tag") ?? undefined, numberParam(url, "limit"), url.searchParams.get("cursor") ?? undefined));
+        if (url.pathname === "/api/notes/suggest" && request.method === "GET") return json(runtime.suggestNoteLinks(url.searchParams.get("query") ?? "", numberParam(url, "limit")));
         if (url.pathname === "/api/vault/tree" && request.method === "GET") return json(runtime.vaultTree());
         if (url.pathname === "/api/note" && request.method === "GET") {
           const selector = url.searchParams.get("selector");

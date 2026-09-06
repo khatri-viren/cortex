@@ -21,7 +21,7 @@ import { GitAdapter } from "./git.js";
 import { RUNTIME_DIRECTORY } from "./vault.js";
 import type { Diagnostic, NoteFrontmatter, Section } from "./types.js";
 import { ServiceError } from "./errors.js";
-import type { DiffResult, GraphDirection, GraphEdgeRecord, GraphNodeRecord, GraphQueryResult, HealthResult, HistoryResult, IndexPhase, IndexRefreshResult, NoteCreateInput, NoteRecord, NoteSelector, NoteSource, NoteUpdateInput, RepositoryDiffResult, RepositoryHistoryResult, RepositoryRestoreResult, VaultChangeEvent, VaultChangeScope, VaultChangeSet, VaultCheckResult, VaultTree, VaultTreeNode, WorkspaceStatus, WriteResult } from "./runtime-types.js";
+import type { DiffResult, GraphDirection, GraphEdgeRecord, GraphNodeRecord, GraphQueryResult, HealthResult, HistoryResult, IndexPhase, IndexRefreshResult, NoteCreateInput, NoteLinkSuggestion, NoteRecord, NoteSelector, NoteSource, NoteUpdateInput, RepositoryDiffResult, RepositoryHistoryResult, RepositoryRestoreResult, VaultChangeEvent, VaultChangeScope, VaultChangeSet, VaultCheckResult, VaultTree, VaultTreeNode, WorkspaceStatus, WriteResult } from "./runtime-types.js";
 import type { IndexReport } from "./index-types.js";
 import { startWatcher, type WatcherHandle } from "./watcher.js";
 import { isWorkspaceIgnored, loadWorkspaceConfig, workspaceIgnorePatterns, workspaceManifestPath, repositoryRelativePath as workspaceRepositoryRelativePath, type WorkspaceConfig, type WorkspaceRepository } from "./workspace.js";
@@ -178,8 +178,11 @@ export class VaultRuntime {
     this.workspacePhase = workspace.workspaceExists ? "warming" : "error";
     this.workspaceError = workspace.workspaceExists ? undefined : `Workspace root does not exist: ${workspace.workspaceRoot}`;
     const ignorePatterns = workspaceIgnorePatterns(workspace.manifest);
-    const watcherOptions = { ignorePath: (path: string) => isWorkspaceIgnored(path, ignorePatterns) };
-    await Promise.all(workspace.repositories.map(async (repository) => {
+    await Promise.all(workspace.repositories.map(async (repository, repositoryIndex) => {
+      const watcherOptions = {
+        ignorePath: (path: string) => isWorkspaceIgnored(path, ignorePatterns),
+        ...(process.env.CORTEX_PACKAGED === "1" ? { pollStartDelayMs: repositoryIndex * 1_000 } : {}),
+      };
       const handle = await startWatcher(repository.absolutePath, async (events) => {
         const normalized = events.map((event) => ({ ...event, path: this.normalizeEventPath(event.path, repository.absolutePath) }));
         this.workspacePhase = "rebuilding";
@@ -702,6 +705,15 @@ export class VaultRuntime {
     return { notes: result.notes.map((row) => this.noteRow(row.id)), truncated: result.truncated, ...(result.nextCursor ? { next_cursor: encodeNoteCursor(result.nextCursor) } : {}) };
   }
 
+  suggestNoteLinks(query = "", limit?: number): { matches: NoteLinkSuggestion[]; truncated: boolean } {
+    const limitValue = clamp(limit, 20, MAX_LIST_LIMIT);
+    const result = this.indexer.store.noteSuggestions(query, limitValue);
+    return {
+      matches: result.notes.map((note) => ({ id: note.id, path: note.path, title: note.title, aliases: note.aliases })),
+      truncated: result.truncated,
+    };
+  }
+
   queryTable(selector: NoteSelector, sectionId?: string, contains?: Record<string, string>, limit?: number): { note: NoteRecord; headers: string[]; rows: string[][]; section_id?: string; truncated: boolean } {
     const note = this.noteRow(selector);
     const parsed = parseMarkdown(readFileSync(resolve(this.vaultRoot, note.path), "utf8"));
@@ -794,6 +806,13 @@ export class VaultRuntime {
       phase: 3,
       index: this.indexer.store.counts(),
       workspace: { active: Boolean(this.workspace), phase: this.workspacePhase, error: this.workspaceError },
+      watchers: {
+        vault: this.watcher?.mode ?? "starting",
+        workspace: [...this.repoWatchers.values()].reduce((counts, watcher) => {
+          counts[watcher.mode] += 1;
+          return counts;
+        }, { native: 0, polling: 0 }),
+      },
     };
   }
 

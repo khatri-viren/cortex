@@ -46,6 +46,7 @@ import {
   rebuildIndex,
   restoreNote,
   searchNotes,
+  suggestNoteLinks,
   subscribeToChanges,
   type NoteSummary,
   updateNote,
@@ -301,6 +302,7 @@ function WorkspaceApp() {
   const [searchResults, setSearchResults] = useState<Array<{ title: string; path: string; snippet: string }>>([]);
   const [status, setStatus] = useState("Ready");
   const [conflict, setConflict] = useState<{ remote: string; hash: string; sections: string[] }>();
+  const [deletedNote, setDeletedNote] = useState<{ path: string }>();
   const [context, setContext] = useState<ApiContext>();
   const [history, setHistory] = useState<ApiHistory>();
   const [selectedRevision, setSelectedRevision] = useState<string>();
@@ -343,6 +345,7 @@ function WorkspaceApp() {
   // stale (see Editor.tsx's contentRevision prop).
   const [contentRevision, setContentRevision] = useState(0);
   const saveRequestRef = useRef(0);
+  const saveInFlightRef = useRef(false);
   const sessionSaveQueueRef = useRef(Promise.resolve());
 
   const currentTitle = metadataDraft?.title ?? source?.note.title ?? "Select a note";
@@ -532,6 +535,7 @@ function WorkspaceApp() {
       setNotes((current) => current.map((note) => note.path === next.note.path ? next.note : note));
     }
     setConflict(undefined);
+    setDeletedNote(undefined);
     setPreviewPath(undefined);
     if (bumpContentRevision) setContentRevision((revision) => revision + 1);
   }
@@ -673,19 +677,31 @@ function WorkspaceApp() {
         return;
       }
       const scopes = new Set(events.flatMap((event) => event.scopes ?? []));
-      const deletedPaths = new Set(events.filter((event) => event.type === "delete").map((event) => event.path));
+      const eventMatchesPath = (eventPath: string, candidate: string): boolean => {
+        const normalized = eventPath.replaceAll("\\", "/").replace(/^\.\//, "");
+        return normalized === candidate || normalized.endsWith("/" + candidate);
+      };
+      const knownPaths = [...new Set([...tabs, ...(selected ? [selected] : [])])];
+      const deletedPaths = new Set(events.filter((event) => event.type === "delete").flatMap((event) => knownPaths.filter((path) => eventMatchesPath(event.path, path))));
       if (deletedPaths.size > 0) {
-        setTabs((current) => current.filter((path) => !deletedPaths.has(path)));
-        if (selected && deletedPaths.has(selected) && !isDirty) {
+        const dirtyDeletedPath = activeNotePath && isDirtyRef.current && deletedPaths.has(activeNotePath) ? activeNotePath : undefined;
+        setTabs((current) => current.filter((path) => !deletedPaths.has(path) || path === dirtyDeletedPath));
+        if (dirtyDeletedPath) {
+          setDeletedNote({ path: dirtyDeletedPath });
+          setStatus("Note deleted externally; local draft is preserved");
+        } else if (selected && deletedPaths.has(selected)) {
           setSelected((current) => current && deletedPaths.has(current) ? undefined : current);
+          setSource(undefined);
+          setPreviewPath(undefined);
         }
       }
       // Versioned scopes keep body-only edits from refetching the whole tree
       // and catalog. Empty batches represent projection status transitions.
       if (events.length === 0 || scopes.has("catalog") || scopes.has("tree")) refreshVaultData();
       if (events.length === 0 || scopes.has("projection") || scopes.has("repository")) refreshWorkspaceSignals();
-      if (!activeNotePath || !events.some((event) => event.path === activeNotePath)) return;
-      if (!isDirty) {
+      if (!activeNotePath || !events.some((event) => eventMatchesPath(event.path, activeNotePath))) return;
+      if (deletedPaths.has(activeNotePath)) return;
+      if (!isDirtyRef.current) {
         getNoteSource(activeNotePath).then((next) => {
           applySource(next, true);
           if (scopes.has("graph")) getContext("note:" + next.note.id).then(setContext).catch(() => undefined);
@@ -698,7 +714,7 @@ function WorkspaceApp() {
         setStatus("Conflict requires review");
       }).catch(() => setStatus("External change detected; reload failed"));
     });
-  }, [activeNotePath, isDirty, isCreatingNote]);
+  }, [activeNotePath, isDirty, isCreatingNote, selected, tabs]);
 
   useEffect(() => {
     if (panel !== "git" || codeTarget || !source || !selectedRevision) {
@@ -778,13 +794,14 @@ function WorkspaceApp() {
 
   async function save(): Promise<SaveResult> {
     if (!source || !metadataDraftRef.current || !isDirtyRef.current) return { ok: true };
-    if (isSaving) return { ok: false, message: "A save is already in progress." };
+    if (saveInFlightRef.current) return { ok: false, message: "A save is already in progress." };
     const requestedPath = source.note.path;
     const submittedRevision = localEditRevisionRef.current;
     const requestId = ++saveRequestRef.current;
     const expectedHash = source.note.content_hash;
     const submittedDraft = draftRef.current;
     const submittedMetadata = cloneMetadata(metadataDraftRef.current);
+    saveInFlightRef.current = true;
     setIsSaving(true);
     setStatus("Saving...");
     try {
@@ -816,6 +833,7 @@ function WorkspaceApp() {
       setStatus(message);
       return { ok: false, message };
     } finally {
+      saveInFlightRef.current = false;
       setIsSaving(false);
     }
   }
@@ -898,10 +916,10 @@ function WorkspaceApp() {
     navigate("notes");
   }
 
-  function closeTab(path: string, event?: Pick<MouseEvent, "stopPropagation">, options?: { closeWindowWhenLast?: boolean }) {
+  function closeTab(path: string, event?: Pick<MouseEvent, "stopPropagation">, options?: { closeWindowWhenLast?: boolean; skipConfirm?: boolean }) {
     event?.stopPropagation();
     if (isCreatingNote) return;
-    if (path === selected && !confirmDiscard("You have unsaved changes. Discard them and close this tab?")) return;
+    if (path === selected && !options?.skipConfirm && !confirmDiscard("You have unsaved changes. Discard them and close this tab?")) return;
     const index = tabs.indexOf(path);
     const next = tabs.filter((existing) => existing !== path);
     if (options?.closeWindowWhenLast && next.length === 0) {
@@ -1143,6 +1161,37 @@ function WorkspaceApp() {
     }
   }
 
+  async function recreateDeletedNote() {
+    if (!deletedNote || !source || source.note.path !== deletedNote.path || !metadataDraftRef.current) return;
+    setStatus("Restoring local draft…");
+    try {
+      const metadata = metadataDraftRef.current;
+      const created = await createNote({
+        title: metadata.title,
+        type: metadata.type,
+        aliases: metadata.aliases,
+        tags: metadata.tags,
+        applies_to: metadata.applies_to,
+        body: draftRef.current,
+        path: deletedNote.path,
+      });
+      const next = await getNoteSource(created.path);
+      applySource(next, true);
+      setDeletedNote(undefined);
+      setStatus("Local draft restored");
+    } catch (cause) {
+      setStatus(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  function discardDeletedNote() {
+    if (!deletedNote) return;
+    closeTab(deletedNote.path, undefined, { closeWindowWhenLast: true, skipConfirm: true });
+    setDeletedNote(undefined);
+    setConflict(undefined);
+    setStatus("Deleted note closed");
+  }
+
   const activeVaultId = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("vault") : null;
   const activeVault = vaultRegistry?.vaults.find((vault) => vault.id === activeVaultId);
   const vaultName = activeVault?.name ?? vaultTree?.rootName ?? "Vault";
@@ -1227,9 +1276,10 @@ function WorkspaceApp() {
               <div data-testid="note-document-scroll" className="note-document-scroll min-h-0 flex-1 overflow-auto overscroll-contain">
                 {creationIssue && <Alert data-testid="note-creation-status" variant="destructive" className="m-3"><AlertTitle>{creationIssue.kind === "save" ? "Could not create note" : creationIssue.kind === "load" ? "Note created but could not be opened" : creationIssue.kind === "refresh" ? "Note created but workspace refresh failed" : "Could not create note"}</AlertTitle><AlertDescription><p>{creationIssue.message}</p>{creationIssue.kind === "load" && <Button size="sm" variant="outline" disabled={isCreatingNote} onClick={() => void retryOpenCreatedNote()}>Open created note again</Button>}{creationIssue.kind === "refresh" && <Button size="sm" variant="outline" disabled={isRefreshingCreatedNote || isCreatingNote} onClick={() => void retryCreatedNoteRefresh()}>{isRefreshingCreatedNote ? "Refreshing…" : "Refresh"}</Button>}{creationIssue.kind === "create" && <Button size="sm" variant="outline" disabled={isRefreshing || isCreatingNote} onClick={() => void refreshIndex()}>Refresh</Button>}</AlertDescription></Alert>}
                 {source && metadataDraft ? <NoteMetadata metadata={metadataDraft} mode={mode} dirty={isDirty} notePath={activeNotePath} connectedFiles={context?.likely_files?.length ?? 0} disabled={isCreatingNote} focusTitleRequest={focusTitleRequest} onTitleFocusComplete={completeTitleFocus} onTitleEnter={focusBodyAfterTitle} onChange={updateMetadata} onModeChange={setMode} onToggleInspector={() => setContextPanelOpen(true)} /> : previewPath ? <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileIcon /></EmptyMedia><EmptyTitle>File preview unavailable</EmptyTitle><EmptyDescription>{previewPath} is not an indexed Markdown note.</EmptyDescription></EmptyHeader></Empty> : <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileTextIcon /></EmptyMedia><EmptyTitle>Choose a note</EmptyTitle><EmptyDescription>The indexed Markdown workspace will appear here.</EmptyDescription><Button data-testid="create-note-empty" onClick={() => void createNewNote()} disabled={isCreatingNote}><PlusIcon />Create note</Button></EmptyHeader></Empty>}
-                {source && <div className="note-editor-section flex border-t border-border/60"><Suspense fallback={<div className="grid min-h-[440px] flex-1 place-items-center text-sm text-muted-foreground">Loading editor…</div>}><Editor key={activeNotePath + ":" + (isCreatingNote ? "busy" : "ready")} value={draft} mode={mode} onChange={isCreatingNote ? () => undefined : updateDraft} linkTargets={notes.map((note) => note.title)} notePath={activeNotePath} notes={notes} onOpenNote={openPath} sections={source.sections} contentRevision={contentRevision} jumpRequest={jumpRequest} disabled={isCreatingNote} focusRequest={focusBodyRequest} onFocusComplete={completeBodyFocus} /></Suspense></div>}
+                {source && <div className="note-editor-section flex border-t border-border/60"><Suspense fallback={<div className="grid min-h-[440px] flex-1 place-items-center text-sm text-muted-foreground">Loading editor…</div>}><Editor key={activeNotePath + ":" + (isCreatingNote ? "busy" : "ready")} value={draft} mode={mode} onChange={isCreatingNote ? () => undefined : updateDraft} linkTargets={notes.map((note) => note.title)} notePath={activeNotePath} notes={notes} suggestNoteLinks={suggestNoteLinks} onOpenNote={openPath} sections={source.sections} contentRevision={contentRevision} jumpRequest={jumpRequest} disabled={isCreatingNote} focusRequest={focusBodyRequest} onFocusComplete={completeBodyFocus} /></Suspense></div>}
               </div>
               {conflict && <Alert variant="destructive" className="m-3 shrink-0"><AlertTitle>External edit needs your decision</AlertTitle><AlertDescription><p>Conflicts: {conflict.sections.join(", ")}</p><div className="mt-2 flex gap-2"><Button size="sm" variant="outline" onClick={() => void takeTheirs()}>Take theirs</Button><Button size="sm" variant="outline" onClick={() => void keepMine()}>Keep mine</Button></div></AlertDescription></Alert>}
+              {deletedNote && activeNotePath === deletedNote.path && <Alert variant="destructive" className="m-3 shrink-0" data-testid="deleted-note-recovery"><AlertTitle>Note deleted externally</AlertTitle><AlertDescription><p>Your unsaved draft is preserved. Restore it at the original path or close this tab.</p><div className="mt-2 flex gap-2"><Button size="sm" variant="outline" onClick={() => void recreateDeletedNote()}>Restore local draft</Button><Button size="sm" variant="outline" onClick={discardDeletedNote}>Close tab</Button></div></AlertDescription></Alert>}
               <footer data-testid="workspace-status-footer" className="relative z-20 flex h-8 shrink-0 items-center gap-3 bg-background/92 px-4 text-[11px] text-muted-foreground backdrop-blur-md before:pointer-events-none before:absolute before:inset-x-0 before:-top-10 before:h-10 before:bg-gradient-to-b before:from-transparent before:via-background/65 before:to-background before:backdrop-blur-[2px] before:content-['']"><span className="relative z-10 flex items-center gap-1"><FilesIcon className="size-3" />{noteCount ?? notes.length} notes</span><span className="relative z-10 flex items-center gap-1"><DatabaseIcon className="size-3" />{workspaceStatus?.repositories.length ?? 0} repositories</span><span aria-live="polite" className={"relative z-10 ml-auto flex items-center gap-1.5" + ((indexNeedsRefresh || isIndexing || isRefreshing) ? " text-warning" : "")}>
                 {indexNeedsRefresh || isRefreshing ? <button type="button" data-testid="refresh-index" aria-label={isRefreshing ? "Refreshing index" : "Refresh index"} title={isRefreshing ? "Refreshing index…" : "Refresh index"} disabled={isRefreshing} onClick={() => void refreshIndex()} className="group/refresh inline-flex size-5 items-center justify-center rounded-sm text-warning transition-colors hover:bg-warning/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-warning/40 disabled:cursor-wait"><RefreshCwIcon className={"size-3 transition-transform " + (isRefreshing ? "animate-spin" : "group-hover/refresh:rotate-45")} aria-hidden="true" /><span className="sr-only">{isRefreshing ? "Refreshing index" : "Refresh index"}</span></button> : isIndexing ? <Loader2Icon className="size-3 animate-spin" aria-hidden="true" /> : <span className="size-1.5 rounded-full bg-primary" aria-hidden="true" />}
                 <span>{isRefreshing ? "Refreshing index…" : isIndexing ? (workspaceStatus?.phase === "warming" ? "Workspace warming…" : "Index rebuilding…") : indexError || indexRefreshError ? "Index error" : isStale ? "Index stale" : "Index current"}</span>

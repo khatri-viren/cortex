@@ -73,7 +73,7 @@ if (!existsSync(vault)) throw new Error(`Vault does not exist: ${vault}`);
 
 const binary = resolve("ui/src-tauri/target/debug/projection_probe");
 const buildStarted = performance.now();
-const build = Bun.spawnSync(["cargo", "build", "--quiet", "--manifest-path", "ui/src-tauri/Cargo.toml", "--bin", "projection_probe"], { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" });
+const build = Bun.spawnSync(["cargo", "build", "--quiet", "--manifest-path", "ui/src-tauri/Cargo.toml", "--features", "projection-probe", "--bin", "projection_probe"], { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" });
 if (build.exitCode !== 0) throw new Error(`Rust projection probe build failed: ${build.stderr.toString()}`);
 const buildMs = Math.round((performance.now() - buildStarted) * 100) / 100;
 

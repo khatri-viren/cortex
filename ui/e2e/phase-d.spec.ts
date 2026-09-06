@@ -54,7 +54,7 @@ async function scrollEditorToEnd(page: import("@playwright/test").Page) {
 }
 
 async function setEditorScrollTop(page: import("@playwright/test").Page, top: number) {
-  return page.locator(".cm-scroller").evaluate((element, desired) => {
+  return page.getByTestId("note-document-scroll").evaluate((element, desired) => {
     const scroller = element as HTMLElement;
     scroller.scrollTop = desired;
     return scroller.scrollTop;
@@ -62,7 +62,7 @@ async function setEditorScrollTop(page: import("@playwright/test").Page, top: nu
 }
 
 async function getEditorScrollTop(page: import("@playwright/test").Page) {
-  return page.locator(".cm-scroller").evaluate((element) => (element as HTMLElement).scrollTop);
+  return page.getByTestId("note-document-scroll").evaluate((element) => (element as HTMLElement).scrollTop);
 }
 
 test.describe.serial("D2-14: rendered-editor stress test", () => {
@@ -109,7 +109,7 @@ test.describe.serial("D2-14: rendered-editor stress test", () => {
       await expect(page.getByText("Jump Target", { exact: false }).first()).toBeVisible({ timeout: 500 });
     }).toPass({ timeout: 10_000 });
     // A clean document does not occupy the compact toolbar with a Save button.
-    await expect(page.getByRole("button", { name: "Save" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
     expect(readFileSync(STRESS_NOTE, "utf8")).toBe(onDisk);
   });
 });
@@ -145,9 +145,9 @@ test.describe("D2-16: link, wikilink, heading-anchor, and task interactions", ()
 
       const checkbox = page.locator(".cm-atomic-task-checkbox").first();
       await checkbox.click();
-      await expect(page.getByRole("button", { name: "Save" })).toBeEnabled();
-      await page.getByRole("button", { name: "Save" }).click();
-      await expect(page.getByRole("button", { name: "Save" })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+      await page.getByRole("button", { name: "Save", exact: true }).click();
+      await expect(page.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
 
       expect(readFileSync(STRESS_NOTE, "utf8")).toContain("[x] Unchecked task 1.1");
     } finally {
@@ -176,9 +176,8 @@ test.describe("D2-15: live editing mode", () => {
     }
     expect(before).toBeGreaterThan(1000);
 
-    // The reader has its own bounded scroll viewport, while the metadata
-    // block and mode switch remain above it. Activate the off-screen control
-    // without moving the reader back to the top first.
+    // Reading/live mode shares the note page's scroll viewport. Activate the
+    // off-screen control without moving that viewport back to the top first.
     await page.getByRole("tab", { name: "Live", exact: true }).dispatchEvent("click");
     await expect(async () => {
       const after = await getEditorScrollTop(page);
@@ -198,9 +197,9 @@ test.describe("D2-15: live editing mode", () => {
       await page.getByText("The Bun backend owns parsing and vault diagnostics.").click();
       await page.keyboard.press("End");
       await page.keyboard.type(" Edited live.");
-      await expect(page.getByRole("button", { name: "Save" })).toBeEnabled();
-      await page.getByRole("button", { name: "Save" }).click();
-      await expect(page.getByRole("button", { name: "Save" })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+      await page.getByRole("button", { name: "Save", exact: true }).click();
+      await expect(page.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
 
       expect(readFileSync(ENGINE_NOTE, "utf8")).toContain("Edited live.");
     } finally {
@@ -236,7 +235,7 @@ test.describe("D2-17: external change, unsaved, and conflict presentation", () =
       await expect(page.getByLabel("Markdown editor")).toBeVisible();
       await page.locator(".cm-content").click();
       await page.keyboard.type("\nLocal unsaved addition.");
-      await expect(page.getByRole("button", { name: "Save" })).toBeEnabled();
+      await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
 
       writeFileSync(ENGINE_NOTE, original + "\nExternal concurrent addition.\n");
 
@@ -258,7 +257,7 @@ test.describe("D2-17: external change, unsaved, and conflict presentation", () =
     await expect(page.getByLabel("Markdown editor")).toBeVisible();
     await page.locator(".cm-content").click();
     await page.keyboard.type("Unsaved edit.");
-    await expect(page.getByRole("button", { name: "Save" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
 
     let dialogSeen = false;
     page.once("dialog", (dialog) => {
@@ -271,7 +270,7 @@ test.describe("D2-17: external change, unsaved, and conflict presentation", () =
     await clickNoteRow(page, "Sample Plan");
     await expect.poll(() => dialogSeen).toBe(true);
     // Dismissed: still on the original note, edit intact.
-    await expect(page.getByRole("button", { name: "Save" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
 
     page.once("dialog", (dialog) => void dialog.accept());
     await openNoteByTitle(page, "Sample Plan");

@@ -20,7 +20,10 @@ if (process.platform === "darwin") {
   while (!appRoot.endsWith(".app") && dirname(appRoot) !== appRoot) appRoot = dirname(appRoot);
   if (!appRoot.endsWith(".app")) throw new Error(`On macOS, CORTEX_CHROMIUM_PATH must point inside a Chromium .app bundle: ${source}`);
   const appTarget = join(targetDirectory, "Chromium.app");
-  cpSync(appRoot, appTarget, { recursive: true, force: true });
+  // A local developer may point at the already-prepared resource. Copying a
+  // directory onto itself with cpSync can partially delete bundle files on
+  // macOS, so treat that layout as already prepared.
+  if (resolve(appRoot) !== resolve(appTarget)) cpSync(appRoot, appTarget, { recursive: true, force: true });
   console.log(`Prepared Chromium resource: ${appTarget} (executable: ${basename(source)})`);
 } else {
   copyFileSync(source, target);

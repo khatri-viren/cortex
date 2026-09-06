@@ -1,4 +1,5 @@
-import type { ApiContext, ApiDiff, ApiGraph, ApiHealth, ApiHistory, ApiIndexRefreshResult, ApiNoteMetadataPatch, ApiNoteSource, ApiRepoRestoreResult, ApiVaultCheck, ApiVaultTree, ApiWorkspaceStatus } from "../../src/api/contracts";
+import type { ApiContext, ApiDiff, ApiGraph, ApiHealth, ApiHistory, ApiIndexRefreshResult, ApiNoteLinkSuggestion, ApiNoteMetadataPatch, ApiNoteSource, ApiRepoRestoreResult, ApiVaultCheck, ApiVaultTree, ApiWorkspaceStatus } from "../../src/api/contracts";
+export type NoteLinkSuggestion = ApiNoteLinkSuggestion;
 import { getRuntimeConnection } from "./runtime";
 
 export type NoteSummary = {
@@ -40,6 +41,10 @@ export function listNotes(prefix?: string, limit?: number, cursor?: string): Pro
   return request<ListNotesResponse>("/api/notes" + (query ? "?" + query : ""));
 }
 
+export function suggestNoteLinks(query = "", limit = 20): Promise<{ matches: ApiNoteLinkSuggestion[]; truncated: boolean }> {
+  return request<{ matches: ApiNoteLinkSuggestion[]; truncated: boolean }>(`/api/notes/suggest?query=${encodeURIComponent(query)}&limit=${encodeURIComponent(String(limit))}`);
+}
+
 export function getVaultTree(): Promise<ApiVaultTree> {
   return request<ApiVaultTree>("/api/vault/tree");
 }
@@ -48,7 +53,7 @@ export function searchNotes(query: string): Promise<SearchResponse> {
   return request<SearchResponse>("/api/search?query=" + encodeURIComponent(query) + "&limit=20");
 }
 
-export function createNote(input: { title: string; type?: "note" | "map" | "table"; path?: string }): Promise<{ path: string; id: string }> {
+export function createNote(input: { title: string; type?: "note" | "map" | "table"; aliases?: string[]; tags?: string[]; applies_to?: ApiNoteMetadataPatch["applies_to"]; body?: string; path?: string }): Promise<{ path: string; id: string }> {
   return request<{ path: string; id: string }>("/api/notes", {
     method: "POST",
     body: JSON.stringify(input),

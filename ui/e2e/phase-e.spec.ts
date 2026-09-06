@@ -138,7 +138,7 @@ test.describe("D2-19: outline, Git, and diagnostics panels", () => {
     await expect(page.getByText("Jump Target", { exact: true })).toBeVisible();
   });
 
-  test("reading surface keeps one color and the outline follows scrolling", async ({ page }) => {
+  test("reading surface has one scroll viewport and the outline follows it without bouncing", async ({ page }) => {
     await page.addInitScript(() => localStorage.setItem("theme", "dark"));
     await page.goto("/");
     await openNoteByTitle(page, "Stress Test Note");
@@ -180,34 +180,92 @@ test.describe("D2-19: outline, Git, and diagnostics panels", () => {
     expect(Math.abs(geometry!.outlineRight - geometry!.editorRight)).toBeLessThan(2);
 
     const documentScroll = page.getByTestId("note-document-scroll");
-    await documentScroll.evaluate((element) => { element.scrollTop = element.scrollHeight; });
-    const outlineStack = page.getByTestId("outline-stack");
-    const scroller = page.locator(".cm-scroller");
-    await expect(outlineStack).toBeVisible();
-    const visibleCenterDelta = () => page.evaluate(() => {
-      const nav = [...document.querySelectorAll("nav")].find((element) => element.getAttribute("aria-label") === "Section outline");
-      const stack = nav?.querySelector<HTMLElement>("[data-testid=outline-stack]");
-      const viewport = document.querySelector<HTMLElement>("[data-testid=note-document-scroll]");
-      const reader = document.querySelector<HTMLElement>(".cm-scroller");
-      if (!stack || !viewport || !reader) return Number.POSITIVE_INFINITY;
-      const stackRect = stack.getBoundingClientRect();
-      const viewportRect = viewport.getBoundingClientRect();
-      const readerRect = reader.getBoundingClientRect();
-      const visibleTop = Math.max(readerRect.top, viewportRect.top);
-      const visibleBottom = Math.min(readerRect.bottom, viewportRect.bottom);
-      if (visibleBottom <= visibleTop) return Number.POSITIVE_INFINITY;
-      return Math.abs((stackRect.top + stackRect.bottom) / 2 - (visibleTop + visibleBottom) / 2);
+    const scrollOwnership = await page.evaluate(() => {
+      const documentViewport = document.querySelector<HTMLElement>("[data-testid=note-document-scroll]")!;
+      const editorHost = document.querySelector<HTMLElement>(".atomic-editor-host")!;
+      const codeMirrorScroller = document.querySelector<HTMLElement>(".cm-scroller")!;
+      const describe = (element: HTMLElement) => ({
+        overflowY: getComputedStyle(element).overflowY,
+        range: element.scrollHeight - element.clientHeight,
+      });
+      return {
+        documentViewport: describe(documentViewport),
+        editorHost: describe(editorHost),
+        codeMirrorScroller: describe(codeMirrorScroller),
+      };
     });
-    await documentScroll.evaluate((element) => { element.scrollTop = Math.min(100, element.scrollHeight); });
-    await expect.poll(visibleCenterDelta).toBeLessThan(12);
-    await documentScroll.evaluate((element) => { element.scrollTop = element.scrollHeight; });
-    await expect.poll(visibleCenterDelta).toBeLessThan(12);
+    expect(scrollOwnership.documentViewport.range).toBeGreaterThan(100);
+    expect(scrollOwnership.documentViewport.overflowY).toMatch(/auto|scroll/);
+    expect(scrollOwnership.editorHost.range).toBeLessThanOrEqual(1);
+    expect(scrollOwnership.codeMirrorScroller.range).toBeLessThanOrEqual(1);
 
-    const activeBefore = await page.locator('[data-testid="outline-tick"]').evaluateAll((ticks) => ticks.findIndex((tick) => tick.getAttribute("aria-current") === "true"));
-    await scroller.evaluate((element) => { element.scrollTop = element.scrollHeight; });
-    await expect.poll(async () => page.locator('[data-testid="outline-tick"]').evaluateAll((ticks) => ticks.findIndex((tick) => tick.getAttribute("aria-current") === "true"))).toBeGreaterThan(activeBefore);
+    const outlineStack = page.getByTestId("outline-stack");
+    await expect(outlineStack).toBeVisible();
+    const railWindowCenterDelta = () => page.evaluate(() => {
+      const nav = document.querySelector<HTMLElement>("nav[aria-label='Section outline']");
+      const stack = document.querySelector<HTMLElement>("[data-testid=outline-stack]");
+      if (!nav || !stack) return Number.POSITIVE_INFINITY;
+      const stackRect = stack.getBoundingClientRect();
+      return Math.abs((stackRect.top + stackRect.bottom) / 2 - window.innerHeight / 2);
+    });
+    const railPosition = await page.locator("nav[aria-label='Section outline']").evaluate((element) => ({
+      position: getComputedStyle(element).position,
+      top: element.getBoundingClientRect().top,
+      bottom: element.getBoundingClientRect().bottom,
+      windowCenter: window.innerHeight / 2,
+    }));
+    expect(railPosition.position).toBe("fixed");
+    await expect.poll(railWindowCenterDelta).toBeLessThan(2);
+    const assertRailCentered = async () => {
+      await expect.poll(railWindowCenterDelta).toBeLessThan(2);
+    };
+    await documentScroll.evaluate((element) => { element.scrollTop = Math.min(100, element.scrollHeight); });
+    await assertRailCentered();
+    await documentScroll.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    await assertRailCentered();
+
+    const activeTick = () => page.locator('[data-testid="outline-tick"]').evaluateAll((ticks) => ticks.findIndex((tick) => tick.getAttribute("aria-current") === "true"));
+    const positions: number[] = [];
+    for (const fraction of [0, 0.25, 0.5, 0.75]) {
+      await documentScroll.evaluate((element, nextFraction) => {
+        element.scrollTop = (element.scrollHeight - element.clientHeight) * nextFraction;
+      }, fraction);
+      await assertRailCentered();
+      if (positions.length === 0) {
+        await expect.poll(activeTick).toBe(0);
+      } else {
+        await expect.poll(activeTick).toBeGreaterThan(positions.at(-1)!);
+      }
+      const settled = await activeTick();
+      const samples = await page.evaluate(async () => {
+        const readActive = () => [...document.querySelectorAll('[data-testid="outline-tick"]')]
+          .findIndex((tick) => tick.getAttribute('aria-current') === 'true');
+        const values: number[] = [];
+        for (let frame = 0; frame < 6; frame += 1) {
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+          values.push(readActive());
+        }
+        return values;
+      });
+      expect(new Set(samples)).toEqual(new Set([settled]));
+      positions.push(settled);
+    }
+
+    await documentScroll.evaluate((element) => { element.scrollTop = element.scrollHeight; });
     const lastTickIndex = await page.locator('[data-testid="outline-tick"]').count() - 1;
-    await expect.poll(async () => page.locator('[data-testid="outline-tick"]').evaluateAll((ticks) => ticks.findIndex((tick) => tick.getAttribute("aria-current") === "true"))).toBe(lastTickIndex);
+    await page.evaluate(async () => {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    });
+    await expect.poll(activeTick).toBe(lastTickIndex);
+
+    const targetTick = page.locator('[data-testid="outline-tick"][aria-label="Section 20"]');
+    const targetIndex = await page.locator('[data-testid="outline-tick"]').evaluateAll(
+      (ticks) => ticks.findIndex((tick) => tick.getAttribute("aria-label") === "Section 20"),
+    );
+    await targetTick.click();
+    await expect(documentScroll.getByText("Section 20", { exact: true })).toBeVisible();
+    await expect.poll(activeTick).toBe(targetIndex);
   });
 
   test("Git tab shows the active note's own history and diff by default", async ({ page }) => {

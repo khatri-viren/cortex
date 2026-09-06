@@ -308,6 +308,25 @@ export class IndexStore {
     return { notes: page.map((row) => this.indexedNote(row.note_id)).filter((row): row is IndexedNoteRecord => Boolean(row)), truncated, nextCursor: truncated && last ? { updatedAt: last.updated_at, path: last.path } : undefined };
   }
 
+  /**
+   * Return bounded note identities for editor wikilink completion and
+   * resolution. The catalog page is intentionally not used here: aliases and
+   * filename stems must resolve even when the note is outside the first
+   * recents page.
+   */
+  noteSuggestions(query: string, limit: number): { notes: IndexedNoteRecord[]; truncated: boolean } {
+    const normalized = query.trim().toLocaleLowerCase();
+    const pattern = `%${normalized.replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
+    const rows = this.db.query<{ note_id: string }, [string, string, number]>(
+      "SELECT DISTINCT notes.note_id FROM notes LEFT JOIN note_aliases ON note_aliases.note_id = notes.note_id WHERE (?1 = '' OR lower(notes.title) LIKE ?2 ESCAPE '\\' OR lower(notes.path) LIKE ?2 ESCAPE '\\' OR lower(note_aliases.alias) LIKE ?2 ESCAPE '\\') ORDER BY notes.updated_at DESC, notes.path ASC LIMIT ?3",
+    ).all(normalized, pattern, limit + 1);
+    const truncated = rows.length > limit;
+    return {
+      notes: rows.slice(0, limit).map((row) => this.indexedNote(row.note_id)).filter((row): row is IndexedNoteRecord => Boolean(row)),
+      truncated,
+    };
+  }
+
   searchNotes(query: string, limit: number): IndexSearchResult {
     const words = query.trim().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
     const terms = words.map((term) => `"${term.replaceAll('"', '""')}"`).join(" AND ");

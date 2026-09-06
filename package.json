@@ -15,6 +15,7 @@
     "ui:build": "cd ui && bun run build",
     "desktop:dev": "cd ui && bunx tauri dev",
     "desktop:chromium": "bun run scripts/prepare-chromium.ts",
+    "desktop:watcher": "bun run scripts/prepare-watcher.ts",
     "desktop:sidecar": "bun run scripts/build-sidecar.ts",
     "desktop:build": "cd ui && bun run desktop:build",
     "desktop:verify": "bun run scripts/verify-bundle.ts",
