@@ -32,3 +32,24 @@ test("exports the current unsaved note draft as a PDF download", async ({ page }
   expect(requestBody?.note).toBeTruthy();
   await expect(page.getByText("Unsaved", { exact: true })).toBeVisible();
 });
+
+test("shows the complete PDF export error in the document surface", async ({ page }) => {
+  const errorMessage = "PDF export requires a bundled Chromium executable. Set CORTEX_CHROMIUM_PATH for development.";
+  await page.route("**/api/note/export/pdf", async (route) => {
+    await route.fulfill({
+      status: 503,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ error: { code: "EXPORT_RENDERER_UNAVAILABLE", message: errorMessage } }),
+    });
+  });
+
+  await page.goto("/?vault=phase-c-pdf-export-error");
+  await page.getByTestId("note-row").first().click();
+  await expect(page.getByRole("button", { name: "Export PDF" })).toBeEnabled();
+  await page.getByRole("button", { name: "Export PDF" }).click();
+
+  const alert = page.getByTestId("pdf-export-error");
+  await expect(alert).toBeVisible();
+  await expect(alert).toContainText(errorMessage);
+  await expect(page.getByTestId("export-status")).toHaveCount(0);
+});

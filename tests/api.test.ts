@@ -26,6 +26,27 @@ async function withApi<T>(callback: (base: string, vault: string) => Promise<T>)
 }
 
 describe("Phase 3 local API", () => {
+  test("allows only the known Cortex UI origins to read the API cross-origin", async () => {
+    await withApi(async (base) => {
+      const desktop = await fetch(base + "/api/health", { headers: { origin: "tauri://localhost" } });
+      expect(desktop.headers.get("access-control-allow-origin")).toBe("tauri://localhost");
+      expect(desktop.headers.get("vary")).toBe("Origin");
+
+      const dev = await fetch(base + "/api/health", { headers: { origin: "http://127.0.0.1:5175" } });
+      expect(dev.headers.get("access-control-allow-origin")).toBe("http://127.0.0.1:5175");
+
+      const untrusted = await fetch(base + "/api/health", { headers: { origin: "https://example.com" } });
+      expect(untrusted.headers.get("access-control-allow-origin")).toBeNull();
+
+      const preflight = await fetch(base + "/api/note/export/pdf", {
+        method: "OPTIONS",
+        headers: { origin: "tauri://localhost", "access-control-request-method": "POST" },
+      });
+      expect(preflight.status).toBe(204);
+      expect(preflight.headers.get("access-control-allow-origin")).toBe("tauri://localhost");
+    });
+  });
+
   test("serves source, graph, search, and structured errors", async () => {
     await withApi(async (base) => {
       const health = await fetch(base + "/api/health");

@@ -167,7 +167,6 @@ function useRoute(): [Route, string | undefined, (next: Route, center?: string) 
 }
 
 const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
-const isTauriDev = isTauri && import.meta.env.DEV;
 const isTauriMac = isTauri && typeof navigator !== "undefined" && navigator.userAgent.includes("Macintosh");
 
 type SidebarToolbarLayout = {
@@ -222,7 +221,7 @@ function WorkspaceViewSwitcher({ route, onNavigate, disabled = false }: { route:
 }
 
 // Per-vault session isolation (Desktop V2 Multi-Vault UX Contract): the
-// Tauri shell appends ?vault=<id> when it navigates into a vault's sidecar.
+// Tauri shell appends ?vault=<id> when it navigates into a vault runtime.
 // Plain browser/dev usage (no Tauri, no query param) shares one "default"
 // session, matching today's single-vault behavior.
 const vaultKey = typeof window !== "undefined"
@@ -323,6 +322,7 @@ function WorkspaceApp() {
   const [isSaving, setIsSaving] = useState(false);
   const [indexRefreshError, setIndexRefreshError] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [pdfExportError, setPdfExportError] = useState<string>();
   const pdfAbortRef = useRef<AbortController | undefined>(undefined);
   const [isCreatingNote, setIsCreatingNote] = useState(false);
   const [isRefreshingCreatedNote, setIsRefreshingCreatedNote] = useState(false);
@@ -635,6 +635,7 @@ function WorkspaceApp() {
 
   useEffect(() => {
     if (!selected) return;
+    setPdfExportError(undefined);
     const requested = selected;
     const isPendingCreatedNote = pendingCreatedNoteRef.current?.path === requested;
     let stale = false;
@@ -910,6 +911,7 @@ function WorkspaceApp() {
       return;
     }
     setIsExportingPdf(true);
+    setPdfExportError(undefined);
     const abortController = new AbortController();
     pdfAbortRef.current = abortController;
     setStatus("Exporting PDF...");
@@ -922,6 +924,7 @@ function WorkspaceApp() {
         console.info("[PDF-EXPORT] delivery:native-start", { bytes: bytes.length });
         const savedPath = await invoke<string | null>("save_pdf", { filename: result.filename, bytes });
         console.info("[PDF-EXPORT] delivery:native-complete", { saved: Boolean(savedPath) });
+        setPdfExportError(undefined);
         setStatus(savedPath ? `PDF saved to ${savedPath}` : "PDF export canceled");
       } else {
         console.info("[PDF-EXPORT] delivery:browser-start", { bytes: result.blob.size });
@@ -934,11 +937,14 @@ function WorkspaceApp() {
         anchor.remove();
         URL.revokeObjectURL(url);
         console.info("[PDF-EXPORT] delivery:browser-complete", { bytes: result.blob.size });
+        setPdfExportError(undefined);
         setStatus("PDF exported");
       }
     } catch (cause: unknown) {
       console.error("[PDF-EXPORT] failed", cause);
-      setStatus(cause instanceof Error ? `PDF export failed: ${cause.message}` : `PDF export failed: ${String(cause)}`);
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setPdfExportError(message);
+      setStatus(`PDF export failed: ${message}`);
     } finally {
       if (pdfAbortRef.current === abortController) pdfAbortRef.current = undefined;
       setIsExportingPdf(false);
@@ -1312,7 +1318,6 @@ function WorkspaceApp() {
                 </Tooltip>
                 {isCreatingNote && <span data-testid="note-creation-progress" className="max-w-[180px] truncate text-xs text-muted-foreground">{status}</span>}
                 <span className="sr-only" aria-live="polite">{status}</span>
-                {status.includes("PDF") && <span className="max-w-[220px] truncate text-xs text-muted-foreground" data-testid="export-status" title={status}>{status}</span>}
               </div>
             </header>
           )}
@@ -1349,6 +1354,7 @@ function WorkspaceApp() {
           <SidebarInset data-testid="workspace" className="relative min-w-0">
             {route === "graph" ? <section className="flex min-h-0 flex-1 flex-col bg-background"><Suspense fallback={<div className="grid min-h-0 flex-1 place-items-center text-sm text-muted-foreground">Loading graph tools…</div>}><GraphPane onOpenPath={openPath} onOpenCode={openGraphCode} onBackToNote={() => { if (!isCreatingNote) navigate("notes"); }} activeNoteLabel={source?.note.title} initialCenter={graphCenter} initialCenterLabel={currentTitle} /></Suspense></section> : <div className="note-workspace flex min-h-0 flex-1 flex-col" aria-busy={isCreatingNote}>
               <div data-testid="note-document-scroll" className="note-document-scroll min-h-0 flex-1 overflow-auto overscroll-contain">
+                {pdfExportError && <Alert data-testid="pdf-export-error" variant="destructive" className="m-3 break-words"><AlertTitle>PDF export failed</AlertTitle><AlertDescription><p className="break-words whitespace-pre-wrap">{pdfExportError}</p><Button size="sm" variant="outline" className="mt-2" onClick={() => setPdfExportError(undefined)}>Dismiss</Button></AlertDescription></Alert>}
                 {creationIssue && <Alert data-testid="note-creation-status" variant="destructive" className="m-3"><AlertTitle>{creationIssue.kind === "save" ? "Could not create note" : creationIssue.kind === "load" ? "Note created but could not be opened" : creationIssue.kind === "refresh" ? "Note created but workspace refresh failed" : "Could not create note"}</AlertTitle><AlertDescription><p>{creationIssue.message}</p>{creationIssue.kind === "load" && <Button size="sm" variant="outline" disabled={isCreatingNote} onClick={() => void retryOpenCreatedNote()}>Open created note again</Button>}{creationIssue.kind === "refresh" && <Button size="sm" variant="outline" disabled={isRefreshingCreatedNote || isCreatingNote} onClick={() => void retryCreatedNoteRefresh()}>{isRefreshingCreatedNote ? "Refreshing…" : "Refresh"}</Button>}{creationIssue.kind === "create" && <Button size="sm" variant="outline" disabled={isRefreshing || isCreatingNote} onClick={() => void refreshIndex()}>Refresh</Button>}</AlertDescription></Alert>}
                 {source && metadataDraft ? <NoteMetadata metadata={metadataDraft} mode={mode} dirty={isDirty} notePath={activeNotePath} connectedFiles={context?.likely_files?.length ?? 0} disabled={isCreatingNote} focusTitleRequest={focusTitleRequest} onTitleFocusComplete={completeTitleFocus} onTitleEnter={focusBodyAfterTitle} onChange={updateMetadata} onModeChange={setMode} onToggleInspector={() => setContextPanelOpen(true)} /> : previewPath ? <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileIcon /></EmptyMedia><EmptyTitle>File preview unavailable</EmptyTitle><EmptyDescription>{previewPath} is not an indexed Markdown note.</EmptyDescription></EmptyHeader></Empty> : <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileTextIcon /></EmptyMedia><EmptyTitle>Choose a note</EmptyTitle><EmptyDescription>The indexed Markdown workspace will appear here.</EmptyDescription><Button data-testid="create-note-empty" onClick={() => void createNewNote()} disabled={isCreatingNote}><PlusIcon />Create note</Button></EmptyHeader></Empty>}
                 {source && <div className="note-editor-section flex border-t border-border/60"><Suspense fallback={<div className="grid min-h-[440px] flex-1 place-items-center text-sm text-muted-foreground">Loading editor…</div>}><Editor key={activeNotePath + ":" + (isCreatingNote ? "busy" : "ready")} value={draft} mode={mode} onChange={isCreatingNote ? () => undefined : updateDraft} linkTargets={notes.map((note) => note.title)} notePath={activeNotePath} notes={notes} suggestNoteLinks={suggestNoteLinks} onOpenNote={openPath} sections={source.sections} contentRevision={contentRevision} jumpRequest={jumpRequest} disabled={isCreatingNote} focusRequest={focusBodyRequest} onFocusComplete={completeBodyFocus} /></Suspense></div>}
@@ -1370,7 +1376,7 @@ function WorkspaceApp() {
 
 function App() {
   const hasSelectedVault = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("vault");
-  if (isTauriDev && !hasSelectedVault) return <VaultPicker />;
+  if (isTauri && !hasSelectedVault) return <VaultPicker />;
   return <WorkspaceApp />;
 }
 

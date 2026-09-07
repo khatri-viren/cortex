@@ -12,14 +12,7 @@ function validPort(value: string | null): number | undefined {
   return port >= 1 && port <= 65_535 ? port : undefined;
 }
 
-/**
- * Return the sidecar origin selected by the Tauri dev vault picker.
- *
- * Production vault pages intentionally omit `port` and continue using
- * relative API URLs, because they are served by the sidecar itself. Browser
- * development also omits it and therefore keeps using the Vite `/api`
- * proxy.
- */
+/** Return the sidecar origin selected by the active vault's query string. */
 export function getApiOrigin(search: string): string {
   const port = validPort(new URLSearchParams(search).get("port"));
   return port ? `http://${LOCALHOST}:${port}` : "";
@@ -44,14 +37,14 @@ export function getRuntimeConnection(search = typeof window === "undefined" ? ""
   return value;
 }
 
-/** Build a Vite-origin URL for a vault runtime started by Tauri. */
+/**
+ * Keep the UI on its current origin and use `port` only as the API transport.
+ * This is important for packaged Tauri windows: navigating to the sidecar's
+ * dynamic localhost origin would turn the page into an untrusted remote
+ * origin and block native commands through Tauri's ACL.
+ */
 export function buildVaultUrl(origin: string, vaultId: string, port: number): string {
-  // The Vite development shell is the stable app origin. A packaged app is
-  // initially served by the picker sidecar, so switching vaults must target
-  // the newly healthy sidecar instead of reloading the stopped origin.
-  const current = new URL(origin);
-  const targetOrigin = current.port === "5175" ? current.origin : `http://${LOCALHOST}:${port}`;
-  const url = new URL("/", targetOrigin);
+  const url = new URL("/", origin);
   url.searchParams.set("vault", vaultId);
   url.searchParams.set("port", String(port));
   return url.toString();

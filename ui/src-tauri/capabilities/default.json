@@ -6,6 +6,17 @@
     "main"
   ],
   "permissions": [
-    "core:default"
+    "core:default",
+    "allow-list-vaults",
+    "allow-add-vault-via-dialog",
+    "allow-remove-vault",
+    "allow-reveal-vault",
+    "allow-open-vault",
+    "allow-get-preferences",
+    "allow-load-session",
+    "allow-save-session",
+    "allow-set-preferences",
+    "allow-close-main-window",
+    "allow-save-pdf"
   ]
 }

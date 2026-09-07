@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -14,6 +14,7 @@ import {
 import { buildManifest, parseManifestArguments } from "../scripts/build-update-manifest.js";
 import { verifyBundleLayout } from "../scripts/verify-bundle.js";
 import { nativeWatcherPackage, prepareWatcherResource } from "../scripts/prepare-watcher.js";
+import { prepareChromiumResource } from "../scripts/prepare-chromium.js";
 import { loggerOptions } from "../src/logger.js";
 
 const root = resolve(import.meta.dir, "..");
@@ -54,16 +55,25 @@ test("desktop sidecar arguments support a deterministic dry run", () => {
 test("Tauri release config packages the UI resource and external sidecar", () => {
   const config = JSON.parse(readFileSync(resolve(root, "ui", "src-tauri", "tauri.conf.json"), "utf8")) as {
     mainBinaryName?: string;
-    build?: { beforeDevCommand?: string; devUrl?: string; beforeBuildCommand?: string };
+    build?: { beforeDevCommand?: string; devUrl?: string; beforeBuildCommand?: string; frontendDist?: string };
     bundle?: { externalBin?: string[]; resources?: string[] | Record<string, string> };
   };
   expect(config.mainBinaryName).toBe("app");
   expect(config.build?.beforeDevCommand).toBe("bun run dev");
   expect(config.build?.devUrl).toBe("http://127.0.0.1:5175");
+  expect(config.build?.frontendDist).toBe("../dist");
   expect(config.build?.beforeBuildCommand).toContain("desktop:sidecar");
   expect(config.build?.beforeBuildCommand).toContain("prepare-watcher.ts");
   expect(config.bundle?.externalBin).toContain("binaries/cortex-sidecar");
   expect(config.bundle?.resources).toEqual({ "../dist": "dist", "../../resources/chromium": "chromium", "../../resources/node_modules": "node_modules" });
+});
+
+test("Tauri native commands are granted only to the local capability", () => {
+  const capability = JSON.parse(readFileSync(resolve(root, "ui", "src-tauri", "capabilities", "default.json"), "utf8")) as { permissions?: string[]; remote?: unknown };
+  expect(capability.permissions).toContain("allow-save-pdf");
+  expect(capability.permissions).toContain("allow-open-vault");
+  expect(capability.remote).toBeUndefined();
+  expect(readFileSync(resolve(root, "ui", "src-tauri", "build.rs"), "utf8")).toContain('"save_pdf"');
 });
 
 test("desktop packaging prepares the active native watcher next to its JS module", () => {
@@ -76,6 +86,49 @@ test("desktop packaging prepares the active native watcher next to its JS module
   expect(readFileSync(prepared.embeddedNativePath).byteLength).toBeGreaterThan(0);
   expect(prepared.runtimePackages).toEqual(expect.arrayContaining(["@parcel/watcher", "picomatch", "is-glob", "is-extglob"]));
   rmSync(target, { recursive: true, force: true });
+});
+
+test("desktop Chromium preparation replaces stale app contents", () => {
+  const fixtureRoot = mkdtempSync(join(tmpdir(), "cortex-chromium-resource-"));
+  const sourceApp = join(fixtureRoot, "source", "Chromium.app");
+  const sourceExecutable = join(sourceApp, "Contents", "MacOS", "Google Chrome for Testing");
+  const sourceFramework = join(
+    sourceApp,
+    "Contents",
+    "Frameworks",
+    "Google Chrome Framework.framework",
+    "Versions",
+    "152.0.7977.76",
+    "Google Chrome Framework",
+  );
+  const targetDirectory = join(fixtureRoot, "resources", "chromium");
+  const staleFramework = join(
+    targetDirectory,
+    "Chromium.app",
+    "Contents",
+    "Frameworks",
+    "Google Chrome Framework.framework",
+    "Versions",
+    "152.0.7977.75",
+    "Google Chrome Framework",
+  );
+
+  mkdirSync(sourceApp + "/Contents/MacOS", { recursive: true });
+  mkdirSync(sourceFramework.substring(0, sourceFramework.lastIndexOf("/")), { recursive: true });
+  writeFileSync(sourceExecutable, "current chromium");
+  writeFileSync(sourceFramework, "current framework");
+  mkdirSync(staleFramework.substring(0, staleFramework.lastIndexOf("/")), { recursive: true });
+  writeFileSync(staleFramework, "stale framework");
+
+  try {
+    const prepared = prepareChromiumResource(sourceExecutable, targetDirectory, "darwin");
+    expect(prepared).toBe(join(targetDirectory, "Chromium.app"));
+    expect(readFileSync(join(prepared, "Contents", "MacOS", "Google Chrome for Testing"), "utf8")).toBe("current chromium");
+    expect(readFileSync(join(prepared, "Contents", "Frameworks", "Google Chrome Framework.framework", "Versions", "152.0.7977.76", "Google Chrome Framework"), "utf8")).toBe("current framework");
+    expect(existsSync(staleFramework)).toBe(false);
+  } finally {
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  }
 });
 
 test("desktop Cargo manifest defaults to the app and feature-gates the benchmark-only probe", () => {

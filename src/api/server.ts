@@ -11,8 +11,14 @@ import type { ApiNoteUpdateInput } from "./contracts.js";
 
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
-  "access-control-allow-origin": "http://127.0.0.1:5175",
 };
+const ALLOWED_CORS_ORIGINS = new Set([
+  "http://127.0.0.1:5175",
+  "http://localhost:5175",
+  "tauri://localhost",
+  "http://tauri.localhost",
+  "https://tauri.localhost",
+]);
 
 type JsonObject = Record<string, unknown>;
 
@@ -20,16 +26,25 @@ function stableId(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
 
-function json(payload: unknown, status = 200): Response {
-  return new Response(JSON.stringify(payload), { status, headers: JSON_HEADERS });
+function responseHeaders(request: Request, overrides: Record<string, string> = {}): Record<string, string> {
+  const origin = request.headers.get("origin");
+  return {
+    ...JSON_HEADERS,
+    ...(origin && ALLOWED_CORS_ORIGINS.has(origin) ? { "access-control-allow-origin": origin, vary: "Origin" } : {}),
+    ...overrides,
+  };
 }
 
-function errorResponse(cause: unknown): Response {
+function json(request: Request, payload: unknown, status = 200): Response {
+  return new Response(JSON.stringify(payload), { status, headers: responseHeaders(request) });
+}
+
+function errorResponse(request: Request, cause: unknown): Response {
   if (cause instanceof ServiceError) {
     const status = cause.code === "NOT_FOUND" ? 404 : cause.code === "CONFLICT" || cause.code === "GIT_DIRTY" ? 409 : cause.code === "VAULT_INVALID" ? 422 : cause.code === "EXPORT_RENDERER_UNAVAILABLE" ? 503 : cause.code === "EXPORT_TOO_LARGE" ? 413 : cause.code === "EXPORT_QUEUE_FULL" ? 429 : cause.code === "EXPORT_DEADLINE_EXCEEDED" ? 408 : cause.code === "EXPORT_CANCELLED" ? 499 : 400;
-    return json({ error: { code: cause.code, message: cause.message, details: cause.details } }, status);
+    return json(request, { error: { code: cause.code, message: cause.message, details: cause.details } }, status);
   }
-  return json({ error: { code: "INTERNAL_ERROR", message: cause instanceof Error ? cause.message : String(cause) } }, 500);
+  return json(request, { error: { code: "INTERNAL_ERROR", message: cause instanceof Error ? cause.message : String(cause) } }, 500);
 }
 
 function numberParam(url: URL, name: string): number | undefined {
@@ -74,7 +89,7 @@ function contentType(path: string): string {
   return "application/octet-stream";
 }
 
-function eventStream(runtime: VaultRuntime, since?: number): Response {
+function eventStream(request: Request, runtime: VaultRuntime, since?: number): Response {
   const encoder = new TextEncoder();
   let unsubscribe: () => void = () => undefined;
   let controllerRef: ReadableStreamDefaultController<Uint8Array> | undefined;
@@ -119,10 +134,11 @@ function eventStream(runtime: VaultRuntime, since?: number): Response {
   });
   return new Response(stream, {
     headers: {
-      "content-type": "text/event-stream; charset=utf-8",
-      "cache-control": "no-cache",
-      connection: "keep-alive",
-      "access-control-allow-origin": "http://127.0.0.1:5175",
+      ...responseHeaders(request, {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      }),
     },
   });
 }
@@ -135,18 +151,18 @@ export function createApiServer(runtime: VaultRuntime, port: number, uiDist?: st
     async fetch(request) {
       const url = new URL(request.url);
       try {
-        if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...JSON_HEADERS, "access-control-allow-methods": "GET,POST,PATCH,PUT,OPTIONS", "access-control-allow-headers": "content-type" } });
-        if (url.pathname === "/events" && request.method === "GET") return eventStream(runtime, numberParam(url, "since"));
-        if (url.pathname === "/api/changes" && request.method === "GET") return json(runtime.changesSince(numberParam(url, "since") ?? 0));
-        if (url.pathname === "/api/health" && request.method === "GET") return json(runtime.health());
-        if (url.pathname === "/api/index/rebuild" && request.method === "POST") return json(await runtime.rebuildIndex());
-        if (url.pathname === "/api/notes" && request.method === "GET") return json(runtime.listNotes(url.searchParams.get("prefix") ?? undefined, url.searchParams.get("tag") ?? undefined, numberParam(url, "limit"), url.searchParams.get("cursor") ?? undefined));
-        if (url.pathname === "/api/notes/suggest" && request.method === "GET") return json(runtime.suggestNoteLinks(url.searchParams.get("query") ?? "", numberParam(url, "limit")));
-        if (url.pathname === "/api/vault/tree" && request.method === "GET") return json(runtime.vaultTree());
+        if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: responseHeaders(request, { "access-control-allow-methods": "GET,POST,PATCH,PUT,OPTIONS", "access-control-allow-headers": "content-type" }) });
+        if (url.pathname === "/events" && request.method === "GET") return eventStream(request, runtime, numberParam(url, "since"));
+        if (url.pathname === "/api/changes" && request.method === "GET") return json(request, runtime.changesSince(numberParam(url, "since") ?? 0));
+        if (url.pathname === "/api/health" && request.method === "GET") return json(request, runtime.health());
+        if (url.pathname === "/api/index/rebuild" && request.method === "POST") return json(request, await runtime.rebuildIndex());
+        if (url.pathname === "/api/notes" && request.method === "GET") return json(request, runtime.listNotes(url.searchParams.get("prefix") ?? undefined, url.searchParams.get("tag") ?? undefined, numberParam(url, "limit"), url.searchParams.get("cursor") ?? undefined));
+        if (url.pathname === "/api/notes/suggest" && request.method === "GET") return json(request, runtime.suggestNoteLinks(url.searchParams.get("query") ?? "", numberParam(url, "limit")));
+        if (url.pathname === "/api/vault/tree" && request.method === "GET") return json(request, runtime.vaultTree());
         if (url.pathname === "/api/note" && request.method === "GET") {
           const selector = url.searchParams.get("selector");
           if (!selector) throw new ServiceError("INVALID_INPUT", "Query parameter 'selector' is required.");
-          return json(url.searchParams.get("source") === "true" ? runtime.getSource(selector) : runtime.getNote(selector));
+          return json(request, url.searchParams.get("source") === "true" ? runtime.getSource(selector) : runtime.getNote(selector));
         }
         if (url.pathname === "/api/note/export/pdf" && request.method === "POST") {
           const contentLength = Number(request.headers.get("content-length") ?? "0");
@@ -162,7 +178,7 @@ export function createApiServer(runtime: VaultRuntime, port: number, uiDist?: st
             const filename = title?.trim() || runtime.getNote(note).note.title;
             artifact.timings.deliveryMs = performance.now() - started;
             logger.info({ noteHash: stableId(note), renderer: artifact.renderer, bytes: artifact.pdf.length, ...artifact.timings }, "[PDF-EXPORT] server:complete");
-            return new Response(new Uint8Array(artifact.pdf), { headers: { "content-type": "application/pdf", "content-length": String(artifact.pdf.length), "x-cortex-pdf-sha256": artifact.checksum, "x-cortex-pdf-renderer": artifact.renderer, "content-disposition": `attachment; filename="${exportFilename(filename)}"`, "cache-control": "no-store", "access-control-allow-origin": "http://127.0.0.1:5175" } });
+            return new Response(new Uint8Array(artifact.pdf), { headers: responseHeaders(request, { "content-type": "application/pdf", "content-length": String(artifact.pdf.length), "x-cortex-pdf-sha256": artifact.checksum, "x-cortex-pdf-renderer": artifact.renderer, "content-disposition": `attachment; filename="${exportFilename(filename)}"`, "cache-control": "no-store" }) });
           } catch (cause) {
             logger.error({ noteHash: stableId(note), errorCode: cause instanceof ServiceError ? cause.code : "INTERNAL_ERROR", cancelled: cause instanceof ServiceError && cause.code === "EXPORT_CANCELLED", err: cause }, "[PDF-EXPORT] server:failed");
             throw cause;
@@ -171,52 +187,52 @@ export function createApiServer(runtime: VaultRuntime, port: number, uiDist?: st
         if (url.pathname === "/api/section" && request.method === "GET") {
           const selector = url.searchParams.get("selector");
           if (!selector) throw new ServiceError("INVALID_INPUT", "Query parameter 'selector' is required.");
-          return json(runtime.getSection(selector, url.searchParams.get("section_id") ?? undefined, url.searchParams.get("heading") ?? undefined));
+          return json(request, runtime.getSection(selector, url.searchParams.get("section_id") ?? undefined, url.searchParams.get("heading") ?? undefined));
         }
-        if (url.pathname === "/api/search" && request.method === "GET") return json(runtime.search(url.searchParams.get("query") ?? "", numberParam(url, "limit")));
-        if (url.pathname === "/api/project-map" && request.method === "GET") return json(runtime.projectMap(url.searchParams.get("node") ?? "project:root", numberParam(url, "depth"), numberParam(url, "limit")));
+        if (url.pathname === "/api/search" && request.method === "GET") return json(request, runtime.search(url.searchParams.get("query") ?? "", numberParam(url, "limit")));
+        if (url.pathname === "/api/project-map" && request.method === "GET") return json(request, runtime.projectMap(url.searchParams.get("node") ?? "project:root", numberParam(url, "depth"), numberParam(url, "limit")));
         if (url.pathname === "/api/graph" && request.method === "GET") {
           const node = url.searchParams.get("node");
           if (!node) throw new ServiceError("INVALID_INPUT", "Query parameter 'node' is required.");
-          return json(runtime.graphQuery(node, (url.searchParams.get("direction") as "in" | "out" | "neighbors") ?? "neighbors", numberParam(url, "depth"), numberParam(url, "limit")));
+          return json(request, runtime.graphQuery(node, (url.searchParams.get("direction") as "in" | "out" | "neighbors") ?? "neighbors", numberParam(url, "depth"), numberParam(url, "limit")));
         }
         if (url.pathname === "/api/context" && request.method === "GET") {
           const node = url.searchParams.get("node");
           if (!node) throw new ServiceError("INVALID_INPUT", "Query parameter 'node' is required.");
-          return json(runtime.getContext(node, url.searchParams.get("task_hint") ?? undefined, numberParam(url, "limit")));
+          return json(request, runtime.getContext(node, url.searchParams.get("task_hint") ?? undefined, numberParam(url, "limit")));
         }
         if (url.pathname === "/api/history" && request.method === "GET") {
           const selector = url.searchParams.get("selector");
           if (!selector) throw new ServiceError("INVALID_INPUT", "Query parameter 'selector' is required.");
-          return json(runtime.history(selector, numberParam(url, "limit")));
+          return json(request, runtime.history(selector, numberParam(url, "limit")));
         }
         if (url.pathname === "/api/diff" && request.method === "GET") {
           const selector = url.searchParams.get("selector");
           if (!selector) throw new ServiceError("INVALID_INPUT", "Query parameter 'selector' is required.");
-          return json(runtime.diff(selector, url.searchParams.get("revision") ?? undefined));
+          return json(request, runtime.diff(selector, url.searchParams.get("revision") ?? undefined));
         }
-        if (url.pathname === "/api/vault-check" && request.method === "GET") return json(runtime.vaultCheck());
-        if (url.pathname === "/api/workspace/status" && request.method === "GET") return json(runtime.workspaceStatus(url.searchParams.get("include_git") === "true"));
+        if (url.pathname === "/api/vault-check" && request.method === "GET") return json(request, runtime.vaultCheck());
+        if (url.pathname === "/api/workspace/status" && request.method === "GET") return json(request, runtime.workspaceStatus(url.searchParams.get("include_git") === "true"));
         if (url.pathname === "/api/workspace/repo-history" && request.method === "GET") {
           const repository = url.searchParams.get("repository");
           const path = url.searchParams.get("path");
           if (!repository || !path) throw new ServiceError("INVALID_INPUT", "Query parameters 'repository' and 'path' are required.");
-          return json(runtime.getRepoHistory(repository, path, numberParam(url, "limit")));
+          return json(request, runtime.getRepoHistory(repository, path, numberParam(url, "limit")));
         }
         if (url.pathname === "/api/workspace/repo-diff" && request.method === "GET") {
           const repository = url.searchParams.get("repository");
           const path = url.searchParams.get("path");
           if (!repository || !path) throw new ServiceError("INVALID_INPUT", "Query parameters 'repository' and 'path' are required.");
-          return json(runtime.getRepoDiff(repository, path, url.searchParams.get("revision") ?? undefined));
+          return json(request, runtime.getRepoDiff(repository, path, url.searchParams.get("revision") ?? undefined));
         }
         if (url.pathname === "/api/workspace/repo-restore" && request.method === "POST") {
           const input = await body(request);
-          return json(await runtime.restoreRepoPath(requiredString(input, "repository"), requiredString(input, "path"), requiredString(input, "revision"), input.confirm === true));
+          return json(request, await runtime.restoreRepoPath(requiredString(input, "repository"), requiredString(input, "path"), requiredString(input, "revision"), input.confirm === true));
         }
-        if (url.pathname === "/api/notes" && request.method === "POST") return json(await runtime.createNote(await body(request) as never), 201);
+        if (url.pathname === "/api/notes" && request.method === "POST") return json(request, await runtime.createNote(await body(request) as never), 201);
         if (url.pathname === "/api/section" && request.method === "PATCH") {
           const input = await body(request);
-          return json(await runtime.patchSection(requiredString(input, "note"), requiredString(input, "section_id"), requiredString(input, "expected_revision"), requiredString(input, "new_content")));
+          return json(request, await runtime.patchSection(requiredString(input, "note"), requiredString(input, "section_id"), requiredString(input, "expected_revision"), requiredString(input, "new_content")));
         }
         if (url.pathname === "/api/note" && request.method === "PUT") {
           const input = await body(request);
@@ -227,17 +243,17 @@ export function createApiServer(runtime: VaultRuntime, port: number, uiDist?: st
           const bodyText = typeof update.body === "string" ? update.body : undefined;
           const metadata = update.metadata && typeof update.metadata === "object" ? update.metadata : undefined;
           await runtime.updateNote(note, expectedHash, { markdown, body: bodyText, metadata });
-          return json(runtime.getSource(note));
+          return json(request, runtime.getSource(note));
         }
         if (url.pathname === "/api/restore" && request.method === "POST") {
           const input = await body(request);
-          return json(await runtime.restore(requiredString(input, "note"), requiredString(input, "revision")));
+          return json(request, await runtime.restore(requiredString(input, "note"), requiredString(input, "revision")));
         }
         if (url.pathname === "/api/reconcile" && request.method === "POST") {
           const input = await body(request);
           const source = runtime.getSource(requiredString(input, "note"));
           const result = reconcileMarkdown(requiredString(input, "base_markdown"), requiredString(input, "local_markdown"), source.markdown);
-          return json({ ...result, remote_markdown: source.markdown, remote_hash: source.note.content_hash });
+          return json(request, { ...result, remote_markdown: source.markdown, remote_hash: source.note.content_hash });
         }
         if (uiDist && !url.pathname.startsWith("/api/")) {
           const response = staticResponse(uiDist, url.pathname);
@@ -245,7 +261,7 @@ export function createApiServer(runtime: VaultRuntime, port: number, uiDist?: st
         }
         return new Response("Not found", { status: 404 });
       } catch (cause) {
-        return errorResponse(cause);
+        return errorResponse(request, cause);
       }
     },
   });
