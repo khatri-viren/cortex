@@ -75,6 +75,7 @@ export type WorkspaceStatus = {
   workspaceExists?: boolean;
   repositories: Array<{ id: string; path: string; status: string; lastIndexedAt?: string; gitChangedFileCount?: number }>;
   diagnostics: Diagnostic[];
+  gitStatus?: Array<GitStatusEntry & { repository: string }>;
 };
 
 export type GraphDirection = "in" | "out" | "neighbors";
@@ -84,12 +85,26 @@ export type GraphQueryResult = {
   nodes: GraphNodeRecord[];
   edges: GraphEdgeRecord[];
   truncated: boolean;
+  omitted_nodes?: number;
+  omitted_edges?: number;
+};
+
+export type SectionReadResult = {
+  note: NoteRecord;
+  section: Section;
+  body: string;
+  revision: string;
+  writable: boolean;
+  write_warning?: "missing_section_marker";
+  body_truncated?: boolean;
+  next_cursor?: string;
 };
 
 export type WriteResult = {
   path: string;
   mtime: string;
   content_hash: string;
+  changed_sections?: string[];
   index: IndexReport;
 };
 
@@ -191,7 +206,7 @@ export type HealthResult = {
 };
 
 export type HistoryResult = { path: string; commits: GitCommit[] };
-export type DiffResult = { path: string; diff: string };
+export type DiffResult = { path: string; diff: string; truncated?: boolean; next_cursor?: string };
 export type RepositoryHistoryResult = { repository: string; path: string; commits: GitCommit[] };
-export type RepositoryDiffResult = { repository: string; path: string; diff: string };
-export type RepositoryRestoreResult = { repository: string; path: string; revision: string; mtime: string };
+export type RepositoryDiffResult = { repository: string; path: string; diff: string; truncated?: boolean; next_cursor?: string };
+export type RepositoryRestoreResult = { repository: string; path: string; revision: string; mtime: string; content_hash?: string; index?: WorkspaceIndexReport };

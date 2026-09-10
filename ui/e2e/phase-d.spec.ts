@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -63,6 +63,26 @@ async function setEditorScrollTop(page: import("@playwright/test").Page, top: nu
 
 async function getEditorScrollTop(page: import("@playwright/test").Page) {
   return page.getByTestId("note-document-scroll").evaluate((element) => (element as HTMLElement).scrollTop);
+}
+
+async function dispatchPhysicalBackquote(page: import("@playwright/test").Page, count = 1) {
+  const editor = page.locator(".cm-content");
+  for (let index = 0; index < count; index += 1) {
+    await editor.dispatchEvent("keydown", {
+      key: "₹",
+      code: "Backquote",
+      bubbles: true,
+      cancelable: true,
+      altKey: false,
+      ctrlKey: false,
+      metaKey: false,
+      shiftKey: false,
+    });
+    // Let CodeMirror publish the synchronous transaction before the next
+    // physical key event; this mirrors the browser's normal event boundary
+    // without adding an arbitrary sleep.
+    await editor.textContent();
+  }
 }
 
 test.describe.serial("D2-14: rendered-editor stress test", () => {
@@ -146,10 +166,15 @@ test.describe("D2-16: link, wikilink, heading-anchor, and task interactions", ()
       const checkbox = page.locator(".cm-atomic-task-checkbox").first();
       await checkbox.click();
       await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+      const saveResponse = page.waitForResponse((response) => response.url().includes("/api/note") && response.request().method() === "PUT" && response.ok());
       await page.getByRole("button", { name: "Save", exact: true }).click();
-      await expect(page.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
+      // The button changes to "Saving…" immediately. Wait for the actual
+      // optimistic-write acknowledgement before asserting on-disk state;
+      // checking for the absence of the "Save" label only observes that
+      // transient button state, not completion of the request.
+      await saveResponse;
 
-      expect(readFileSync(STRESS_NOTE, "utf8")).toContain("[x] Unchecked task 1.1");
+      await expect.poll(() => readFileSync(STRESS_NOTE, "utf8"), { timeout: 5_000 }).toContain("[x] Unchecked task 1.1");
     } finally {
       writeFileSync(STRESS_NOTE, original);
     }
@@ -204,6 +229,89 @@ test.describe("D2-15: live editing mode", () => {
       expect(readFileSync(ENGINE_NOTE, "utf8")).toContain("Edited live.");
     } finally {
       writeFileSync(ENGINE_NOTE, original);
+    }
+  });
+
+  test("physical Backquote input stays editable in source and live modes", async ({ page }) => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const sourceTitle = `Backquote Source ${suffix}`;
+    const liveTitle = `Backquote Live ${suffix}`;
+    const sourcePath = `notes/backquote-source-${suffix}.md`;
+    const livePath = `notes/backquote-live-${suffix}.md`;
+    const sourceAbsolutePath = path.join(VAULT_ROOT, sourcePath);
+    const liveAbsolutePath = path.join(VAULT_ROOT, livePath);
+
+    const sourceCreated = await page.request.post("http://127.0.0.1:4170/api/notes", {
+      data: { title: sourceTitle, type: "note", path: sourcePath, body: `# ${sourceTitle}\n\nStart.\n` },
+    });
+    const liveCreated = await page.request.post("http://127.0.0.1:4170/api/notes", {
+      data: { title: liveTitle, type: "note", path: livePath, body: `# ${liveTitle}\n\nStart.\n` },
+    });
+    expect(sourceCreated.ok()).toBe(true);
+    expect(liveCreated.ok()).toBe(true);
+
+    async function openCreatedNote(title: string) {
+      await page.getByLabel("Search notes").fill(title);
+      const result = page.getByTestId("search-result").filter({ hasText: title });
+      await expect(result).toHaveCount(1);
+      await result.click();
+      await expect(page.getByRole("heading", { name: title, exact: true })).toBeVisible();
+      await expect(page.getByLabel("Markdown editor")).toBeVisible();
+    }
+
+    function fenceCount(filePath: string) {
+      return (readFileSync(filePath, "utf8").match(/^```$/gm) ?? []).length;
+    }
+
+    async function moveToDocumentEnd() {
+      // Keep this independent of the host keyboard's Mod mapping: one of
+      // these is the document-end command on every Playwright target.
+      await page.keyboard.press("Control+End");
+      await page.keyboard.press("Meta+End");
+    }
+
+    try {
+      await page.goto("/?vault=phase-d-backquote-input");
+      await openCreatedNote(sourceTitle);
+
+      await page.getByRole("tab", { name: "Source", exact: true }).click();
+      const sourceEditor = page.locator(".cm-content");
+      await sourceEditor.click();
+      await moveToDocumentEnd();
+      await page.keyboard.press("Enter");
+      await page.keyboard.type("source-inline");
+      await dispatchPhysicalBackquote(page);
+      await moveToDocumentEnd();
+      await page.keyboard.press("Enter");
+      await dispatchPhysicalBackquote(page, 3);
+
+      await expect.poll(() => sourceEditor.textContent()).toContain("source-inline`");
+      await expect.poll(() => sourceEditor.textContent()).toContain("```");
+      await page.keyboard.press("Meta+s");
+      await expect.poll(() => readFileSync(sourceAbsolutePath, "utf8"), { timeout: 5_000 }).toContain("source-inline`");
+      await expect.poll(() => fenceCount(sourceAbsolutePath), { timeout: 5_000 }).toBe(2);
+
+      await openCreatedNote(liveTitle);
+      await page.getByRole("tab", { name: "Live", exact: true }).click();
+      const liveEditor = page.locator(".cm-content");
+      await expect(liveEditor).toBeVisible();
+      await liveEditor.click();
+      await moveToDocumentEnd();
+      await page.keyboard.press("Enter");
+      await page.keyboard.type("live-inline");
+      await dispatchPhysicalBackquote(page);
+      await moveToDocumentEnd();
+      await page.keyboard.press("Enter");
+      await dispatchPhysicalBackquote(page, 3);
+
+      await page.keyboard.press("Meta+s");
+      await expect.poll(() => readFileSync(liveAbsolutePath, "utf8")).toContain("live-inline`");
+      await expect.poll(() => fenceCount(liveAbsolutePath), { timeout: 5_000 }).toBe(2);
+    } finally {
+      for (const filePath of [sourceAbsolutePath, liveAbsolutePath]) {
+        if (existsSync(filePath)) unlinkSync(filePath);
+      }
+      await page.request.post("http://127.0.0.1:4170/api/index/rebuild").catch(() => undefined);
     }
   });
 });

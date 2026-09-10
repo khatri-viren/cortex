@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "description": "Anonymized MCP audit replay cases; no note bodies or user prompts.",
+  "stable_baseline": {
+    "paired_calls": 1488,
+    "errors": 305,
+    "error_rate": 0.205
+  },
+  "cases": [
+    { "name": "legacy_note_path", "tool": "get_note", "arguments": { "path": "notes/example.md" } },
+    { "name": "malformed_required_field", "tool": "get_note", "arguments": { "note": 42 } },
+    { "name": "unknown_field", "tool": "get_section", "arguments": { "note": "notes/example.md", "section_id": "sec-example", "unexpected": true } },
+    { "name": "markerless_read", "tool": "get_section", "arguments": { "note": "notes/markerless.md", "heading": "Overview" } },
+    { "name": "markerless_explicit_repair", "tool": "patch_section", "arguments": { "note": "notes/markerless.md", "heading": "Overview", "expected_revision": "<revision>", "new_content": "<body>", "ensure_marker": true } },
+    { "name": "stale_section", "tool": "patch_section", "arguments": { "note": "notes/example.md", "section_id": "sec-example", "expected_revision": "<stale-revision>", "new_content": "<body>" } },
+    { "name": "stale_file", "tool": "replace_note", "arguments": { "note": "notes/example.md", "expected_file_hash": "<stale-hash>", "markdown": "<complete-markdown>" } },
+    { "name": "workspace_root_attachment", "tool": "create_note", "arguments": { "title": "Workspace note", "type": "note", "applies_to": [{ "repository": "cortex", "target": ".", "relation": "documents" }] } },
+    { "name": "repository_graph_selector", "tool": "project_map", "arguments": { "node": "repo:cortex", "depth": 1, "limit": 20 } },
+    { "name": "absolute_path_rejection", "tool": "get_note", "arguments": { "note": "/private/absolute/path.md" } },
+    { "name": "diagnostic_page", "tool": "vault_check", "arguments": { "include_diagnostics": true, "severity": "errors", "limit": 1 } },
+    { "name": "large_write_projection", "tool": "patch_section", "arguments": { "note": "notes/example.md", "section_id": "sec-example", "expected_revision": "<revision>", "new_content": "<large-body>", "include_diagnostics": false } }
+  ]
+}

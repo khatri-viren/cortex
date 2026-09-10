@@ -289,7 +289,6 @@ export function GraphPane({ onOpenPath, onOpenCode, onBackToNote, activeNoteLabe
     () => (graph?.edges ?? []).filter((edge) => graphNodeIds.has(edge.fromId) && graphNodeIds.has(edge.toId)),
     [graph, graphNodeIds],
   );
-  const danglingEdgeCount = (graph?.edges.length ?? 0) - validEdges.length;
 
   const searchMatches = useMemo(() => {
     const query = searchQuery.trim().toLocaleLowerCase();
@@ -406,7 +405,9 @@ export function GraphPane({ onOpenPath, onOpenCode, onBackToNote, activeNoteLabe
   }
 
   const workspaceStatusLine = workspaceLine(workspace);
-  const partial = graph.truncated || danglingEdgeCount > 0;
+  const omittedNodes = graph.omitted_nodes ?? 0;
+  const omittedEdges = graph.omitted_edges ?? 0;
+  const partial = graph.truncated || omittedNodes > 0 || omittedEdges > 0;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex min-h-10 items-center justify-end gap-2 border-b px-3 py-1.5">
@@ -506,7 +507,12 @@ export function GraphPane({ onOpenPath, onOpenCode, onBackToNote, activeNoteLabe
           {partial && (
             <div data-testid="graph-partial-state" className="absolute right-3 bottom-3 z-10 max-w-[360px] rounded-md border border-warning/40 bg-background/95 px-3 py-2 text-[11px] text-muted-foreground shadow-sm">
               Showing a partial neighborhood. Expand a node to inspect its complete local relationships.
-              {danglingEdgeCount > 0 && <span className="mt-0.5 block text-warning">{danglingEdgeCount} incomplete relationship{danglingEdgeCount === 1 ? "" : "s"} omitted.</span>}
+              {(omittedNodes > 0 || omittedEdges > 0) && <span className="mt-0.5 block text-warning">
+                {omittedNodes > 0 && `${omittedNodes} node${omittedNodes === 1 ? "" : "s"} omitted`}
+                {omittedNodes > 0 && omittedEdges > 0 && "; "}
+                {omittedEdges > 0 && `${omittedEdges} relationship${omittedEdges === 1 ? "" : "s"} omitted`}
+                .
+              </span>}
             </div>
           )}
           {graphNodes.length === 1 && (

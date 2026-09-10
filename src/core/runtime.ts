@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { basename, dirname, extname, join, relative as relativePath, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { addMissingSectionMarkers, findSections, getSectionBody, parseMarkdown, replaceSectionBody } from "./markdown.js";
+import { addMissingSectionMarkers, findSections, getReadableSectionBody, getSectionBody, insertSectionMarker, parseMarkdown, replaceSectionBody } from "./markdown.js";
 import { createFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { repositoryRelativePath, projectNodeId, noteNodeId } from "./identity.js";
 import { VaultIndexer } from "./indexer.js";
@@ -21,25 +21,32 @@ import { GitAdapter } from "./git.js";
 import { RUNTIME_DIRECTORY } from "./vault.js";
 import type { Diagnostic, NoteFrontmatter, Section } from "./types.js";
 import { ServiceError } from "./errors.js";
-import type { DiffResult, GraphDirection, GraphEdgeRecord, GraphNodeRecord, GraphQueryResult, HealthResult, HistoryResult, IndexPhase, IndexRefreshResult, NoteCreateInput, NoteLinkSuggestion, NoteRecord, NoteSelector, NoteSource, NoteUpdateInput, RepositoryDiffResult, RepositoryHistoryResult, RepositoryRestoreResult, VaultChangeEvent, VaultChangeScope, VaultChangeSet, VaultCheckResult, VaultTree, VaultTreeNode, WorkspaceStatus, WriteResult } from "./runtime-types.js";
+import type { DiffResult, GraphDirection, GraphEdgeRecord, GraphNodeRecord, GraphQueryResult, HealthResult, HistoryResult, IndexPhase, IndexRefreshResult, NoteCreateInput, NoteLinkSuggestion, NoteRecord, NoteSelector, NoteSource, NoteUpdateInput, RepositoryDiffResult, RepositoryHistoryResult, RepositoryRestoreResult, SectionReadResult, VaultChangeEvent, VaultChangeScope, VaultChangeSet, VaultCheckResult, VaultTree, VaultTreeNode, WorkspaceStatus, WriteResult } from "./runtime-types.js";
 import type { IndexReport } from "./index-types.js";
 import { startWatcher, type WatcherHandle } from "./watcher.js";
-import { isWorkspaceIgnored, loadWorkspaceConfig, workspaceIgnorePatterns, workspaceManifestPath, repositoryRelativePath as workspaceRepositoryRelativePath, type WorkspaceConfig, type WorkspaceRepository } from "./workspace.js";
+import { isWorkspaceIgnored, loadWorkspaceConfig, workspaceIgnorePatterns, workspaceManifestPath, repositoryRelativePath as workspaceRepositoryRelativePath, workspaceRepositoryMatches, type WorkspaceConfig, type WorkspaceRepository } from "./workspace.js";
 import { WorkspaceIndexer } from "./workspace-indexer.js";
-import { resolveWorkspaceAttachments, requireAppliesToRepository, type NoteAttachmentInput } from "./workspace-attachments.js";
+import { resolveWorkspaceAttachments, type NoteAttachmentInput } from "./workspace-attachments.js";
 import { PdfExportJobManager, type PdfExportArtifact } from "./pdf-export-jobs.js";
 
 const MAX_SEARCH_LIMIT = 50;
 const MAX_LIST_LIMIT = 100;
 const MAX_GRAPH_LIMIT = 100;
 const MAX_CONTEXT_BYTES = 6_000;
-const MAX_GRAPH_RESPONSE_BYTES = 512_000;
+// Graph neighborhoods are navigational context, not document transport. Keep
+// the core/API budget materially smaller than the old generic 512 KiB ceiling;
+// the MCP projection applies its stricter provider-facing cap afterwards.
+const MAX_GRAPH_RESPONSE_BYTES = 64_000;
+const MAX_CONFLICT_BODY_BYTES = 8_000;
+const MAX_SECTION_BODY_BYTES = 16_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HASH_RE = /^[0-9a-f]{64}$/i;
 const MAX_CHANGE_HISTORY = 128;
 const MAX_PENDING_WRITES = 256;
 
 type NoteListCursor = { updatedAt: string; path: string };
+type SectionBodyCursor = { noteId: string; sectionKey: string; revision: string; offset: number };
+type TextPageCursor = { key: string; offset: number };
 
 function decodeNoteCursor(value: string | undefined): NoteListCursor | undefined {
   if (!value) return undefined;
@@ -56,13 +63,90 @@ function encodeNoteCursor(cursor: NoteListCursor): string {
   return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
 }
 
+function decodeSectionCursor(value: string | undefined): SectionBodyCursor | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Partial<SectionBodyCursor>;
+    if (typeof parsed.noteId !== "string" || typeof parsed.sectionKey !== "string" || typeof parsed.revision !== "string" || typeof parsed.offset !== "number" || !Number.isInteger(parsed.offset) || parsed.offset < 0) throw new Error("invalid cursor");
+    const offset = parsed.offset;
+    return { noteId: parsed.noteId, sectionKey: parsed.sectionKey, revision: parsed.revision, offset };
+  } catch {
+    throw new ServiceError("INVALID_INPUT", "Section body cursor is invalid.");
+  }
+}
+
+function encodeSectionCursor(cursor: SectionBodyCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function decodeTextCursor(value: string | undefined): TextPageCursor | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Partial<TextPageCursor>;
+    if (typeof parsed.key !== "string" || typeof parsed.offset !== "number" || !Number.isInteger(parsed.offset) || parsed.offset < 0) throw new Error("invalid cursor");
+    return { key: parsed.key, offset: parsed.offset };
+  } catch {
+    throw new ServiceError("INVALID_INPUT", "Text page cursor is invalid.");
+  }
+}
+
+function encodeTextCursor(cursor: TextPageCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function pageText(value: string, key: string, limit?: number, cursor?: string): { value: string; truncated?: boolean; next_cursor?: string } {
+  const decoded = decodeTextCursor(cursor);
+  if (decoded && decoded.key !== key) throw new ServiceError("CONFLICT", "The text changed while paging.", { recovery: "Refetch the diff without the cursor and restart paging." });
+  const chunk = takeUtf8Chunk(value, decoded?.offset ?? 0, pageLimit(limit, MAX_SECTION_BODY_BYTES));
+  return {
+    value: chunk.body,
+    ...(chunk.truncated ? { truncated: true, next_cursor: encodeTextCursor({ key, offset: chunk.nextOffset }) } : {}),
+  };
+}
+
+function takeUtf8Chunk(value: string, offset: number, maxBytes: number): { body: string; nextOffset: number; truncated: boolean } {
+  const bytes = Buffer.from(value, "utf8");
+  if (offset > bytes.length) throw new ServiceError("INVALID_INPUT", "Section body cursor is beyond the current body.");
+  if (bytes.length - offset <= maxBytes) return { body: bytes.subarray(offset).toString("utf8"), nextOffset: bytes.length, truncated: false };
+  let end = Math.min(bytes.length, offset + maxBytes);
+  while (end > offset && (bytes[end]! & 0xc0) === 0x80) end -= 1;
+  // A single UTF-8 code point can be wider than a caller's requested page.
+  // Include that complete code point rather than returning replacement
+  // characters and a cursor that starts in the middle of it.
+  if (end === offset) {
+    end = Math.min(bytes.length, offset + 1);
+    while (end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end += 1;
+  }
+  return { body: bytes.subarray(offset, end).toString("utf8"), nextOffset: end, truncated: end < bytes.length };
+}
+
 function hashContent(content: Buffer | string): string {
   return createHash("sha256").update(content).digest("hex");
+}
+
+function indexSyncFailure(relative: string, contentHash: string | undefined, cause: unknown): ServiceError {
+  return new ServiceError(
+    "INDEX_SYNC_FAILED",
+    `File '${relative}' was persisted but indexing failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+    {
+      persisted: true,
+      path: relative,
+      ...(contentHash ? { content_hash: contentHash } : {}),
+      index_status: "failed",
+      recovery: "Inspect the index diagnostics and rebuild the Cortex projection before relying on graph or search results.",
+    },
+  );
 }
 
 function clamp(value: number | undefined, fallback: number, maximum: number): number {
   if (value === undefined || !Number.isFinite(value)) return fallback;
   return Math.max(1, Math.min(Math.floor(value), maximum));
+}
+
+function pageLimit(value: number | undefined, maximum: number): number {
+  return value === undefined || !Number.isFinite(value)
+    ? maximum
+    : Math.max(1, Math.min(Math.floor(value), maximum));
 }
 
 function jsonMetadata(value: string): Record<string, unknown> {
@@ -102,6 +186,65 @@ function trimPayload<T>(payload: T, maxBytes = MAX_CONTEXT_BYTES): { value: T; t
     return { value: value as T, truncated: true };
   }
   return { value: payload, truncated: true };
+}
+
+function boundedText(value: string, maxBytes = MAX_CONFLICT_BODY_BYTES): { value: string; truncated: boolean } {
+  if (Buffer.byteLength(value, "utf8") <= maxBytes) return { value, truncated: false };
+  let end = Math.max(0, Math.floor(value.length * (maxBytes / Math.max(1, Buffer.byteLength(value, "utf8")))));
+  while (end > 0 && Buffer.byteLength(value.slice(0, end), "utf8") > maxBytes) end -= 1;
+  return { value: value.slice(0, end), truncated: true };
+}
+
+function boundGraphPayload(graph: GraphQueryResult, maxBytes = MAX_GRAPH_RESPONSE_BYTES): GraphQueryResult {
+  const nodes = [...graph.nodes];
+  const edges = [...graph.edges];
+  let omittedNodes = graph.omitted_nodes ?? 0;
+  let omittedEdges = graph.omitted_edges ?? 0;
+  const payload = (): GraphQueryResult => {
+    const allowed = new Set([graph.anchor.nodeId, ...nodes.map((node) => node.nodeId)]);
+    const closedEdges = edges.filter((edge) => allowed.has(edge.fromId) && allowed.has(edge.toId));
+    const totalOmittedEdges = omittedEdges + edges.length - closedEdges.length;
+    return {
+      anchor: graph.anchor,
+      nodes,
+      edges: closedEdges,
+      truncated: graph.truncated || omittedNodes > 0 || totalOmittedEdges > 0,
+      ...(omittedNodes ? { omitted_nodes: omittedNodes } : {}),
+      ...(totalOmittedEdges ? { omitted_edges: totalOmittedEdges } : {}),
+    };
+  };
+  while (Buffer.byteLength(JSON.stringify(payload()), "utf8") > maxBytes && (nodes.length > 0 || edges.length > 0)) {
+    if (edges.length > 0) {
+      edges.pop();
+      omittedEdges += 1;
+    } else {
+      nodes.pop();
+      omittedNodes += 1;
+    }
+  }
+  return payload();
+}
+
+function boundContextPayload(payload: Record<string, unknown>, maxBytes = MAX_CONTEXT_BYTES): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...payload };
+  const fields = ["likely_files", "attached_notes", "related_nodes", "relationships", "task_matches"];
+  for (const field of fields) if (Array.isArray(result[field])) result[field] = [...result[field] as unknown[]];
+  const omitted: Record<string, number> = {};
+  const minimum = new Map(fields.map((field) => [field, Array.isArray(result[field]) && result[field]!.length > 0 ? 1 : 0]));
+  const size = () => Buffer.byteLength(JSON.stringify(result), "utf8");
+  const removalOrder = ["task_matches", "relationships", "related_nodes", "likely_files", "attached_notes"];
+  while (size() > maxBytes) {
+    const field = removalOrder.find((candidate) => Array.isArray(result[candidate]) && (result[candidate] as unknown[]).length > (minimum.get(candidate) ?? 0));
+    if (!field) break;
+    (result[field] as unknown[]).pop();
+    omitted[field] = (omitted[field] ?? 0) + 1;
+  }
+  if (Object.keys(omitted).length === 0 && size() <= maxBytes) return result;
+  return {
+    ...result,
+    truncated: Object.keys(omitted).length > 0 || size() > maxBytes,
+    ...(Object.keys(omitted).length > 0 ? { truncated_categories: Object.keys(omitted), omitted_counts: omitted } : {}),
+  };
 }
 
 class AsyncMutex {
@@ -259,8 +402,18 @@ export class VaultRuntime {
   }
 
   private requireRepository(repositoryId: string): WorkspaceRepository {
-    const repository = this.workspace?.repositories.find((candidate) => candidate.id === repositoryId);
-    if (!repository) throw new ServiceError("NOT_FOUND", `Repository '${repositoryId}' was not discovered in the workspace.`);
+    const normalized = repositoryId.trim();
+    const matches = workspaceRepositoryMatches(this.workspace?.repositories ?? [], normalized);
+    if (matches.length > 1) throw new ServiceError("INVALID_INPUT", `Repository selector '${repositoryId}' is ambiguous.`, {
+      repository: repositoryId,
+      candidates: matches.map((candidate) => candidate.id),
+      recovery: "Use the exact repository id in the repository-qualified selector.",
+    });
+    const repository = matches[0];
+    if (!repository) throw new ServiceError("NOT_FOUND", `Repository '${repositoryId}' was not discovered in the workspace.`, {
+      repository: repositoryId,
+      available_repositories: this.workspace?.repositories.map((candidate) => candidate.id) ?? [],
+    });
     return repository;
   }
 
@@ -276,10 +429,23 @@ export class VaultRuntime {
   private repositoryPath(repositoryId: string, target: string): { repository: WorkspaceRepository; relative: string } {
     const repository = this.requireRepository(repositoryId);
     const workspace = this.workspace!;
+    if (target.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(target)) {
+      throw new ServiceError("INVALID_INPUT", "Absolute paths are not accepted through MCP; use a repository-relative path.", {
+        repository: repository.id,
+        target,
+        alternatives: [`repo:${repository.id}`, `file:${repository.id}:<relative-path>`, `dir:${repository.id}:<relative-path>`],
+      });
+    }
     try {
       return { repository, relative: workspaceRepositoryRelativePath(workspace.workspaceRoot, repository, target) };
     } catch (cause) {
-      throw new ServiceError("INVALID_INPUT", cause instanceof Error ? cause.message : String(cause));
+      const message = cause instanceof Error ? cause.message : String(cause);
+      throw new ServiceError("INVALID_INPUT", message, {
+        repository: repository.id,
+        target,
+        reason: message.includes("outside") ? "outside_repository" : message.includes("not indexable") ? "ignored" : "invalid_target",
+        recovery: "Use a repository-relative target; use '.' for the repository root.",
+      });
     }
   }
 
@@ -418,10 +584,56 @@ export class VaultRuntime {
   }
 
   private noteRow(selector: NoteSelector): NoteRecord {
-    const row = UUID_RE.test(selector)
-      ? this.indexer.store.noteById(selector)
-      : this.indexer.store.noteByPath(this.relativePath(selector).relative);
-    if (!row) throw new ServiceError("NOT_FOUND", `Note '${selector}' was not found.`);
+    const normalizedSelector = selector.trim();
+    if (normalizedSelector.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(normalizedSelector)) {
+      throw new ServiceError("INVALID_INPUT", "Absolute paths are not accepted through MCP; use a vault-relative note path or a canonical note selector.", {
+        selector,
+        alternatives: ["notes/<relative-note>.md", "note:<uuid>", "a note title or alias discovered with search"],
+        recovery: "Call search to discover a note path, title, alias, or UUID, then retry with that selector.",
+      });
+    }
+    const explicitId = normalizedSelector.startsWith("note:") ? normalizedSelector.slice("note:".length) : normalizedSelector;
+    let row = UUID_RE.test(explicitId) ? this.indexer.store.noteById(explicitId.toLocaleLowerCase()) : undefined;
+    if (!row && (UUID_RE.test(normalizedSelector) || normalizedSelector.startsWith("note:"))) {
+      throw new ServiceError("NOT_FOUND", `Note '${selector}' was not found.`);
+    }
+    if (!row) {
+      try {
+        row = this.indexer.store.noteByPath(this.relativePath(normalizedSelector).relative);
+      } catch (error) {
+        // A title, alias, or filename stem is not a path. Preserve path
+        // traversal and absolute-path errors, but continue into exact note
+        // identity resolution for ordinary not-found path candidates.
+        if (!(error instanceof ServiceError) || error.code !== "NOT_FOUND") throw error;
+      }
+    }
+    if (!row) {
+      const allMatches = this.indexer.store.noteMatches(normalizedSelector);
+      const normalized = normalizedSelector.toLocaleLowerCase();
+      const stemMatches = allMatches.filter((candidate) => basename(candidate.path, extname(candidate.path)).toLocaleLowerCase() === normalized);
+      const titleMatches = allMatches.filter((candidate) => candidate.title.toLocaleLowerCase() === normalized);
+      const aliasMatches = allMatches.filter((candidate) => candidate.aliases.some((alias) => alias.toLocaleLowerCase() === normalized));
+      // Keep the selector precedence explicit: a filename stem wins over a
+      // title, which wins over an alias. Only ties within the selected class
+      // are ambiguous; a match in a lower-priority class must not create a
+      // false ambiguity for a stronger identity.
+      const matches = [stemMatches, titleMatches, aliasMatches].find((candidateMatches) => candidateMatches.length > 0) ?? [];
+      if (matches.length > 1) {
+        throw new ServiceError("AMBIGUOUS_NOTE", `Note selector '${selector}' matches more than one note.`, {
+          selector,
+          candidates: matches.slice(0, 5).map((candidate) => ({ id: candidate.id, path: candidate.path, title: candidate.title })),
+          omitted_candidates: Math.max(0, matches.length - 5),
+        });
+      }
+      row = matches[0];
+    }
+    if (!row) {
+      const suggestions = this.indexer.store.noteSuggestions(normalizedSelector, 5).notes;
+      throw new ServiceError("NOT_FOUND", `Note '${selector}' was not found.`, {
+        selector,
+        candidates: suggestions.map((candidate) => ({ id: candidate.id, path: candidate.path, title: candidate.title })),
+      });
+    }
     const absolute = resolve(this.vaultRoot, row.path);
     return {
       id: row.id,
@@ -437,23 +649,149 @@ export class VaultRuntime {
   }
 
   private resolveGraphNode(selector: string): GraphNodeRecord {
-    let nodeId = selector;
-    if (UUID_RE.test(selector)) nodeId = noteNodeId(selector);
-    else if (!selector.includes(":")) {
-      const relative = this.relativePath(selector).relative;
-      nodeId = relative === "." ? projectNodeId() : this.indexer.store.graphNodeIdByPath(relative) ?? "";
+    const normalized = selector.trim();
+    if (normalized.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(normalized)) {
+      throw new ServiceError("INVALID_INPUT", "Absolute paths are not accepted through MCP; use a namespaced graph selector.", {
+        selector,
+        alternatives: ["project:root", "repo:<repository-id>", "file:<repository-id>:<relative-path>", "dir:<repository-id>:<relative-path>", "note:<uuid>"],
+        recovery: "Use a canonical namespaced graph ID or a repository-qualified relative path.",
+      });
     }
-    if (!nodeId) throw new ServiceError("NOT_FOUND", `Graph node '${selector}' was not found.`);
-    const row = this.indexer.store.unifiedNode(nodeId);
-    if (!row) throw new ServiceError("NOT_FOUND", `Graph node '${selector}' was not found.`);
+    const noteIdSelector = normalized.match(/^note:(.+)$/i)?.[1];
+    let nodeId = UUID_RE.test(normalized)
+      ? noteNodeId(normalized.toLocaleLowerCase())
+      : noteIdSelector && UUID_RE.test(noteIdSelector)
+        ? noteNodeId(noteIdSelector.toLocaleLowerCase())
+        : normalized;
+    let row = this.indexer.store.unifiedNode(nodeId);
+    if (!row) {
+      // Node IDs are canonical, but repository aliases and UUID selectors are
+      // case-insensitive at the MCP seam. Resolve an otherwise canonical ID
+      // without weakening path traversal or absolute-path validation below.
+      const folded = normalized.toLocaleLowerCase();
+      const caseInsensitive = this.indexer.store.unifiedNodes().find((candidate) => candidate.node_id.toLocaleLowerCase() === folded);
+      if (caseInsensitive) {
+        row = caseInsensitive;
+        nodeId = caseInsensitive.node_id;
+      }
+    }
+    if (!row) {
+      const namespaced = normalized.match(/^(repo|file|dir|package):([^:]+)(?::(.+))?$/i);
+      const repositorySelector = namespaced?.[2];
+      if (namespaced && repositorySelector) {
+        const repositoryMatches = workspaceRepositoryMatches(this.workspace?.repositories ?? [], repositorySelector);
+        if (repositoryMatches.length > 1) throw new ServiceError("AMBIGUOUS_GRAPH_NODE", `Repository selector '${repositorySelector}' matches more than one repository.`, {
+          selector,
+          candidates: repositoryMatches.map((candidate) => ({ node: `repo:${candidate.id}`, kind: "repository", path: candidate.path, name: candidate.id })),
+          recovery: "Use the exact repository id in the namespaced graph selector.",
+        });
+        const repository = repositoryMatches[0];
+        if (repository) {
+          const kind = namespaced[1]!.toLocaleLowerCase();
+          const path = namespaced[3];
+          const canonical = kind === "repo" ? `repo:${repository.id}` : path ? `${kind}:${repository.id}:${path}` : undefined;
+          if (canonical) {
+            row = this.indexer.store.unifiedNode(canonical);
+            if (!row) row = this.indexer.store.unifiedNodes().find((candidate) => candidate.node_id.toLocaleLowerCase() === canonical.toLocaleLowerCase());
+            if (row) nodeId = row.node_id;
+          }
+        }
+      }
+    }
+    if (!row && !normalized.includes(":")) {
+      // Repository aliases are checked before vault paths because a common
+      // grounding call is project_map({ node: "cortex" }).
+      const repositoryMatches = workspaceRepositoryMatches(this.workspace?.repositories ?? [], normalized);
+      if (repositoryMatches.length > 1) throw new ServiceError("AMBIGUOUS_GRAPH_NODE", `Repository selector '${selector}' matches more than one repository.`, {
+        selector,
+        candidates: repositoryMatches.map((candidate) => ({ node: `repo:${candidate.id}`, kind: "repository", path: candidate.path, name: candidate.id })),
+        recovery: "Use the exact repo:<repository-id> selector.",
+      });
+      const repository = repositoryMatches[0];
+      const repositoryId = repository?.id ?? normalized;
+      row = this.indexer.store.unifiedNode(`repo:${repositoryId}`);
+      if (row) nodeId = row.node_id;
+    }
+    if (!row && !normalized.includes(":") && normalized.includes("/")) {
+      const [repositoryCandidate, ...pathParts] = normalized.split("/");
+      const repositoryMatches = workspaceRepositoryMatches(this.workspace?.repositories ?? [], repositoryCandidate);
+      if (repositoryMatches.length > 1) throw new ServiceError("AMBIGUOUS_GRAPH_NODE", `Repository selector '${repositoryCandidate}' matches more than one repository.`, {
+        selector,
+        candidates: repositoryMatches.map((candidate) => ({ node: `repo:${candidate.id}`, kind: "repository", path: candidate.path, name: candidate.id })),
+        recovery: "Use the exact repository id in the repository-qualified path.",
+      });
+      const repository = repositoryMatches[0];
+      if (repository) {
+        const relative = pathParts.join("/") || ".";
+        const candidates = relative === "."
+          ? [`repo:${repository.id}`]
+          : [`file:${repository.id}:${relative}`, `dir:${repository.id}:${relative}`];
+        const resolved = candidates.map((candidate) => this.indexer.store.unifiedNode(candidate)).find((candidate) => candidate);
+        if (resolved) {
+          row = resolved;
+          nodeId = resolved.node_id;
+        }
+      }
+    }
+    if (!row && !normalized.includes(":")) {
+      const workspacePathCandidates = this.indexer.store.unifiedNodes()
+        .filter((candidate) => (candidate.node_id.startsWith("file:") || candidate.node_id.startsWith("dir:")) && candidate.node_id.endsWith(`:${normalized}`));
+      if (workspacePathCandidates.length > 1) {
+        throw new ServiceError("AMBIGUOUS_GRAPH_NODE", `Repository-relative graph path '${selector}' matches more than one repository.`, {
+          selector,
+          candidates: workspacePathCandidates.slice(0, 5).map((candidate) => ({ node: candidate.node_id, kind: candidate.kind, path: candidate.path ?? undefined, name: candidate.name })),
+          omitted_candidates: Math.max(0, workspacePathCandidates.length - 5),
+          recovery: "Use a repository-qualified selector such as file:<repository-id>:<relative-path> or dir:<repository-id>:<relative-path>.",
+        });
+      }
+      const workspacePathCandidate = workspacePathCandidates[0];
+      if (workspacePathCandidate) {
+        row = workspacePathCandidate;
+        nodeId = workspacePathCandidate.node_id;
+      }
+    }
+    if (!row && !normalized.includes(":")) {
+      try {
+        const relative = this.relativePath(normalized).relative;
+        nodeId = relative === "." ? projectNodeId() : this.indexer.store.graphNodeIdByPath(relative) ?? "";
+        row = nodeId ? this.indexer.store.unifiedNode(nodeId) : undefined;
+      } catch (error) {
+        if (!(error instanceof ServiceError) || error.code !== "NOT_FOUND") throw error;
+      }
+    }
+    if (!row && !normalized.includes(":")) {
+      try {
+        const note = this.noteRow(normalized);
+        nodeId = noteNodeId(note.id);
+        row = this.indexer.store.unifiedNode(nodeId);
+      } catch (error) {
+        if (error instanceof ServiceError && (error.code === "AMBIGUOUS_NOTE" || error.code === "INVALID_INPUT")) throw error;
+      }
+    }
+    if (!row) {
+      const candidateRows = this.indexer.store.unifiedNodes()
+        .filter((candidate) => candidate.name.toLocaleLowerCase() === normalized.toLocaleLowerCase())
+      const candidates = candidateRows.slice(0, 5)
+        .map((candidate) => ({ node: candidate.node_id, kind: candidate.kind, path: candidate.path ?? undefined, name: candidate.name }));
+      if (candidateRows.length > 1) {
+        throw new ServiceError("AMBIGUOUS_GRAPH_NODE", `Graph selector '${selector}' matches more than one node.`, { selector, candidates, omitted_candidates: Math.max(0, candidateRows.length - 5) });
+      }
+      throw new ServiceError("NOT_FOUND", `Graph node '${selector}' was not found.`, {
+        selector,
+        candidates,
+        recovery: "Use a namespaced node such as project:root, repo:<repository-id>, file:<repository-id>:<relative-path>, dir:<repository-id>:<relative-path>, or note:<uuid>.",
+      });
+    }
     return { nodeId: row.node_id, kind: row.kind, path: row.path ?? undefined, name: row.name, metadata: jsonMetadata(row.metadata_json) };
   }
 
   private queryGraphInternal(selector: string, direction: GraphDirection, depth: number, limit: number): GraphQueryResult {
     const anchor = this.resolveGraphNode(selector);
     const visited = new Set([anchor.nodeId]);
+    const omittedNodeIds = new Set<string>();
     const frontier = [anchor.nodeId];
     const edges = new Map<string, GraphEdgeRecord>();
+    let traversalTruncated = false;
     for (let currentDepth = 0; currentDepth < depth && frontier.length > 0; currentDepth += 1) {
       const next: string[] = [];
       for (const nodeId of frontier) {
@@ -474,25 +812,45 @@ export class VaultRuntime {
           const neighbor = direction === "in" ? edge.fromId : edge.toId;
           if (direction === "neighbors") {
             const other = edge.fromId === nodeId ? edge.toId : edge.fromId;
+            if (!this.indexer.store.unifiedNode(other)) continue;
             if (!visited.has(other)) {
-              visited.add(other);
-              next.push(other);
+              if (visited.size >= limit + 1) {
+                omittedNodeIds.add(other);
+                traversalTruncated = true;
+              } else {
+                visited.add(other);
+                next.push(other);
+              }
             }
           } else if (!visited.has(neighbor)) {
-            visited.add(neighbor);
-            next.push(neighbor);
+            if (!this.indexer.store.unifiedNode(neighbor)) continue;
+            if (visited.size >= limit + 1) {
+              omittedNodeIds.add(neighbor);
+              traversalTruncated = true;
+            } else {
+              visited.add(neighbor);
+              next.push(neighbor);
+            }
           }
-          if (visited.size >= limit + 1) break;
         }
-        if (visited.size >= limit + 1) break;
       }
       frontier.splice(0, frontier.length, ...next);
-      if (visited.size >= limit + 1) break;
+      if (traversalTruncated) break;
     }
     const ids = [...visited].slice(0, limit + 1);
     const nodes = ids.map((id) => this.resolveGraphNode(id));
     const allowed = new Set(ids);
-    return { anchor, nodes: nodes.slice(1), edges: [...edges.values()].filter((edge) => allowed.has(edge.fromId) && allowed.has(edge.toId)), truncated: visited.size > limit + 1 };
+    const returnedEdges = [...edges.values()].filter((edge) => allowed.has(edge.fromId) && allowed.has(edge.toId));
+    const omittedNodes = omittedNodeIds.size + Math.max(0, visited.size - ids.length);
+    const omittedEdges = Math.max(0, edges.size - returnedEdges.length);
+    return {
+      anchor,
+      nodes: nodes.slice(1),
+      edges: returnedEdges,
+      truncated: traversalTruncated || omittedNodes > 0 || omittedEdges > 0,
+      ...(omittedNodes ? { omitted_nodes: omittedNodes } : {}),
+      ...(omittedEdges ? { omitted_edges: omittedEdges } : {}),
+    };
   }
 
   getNote(selector: NoteSelector): { note: NoteRecord; sections: Section[] } {
@@ -562,34 +920,123 @@ export class VaultRuntime {
     return { rootName: basename(this.vaultRoot), children: visit(this.vaultRoot, ""), truncated: false };
   }
 
-  getSection(selector: NoteSelector, sectionId?: string, heading?: string): { note: NoteRecord; section: Section; body: string } {
+  getSection(selector: NoteSelector, sectionId?: string, heading?: string, limit?: number, cursor?: string): SectionReadResult {
+    if (sectionId && heading) throw new ServiceError("INVALID_INPUT", "Provide only one of section_id or heading.");
+    if (!sectionId && !heading) throw new ServiceError("INVALID_INPUT", "get_section requires section_id or heading.");
     const note = this.noteRow(selector);
     const content = readFileSync(resolve(this.vaultRoot, note.path), "utf8");
     const parsed = parseMarkdown(content);
     const matches = findSections(parsed, sectionId ? { id: sectionId } : { heading });
-    if (matches.length === 0) throw new ServiceError("NOT_FOUND", "Section was not found.");
-    if (matches.length > 1) throw new ServiceError("AMBIGUOUS_SECTION", `Section heading '${heading}' is ambiguous.`);
+    if (matches.length === 0) throw new ServiceError("NOT_FOUND", `Section '${sectionId ?? heading}' was not found.`, {
+      note_path: note.path,
+      section_id: sectionId,
+      heading,
+      recovery: "Call get_note first to obtain a current section_id, or use a unique case-insensitive heading.",
+    });
+    if (matches.length > 1) throw new ServiceError("AMBIGUOUS_SECTION", `Section selector '${sectionId ?? heading}' is ambiguous.`, {
+      note_path: note.path,
+      section_id: sectionId,
+      heading,
+      candidates: matches.slice(0, 5).map((match) => ({ section_id: match.id, heading: match.heading, revision: match.revision })),
+      omitted_candidates: Math.max(0, matches.length - 5),
+      recovery: "Use the unique section_id returned by get_note.",
+    });
     const section = matches[0];
-    const body = getSectionBody(content, section, true);
-    if (body === undefined) throw new ServiceError("CONFLICT", `Section '${section.id ?? section.heading}' has no writable section marker.`);
-    return { note, section, body };
+    const fullBody = getReadableSectionBody(content, section, true);
+    const sectionKey = section.id ?? section.heading.toLocaleLowerCase();
+    const decodedCursor = decodeSectionCursor(cursor);
+    if (decodedCursor && (decodedCursor.noteId !== note.id || decodedCursor.sectionKey !== sectionKey)) {
+      throw new ServiceError("CONFLICT", "Section body cursor belongs to a different section.", {
+        note_path: note.path,
+        section_id: section.id,
+        heading: section.heading,
+        recovery: "Call get_section again without the cursor to obtain a fresh bounded slice.",
+      });
+    }
+    if (decodedCursor && decodedCursor.revision !== section.revision) {
+      throw new ServiceError("CONFLICT", "Section changed while paging.", {
+        note_path: note.path,
+        section_id: section.id,
+        expected_revision: decodedCursor.revision,
+        actual_revision: section.revision,
+        recovery: "Call get_section again without the cursor and restart paging from the new revision.",
+      });
+    }
+    const chunk = takeUtf8Chunk(fullBody, decodedCursor?.offset ?? 0, pageLimit(limit, MAX_SECTION_BODY_BYTES));
+    const writable = getSectionBody(content, section, true) !== undefined;
+    return {
+      note,
+      section,
+      body: chunk.body,
+      revision: section.revision,
+      writable,
+      ...(writable ? {} : { write_warning: "missing_section_marker" as const }),
+      ...(chunk.truncated ? {
+        body_truncated: true,
+        next_cursor: encodeSectionCursor({ noteId: note.id, sectionKey, revision: section.revision, offset: chunk.nextOffset }),
+      } : {}),
+    };
   }
 
-  async patchSection(selector: NoteSelector, sectionId: string, expectedRevision: string, newContent: string): Promise<WriteResult> {
+  async patchSection(selector: NoteSelector, sectionId: string | undefined, expectedRevision: string, newContent: string, options?: { heading?: string; ensureMarker?: boolean }): Promise<WriteResult> {
     return this.writes.run(() => {
       const note = this.noteRow(selector);
       const absolute = resolve(this.vaultRoot, note.path);
       const original = readFileSync(absolute, "utf8");
       const parsed = parseMarkdown(original, absolute);
-      const matches = findSections(parsed, { id: sectionId });
-      if (matches.length === 0) throw new ServiceError("NOT_FOUND", `Section '${sectionId}' was not found.`);
-      if (matches.length > 1 || diagnosticsHaveErrors(parsed.diagnostics)) throw new ServiceError("CONFLICT", "The note has invalid or duplicate section metadata.");
-      const section = matches[0];
-      if (section.revision !== expectedRevision) throw new ServiceError("CONFLICT", "Section revision is stale.", { expected_revision: expectedRevision, actual_revision: section.revision });
-      const body = replaceSectionBody(original, section, newContent.replace(/\r\n/g, "\n").replace(/^\n+|\n+$/g, ""));
-      const updated = { ...parsed.frontmatter!, updated_at: new Date().toISOString() };
-      const content = serializeFrontmatter(updated) + parseMarkdown(body).body;
-      return this.writeAndIndexLocked(note.path, content, "update", ["content", "graph"]);
+      if (!sectionId && !options?.heading) throw new ServiceError("INVALID_INPUT", "patch_section requires section_id or heading.");
+      if (sectionId && options?.heading) throw new ServiceError("INVALID_INPUT", "Provide only one of section_id or heading.");
+      const heading = options?.heading;
+      const matches = findSections(parsed, sectionId ? { id: sectionId } : { heading });
+      if (matches.length === 0) throw new ServiceError("NOT_FOUND", `Section '${sectionId ?? heading}' was not found.`, {
+        note_path: note.path,
+        section_id: sectionId,
+        heading,
+        recovery: "Call get_note first to obtain a current section_id, or use a unique case-insensitive heading.",
+      });
+      if (matches.length > 1) throw new ServiceError("AMBIGUOUS_SECTION", `Section selector '${sectionId ?? heading}' is ambiguous.`, {
+        note_path: note.path,
+        section_id: sectionId,
+        heading,
+        candidates: matches.slice(0, 5).map((match) => ({ section_id: match.id, heading: match.heading, revision: match.revision })),
+        omitted_candidates: Math.max(0, matches.length - 5),
+        recovery: "Use the unique section_id returned by get_note.",
+      });
+      if (diagnosticsHaveErrors(parsed.diagnostics)) throw new ServiceError("CONFLICT", "The note has invalid section metadata.", {
+        note_path: note.path,
+        recovery: "Repair duplicate or invalid section metadata with a full-note update before patching a section.",
+      });
+      let section = matches[0];
+      const currentBody = boundedText(getReadableSectionBody(original, section, true));
+      if (section.revision !== expectedRevision) throw new ServiceError("CONFLICT", "Section revision is stale.", {
+        expected_revision: expectedRevision,
+        actual_revision: section.revision,
+        note_path: note.path,
+        section_id: section.id,
+        heading: section.heading,
+        current_body: currentBody.value,
+        ...(currentBody.truncated ? { current_body_truncated: true } : {}),
+        recovery: "Call get_section again with this note and section_id or heading, then reapply the intended change with the new revision.",
+      });
+      let writableOriginal = original;
+      if (getSectionBody(original, section, true) === undefined) {
+        if (!options?.ensureMarker) throw new ServiceError("SECTION_NOT_WRITABLE", `Section '${section.heading}' has no writable section marker.`, {
+          note_path: note.path,
+          heading: section.heading,
+          recovery: "Call patch_section again with ensure_marker: true after confirming the heading is unique, or use replace_note.",
+        });
+        const inserted = insertSectionMarker(original, section);
+        writableOriginal = inserted.text;
+        const reparsed = parseMarkdown(writableOriginal, absolute);
+        section = findSections(reparsed, { id: inserted.id })[0];
+        if (!section) throw new ServiceError("CONFLICT", "The section marker could not be inserted safely.");
+      }
+      const body = replaceSectionBody(writableOriginal, section, newContent.replace(/\r\n/g, "\n").replace(/^\n+|\n+$/g, ""));
+      const reparsed = parseMarkdown(body, absolute);
+      const updated = { ...(reparsed.frontmatter ?? parsed.frontmatter!), updated_at: new Date().toISOString() };
+      const content = serializeFrontmatter(updated) + reparsed.body;
+      const result = this.writeAndIndexLocked(note.path, content, "update", ["content", "graph"]);
+      return { ...result, changed_sections: [section.id ?? section.heading] };
     });
   }
 
@@ -604,7 +1051,15 @@ export class VaultRuntime {
       const absolute = resolve(this.vaultRoot, note.path);
       const current = readFileSync(absolute, "utf8");
       const actualHash = hashContent(current);
-      if (actualHash !== expectedHash) throw new ServiceError("CONFLICT", "Note file hash is stale.", { expected_file_hash: expectedHash, actual_file_hash: actualHash });
+      if (actualHash !== expectedHash) {
+        throw new ServiceError("CONFLICT", "Note file hash is stale.", {
+          expected_file_hash: expectedHash,
+          actual_file_hash: actualHash,
+          note_path: note.path,
+          current_mtime: new Date(statSync(absolute).mtimeMs).toISOString(),
+          recovery: "Call get_note or get_source again, then issue a new full-file write with the fresh expected_file_hash. Cortex does not automatically rebase this update.",
+        });
+      }
       if (input.markdown === undefined && input.body === undefined && input.metadata === undefined) {
         throw new ServiceError("INVALID_INPUT", "A note update must include markdown, body, or metadata.");
       }
@@ -638,22 +1093,38 @@ export class VaultRuntime {
     return this.writes.run(() => {
       if (this.workspace && input.applies_to) this.validateAppliesTo(input.applies_to);
       const frontmatter = createFrontmatter({ title: input.title, type: input.type, aliases: input.aliases, tags: input.tags, applies_to: input.applies_to });
-      const body = addMissingSectionMarkers(input.body ?? "").body;
+      const marked = addMissingSectionMarkers(input.body ?? "");
+      const body = marked.body;
       const content = serializeFrontmatter(frontmatter) + body;
       const relative = input.path ? this.relativePath(input.path, true).relative : this.nextNotePath(slugify(frontmatter.title));
       if (extname(relative).toLocaleLowerCase() !== ".md") throw new ServiceError("INVALID_INPUT", "Notes must use a .md path.");
       if (existsSync(resolve(this.vaultRoot, relative))) throw new ServiceError("CONFLICT", `Note path '${relative}' already exists.`);
       const result = this.writeAndIndexLocked(relative, content, "create", ["content", "catalog", "tree", "graph"]);
       if (this.workspace) this.refreshWorkspaceAttachments();
-      return { ...result, id: frontmatter.id };
+      return { ...result, id: frontmatter.id, changed_sections: marked.added };
     });
   }
 
   private validateAppliesTo(appliesTo: NoteFrontmatter["applies_to"]): void {
-    try {
-      requireAppliesToRepository(appliesTo);
-    } catch (error) {
-      throw new ServiceError("INVALID_INPUT", error instanceof Error ? error.message : String(error));
+    if (!this.workspace) return;
+    const missing = appliesTo.find((entry) => !entry.repository);
+    if (missing) throw new ServiceError("INVALID_INPUT", `Workspace mode requires an explicit 'repository' field on applies_to entries (missing for target '${missing.target}').`, {
+      target: missing.target,
+      available_repositories: this.workspace.repositories.map((repository) => repository.id),
+      recovery: "Keep applies_to metadata and add one of the discovered repository ids as applies_to.repository; do not remove the attachment.",
+    });
+    for (const entry of appliesTo) {
+      const matches = workspaceRepositoryMatches(this.workspace.repositories, entry.repository!);
+      if (matches.length === 0) throw new ServiceError("INVALID_INPUT", `Attachment repository '${entry.repository}' was not discovered in the workspace.`, {
+        repository: entry.repository,
+        available_repositories: this.workspace.repositories.map((repository) => repository.id),
+        recovery: "Use one of the discovered repository ids in applies_to.repository.",
+      });
+      if (matches.length > 1) throw new ServiceError("INVALID_INPUT", `Attachment repository '${entry.repository}' is ambiguous.`, {
+        repository: entry.repository,
+        candidates: matches.map((repository) => repository.id),
+        recovery: "Use the exact repository id in applies_to.repository.",
+      });
     }
   }
 
@@ -667,14 +1138,14 @@ export class VaultRuntime {
     } finally {
       if (existsSync(temporary)) unlinkSync(temporary);
     }
+    const contentHash = hashContent(content);
     let index: IndexReport;
     try {
       index = this.indexer.incrementalRebuild([absolute]);
     } catch (error) {
-      throw new ServiceError("INDEX_SYNC_FAILED", `File '${relative}' was written but indexing failed: ${error instanceof Error ? error.message : String(error)}`);
+      throw indexSyncFailure(relative, contentHash, error);
     }
     const stats = statSync(absolute);
-    const contentHash = hashContent(content);
     this.publishChanges([{ type: eventType, path: absolute, scopes }]);
     // Mark the accepted bytes after publishing the app-owned event. The
     // watcher callback runs through the same mutex and will consume this
@@ -696,7 +1167,7 @@ export class VaultRuntime {
     if (!normalized) throw new ServiceError("INVALID_INPUT", "Search query cannot be empty.");
     const words = normalized.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
     if (!words.length) throw new ServiceError("INVALID_INPUT", "Search query cannot be empty.");
-    return this.indexer.store.searchNotes(normalized, clamp(limit, 20, MAX_SEARCH_LIMIT));
+    return this.indexer.store.searchNotes(normalized, clamp(limit, 10, MAX_SEARCH_LIMIT));
   }
 
   listNotes(prefix?: string, tag?: string, limit?: number, cursor?: string): { notes: NoteRecord[]; truncated: boolean; next_cursor?: string } {
@@ -728,15 +1199,13 @@ export class VaultRuntime {
   }
 
   projectMap(selector = "project:root", depth?: number, limit?: number): GraphQueryResult {
-    const graph = this.queryGraphInternal(selector, "neighbors", Math.max(1, Math.min(depth ?? 1, 3)), clamp(limit, 50, MAX_GRAPH_LIMIT));
-    const bounded = trimPayload(graph, MAX_GRAPH_RESPONSE_BYTES);
-    return { ...bounded.value, truncated: graph.truncated || bounded.truncated };
+    const graph = this.queryGraphInternal(selector, "neighbors", Math.max(1, Math.min(depth ?? 1, 3)), clamp(limit, 20, MAX_GRAPH_LIMIT));
+    return boundGraphPayload(graph);
   }
 
   graphQuery(selector: string, direction: GraphDirection, depth?: number, limit?: number): GraphQueryResult {
-    const graph = this.queryGraphInternal(selector, direction, Math.max(1, Math.min(depth ?? 1, 4)), clamp(limit, 50, MAX_GRAPH_LIMIT));
-    const bounded = trimPayload(graph, MAX_GRAPH_RESPONSE_BYTES);
-    return { ...bounded.value, truncated: graph.truncated || bounded.truncated };
+    const graph = this.queryGraphInternal(selector, direction, Math.max(1, Math.min(depth ?? 1, 4)), clamp(limit, 20, MAX_GRAPH_LIMIT));
+    return boundGraphPayload(graph);
   }
 
   getContext(selector: string, taskHint?: string, limit?: number): Record<string, unknown> {
@@ -763,8 +1232,13 @@ export class VaultRuntime {
     });
     const search = taskHint ? this.search(taskHint, 10).hits : [];
     const payload = { anchor: graph.anchor, purpose: graph.anchor.metadata, likely_files: files, attached_notes: attachedNotes, related_nodes: relatedNodes, relationships, task_matches: search };
-    const trimmed = trimPayload(payload);
-    return { ...trimmed.value, truncated: trimmed.truncated || graph.truncated };
+    const bounded = boundContextPayload(payload);
+    return {
+      ...bounded,
+      truncated: bounded.truncated === true || graph.truncated,
+      ...(graph.omitted_nodes ? { omitted_nodes: graph.omitted_nodes } : {}),
+      ...(graph.omitted_edges ? { omitted_edges: graph.omitted_edges } : {}),
+    };
   }
 
   history(selector: NoteSelector, limit?: number): HistoryResult {
@@ -772,12 +1246,14 @@ export class VaultRuntime {
     return { path: note.path, commits: this.git.history(note.path, clamp(limit, 20, 100)) };
   }
 
-  diff(selector: NoteSelector, revision?: string): DiffResult {
+  diff(selector: NoteSelector, revision?: string, limit?: number, cursor?: string): DiffResult {
     const note = this.noteRow(selector);
-    return { path: note.path, diff: this.git.diff(note.path, revision) };
+    const diff = this.git.diff(note.path, revision);
+    const page = pageText(diff, hashContent(diff), limit, cursor);
+    return { path: note.path, diff: page.value, ...(page.truncated ? { truncated: true, next_cursor: page.next_cursor } : {}) };
   }
 
-  async restore(selector: NoteSelector, revision: string): Promise<{ path: string; revision: string; mtime: string; index: IndexReport }> {
+  async restore(selector: NoteSelector, revision: string): Promise<{ path: string; revision: string; mtime: string; content_hash: string; index: IndexReport }> {
     return this.writes.run(() => {
       const note = this.noteRow(selector);
       try {
@@ -786,10 +1262,22 @@ export class VaultRuntime {
         if (error instanceof Error && error.message.includes("dirty")) throw new ServiceError("GIT_DIRTY", error.message);
         throw error;
       }
-      const index = this.indexer.incrementalRebuild([resolve(this.vaultRoot, note.path)]);
-      const stats = statSync(resolve(this.vaultRoot, note.path));
-      this.publishChanges([{ type: "update", path: resolve(this.vaultRoot, note.path), scopes: ["content", "catalog", "tree", "graph"] }]);
-      return { path: note.path, revision, mtime: new Date(stats.mtimeMs).toISOString(), index };
+      const restoredAbsolute = resolve(this.vaultRoot, note.path);
+      const contentHash = existsSync(restoredAbsolute) ? hashContent(readFileSync(restoredAbsolute)) : undefined;
+      let index: IndexReport;
+      try {
+        index = this.indexer.incrementalRebuild([restoredAbsolute]);
+      } catch (error) {
+        throw indexSyncFailure(note.path, contentHash, error);
+      }
+      if (!existsSync(restoredAbsolute)) throw new ServiceError("NOT_FOUND", `Restored note '${note.path}' does not exist in revision '${revision}'.`, {
+        note_path: note.path,
+        revision,
+        recovery: "Choose a revision that contains the note or restore it through a full-note create/update flow.",
+      });
+      const stats = statSync(restoredAbsolute);
+      this.publishChanges([{ type: "update", path: restoredAbsolute, scopes: ["content", "catalog", "tree", "graph"] }]);
+      return { path: note.path, revision, mtime: new Date(stats.mtimeMs).toISOString(), content_hash: contentHash ?? hashContent(readFileSync(restoredAbsolute)), index };
     });
   }
 
@@ -820,6 +1308,12 @@ export class VaultRuntime {
     if (!this.workspace) return { active: false, phase: "disabled", repositories: [], diagnostics: [] };
     const rows = new Map(this.indexer.store.workspaceRepositories().map((row) => [row.repository_id, row]));
     const activeIds = new Set(this.workspace.repositories.map((repository) => repository.id));
+    const gitStatuses = includeGitStatus
+      ? new Map(this.workspace.repositories.map((repository) => [repository.id, this.repoGitAdapter(repository.id).status()]))
+      : undefined;
+    const gitStatus = includeGitStatus
+      ? this.workspace.repositories.flatMap((repository) => (gitStatuses?.get(repository.id) ?? []).map((entry) => ({ ...entry, repository: repository.id })))
+      : undefined;
     const repositories = this.workspace.repositories.map((repository) => {
       const row = rows.get(repository.id);
       const status = this.workspacePhase === "warming" || this.workspacePhase === "rebuilding"
@@ -830,7 +1324,7 @@ export class VaultRuntime {
         path: repository.path,
         status,
         lastIndexedAt: row?.last_indexed_at ?? undefined,
-        gitChangedFileCount: includeGitStatus ? this.repoGitAdapter(repository.id).status().length : undefined,
+        gitChangedFileCount: includeGitStatus ? gitStatuses?.get(repository.id)?.length ?? 0 : undefined,
       };
     });
     for (const row of rows.values()) {
@@ -841,7 +1335,7 @@ export class VaultRuntime {
       ...this.indexer.store.workspaceDiagnostics(),
       ...this.workspaceAttachmentDiagnostics,
     ];
-    return { active: true, phase: this.workspacePhase, error: this.workspaceError, workspaceRoot: this.workspace.workspaceRoot, workspaceExists: this.workspace.workspaceExists, repositories, diagnostics };
+    return { active: true, phase: this.workspacePhase, error: this.workspaceError, workspaceRoot: this.workspace.workspaceRoot, workspaceExists: this.workspace.workspaceExists, repositories, diagnostics, ...(gitStatus ? { gitStatus } : {}) };
   }
 
   getRepoHistory(repositoryId: string, path: string, limit?: number): RepositoryHistoryResult {
@@ -849,9 +1343,11 @@ export class VaultRuntime {
     return { repository: repository.id, path: relative, commits: this.repoGitAdapter(repository.id).history(relative, clamp(limit, 20, 100)) };
   }
 
-  getRepoDiff(repositoryId: string, path: string, revision?: string): RepositoryDiffResult {
+  getRepoDiff(repositoryId: string, path: string, revision?: string, limit?: number, cursor?: string): RepositoryDiffResult {
     const { repository, relative } = this.repositoryPath(repositoryId, path);
-    return { repository: repository.id, path: relative, diff: this.repoGitAdapter(repository.id).diff(relative, revision) };
+    const diff = this.repoGitAdapter(repository.id).diff(relative, revision);
+    const page = pageText(diff, hashContent(diff), limit, cursor);
+    return { repository: repository.id, path: relative, diff: page.value, ...(page.truncated ? { truncated: true, next_cursor: page.next_cursor } : {}) };
   }
 
   async restoreRepoPath(repositoryId: string, path: string, revision: string, confirm: boolean): Promise<RepositoryRestoreResult> {
@@ -865,19 +1361,37 @@ export class VaultRuntime {
         if (error instanceof Error && error.message.includes("dirty")) throw new ServiceError("GIT_DIRTY", error.message);
         throw error;
       }
+      const restoredAbsolute = resolve(repository.absolutePath, relative);
+      const contentHash = existsSync(restoredAbsolute) && statSync(restoredAbsolute).isFile() ? hashContent(readFileSync(restoredAbsolute)) : undefined;
       this.workspacePhase = "rebuilding";
+      let index: ReturnType<WorkspaceIndexer["incrementalRebuild"]>;
       try {
-        this.workspaceIndexer!.incrementalRebuild(repository.id);
+        if (!this.workspaceIndexer) throw new Error("Workspace indexer is unavailable.");
+        index = this.workspaceIndexer.incrementalRebuild(repository.id);
         this.refreshWorkspaceAttachments();
         this.workspacePhase = "current";
         this.workspaceError = undefined;
       } catch (error) {
         this.workspacePhase = "error";
         this.workspaceError = error instanceof Error ? error.message : String(error);
-        throw error;
+        throw indexSyncFailure(`${repository.id}:${relative}`, contentHash, error);
       }
-      const stats = statSync(resolve(repository.absolutePath, relative));
-      return { repository: repository.id, path: relative, revision, mtime: new Date(stats.mtimeMs).toISOString() };
+      if (!existsSync(restoredAbsolute)) throw new ServiceError("NOT_FOUND", `Restored path '${relative}' does not exist in revision '${revision}'.`, {
+        repository: repository.id,
+        path: relative,
+        revision,
+        recovery: "Choose a revision that contains the requested path.",
+      });
+      const stats = statSync(restoredAbsolute);
+      this.publishChanges([{ type: "update", path: restoredAbsolute }], repository.id);
+      return {
+        repository: repository.id,
+        path: relative,
+        revision,
+        mtime: new Date(stats.mtimeMs).toISOString(),
+        index,
+        ...(stats.isFile() ? { content_hash: hashContent(readFileSync(restoredAbsolute)) } : {}),
+      };
     });
   }
 }
