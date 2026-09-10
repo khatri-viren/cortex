@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import { initVault } from "../src/core/vault.js";
 import { VaultIndexer } from "../src/core/indexer.js";
 import { GitAdapter } from "../src/core/git.js";
 import { startWatcher } from "../src/core/watcher.js";
+import { createFrontmatter, serializeFrontmatter } from "../src/core/frontmatter.js";
 
 function tempVault(): string {
   return initVault(join(mkdtempSync(join(tmpdir(), "cortex-phase1-")), "vault"));
@@ -85,6 +86,40 @@ describe("Phase 1 indexer", () => {
     expect(indexer.store.counts().noteCount).toBe(1);
     expect((indexer.store.db.query("SELECT COUNT(*) as count FROM links WHERE target_title = 'Engine Notes' AND status = 'unresolved'").get() as { count: number }).count).toBe(1);
     expect((indexer.store.db.query("SELECT COUNT(*) as count FROM notes_fts WHERE notes_fts MATCH 'diagnostics'").get() as { count: number }).count).toBe(0);
+    indexer.close();
+  });
+
+  test("inserts new valid notes locally while resolving inbound and outbound links", () => {
+    const vault = tempVault();
+    const indexer = new VaultIndexer(vault);
+    indexer.fullRebuild();
+
+    const existingPath = join(vault, "notes", "engine.md");
+    const existing = readFileSync(existingPath, "utf8");
+    writeFileSync(existingPath, `${existing}\nSee [[Added Note]].\n`);
+
+    const addedPath = join(vault, "notes", "nested", "added.md");
+    mkdirSync(join(vault, "notes", "nested"), { recursive: true });
+    const metadata = createFrontmatter({ title: "Added Note", type: "note" });
+    writeFileSync(addedPath, `${serializeFrontmatter(metadata)}# Added Note\n\nSee [[Project Map]].\n`);
+
+    const delta = indexer.incrementalRebuild([existingPath, addedPath]);
+    expect(delta.work.scanFiles).toBe(0);
+    expect(delta.work.scanNotes).toBe(2);
+    expect(delta.work.graphRebuilds).toBe(0);
+    expect(delta.work.projectionWrites).toBe(2);
+    expect(indexer.store.noteByPath("notes/nested/added.md")).toMatchObject({ title: "Added Note" });
+    expect(indexer.store.unifiedNode(`note:${metadata.id}`)).toBeDefined();
+    expect(indexer.store.unifiedNode("dir:notes/nested")).toBeDefined();
+    const engine = indexer.store.noteByPath("notes/engine.md");
+    expect(engine).toBeDefined();
+    expect((indexer.store.db.query("SELECT COUNT(*) as count FROM graph_edges WHERE kind = 'wikilink' AND from_id = ?1 AND to_id = ?2").get(`note:${engine!.id}`, `note:${metadata.id}`) as { count: number }).count).toBe(1);
+    expect((indexer.store.db.query("SELECT COUNT(*) as count FROM links WHERE target_title = 'Added Note' AND target_note_id = ?1 AND status = 'resolved'").get(metadata.id) as { count: number }).count).toBe(1);
+    expect((indexer.store.db.query("SELECT COUNT(*) as count FROM links WHERE target_title = 'Project Map' AND target_note_id IS NOT NULL AND status = 'resolved'").get() as { count: number }).count).toBeGreaterThanOrEqual(1);
+
+    const incrementalProjection = normalizedProjection(indexer);
+    indexer.fullRebuild();
+    expect(normalizedProjection(indexer)).toEqual(incrementalProjection);
     indexer.close();
   });
 

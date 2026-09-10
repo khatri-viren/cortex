@@ -99,7 +99,7 @@ function renderSummary(indexer: VaultIndexer, vaultRoot: string, tokenCap: numbe
     "Project areas: " + (areas.length > 0 ? areas.join(", ") : "none indexed") + ".",
     ...(workspaceLine ? [workspaceLine] : []),
     diagnostics.length > 0 ? "Diagnostics: " + diagnostics.join("; ") + "." : "Diagnostics: none.",
-    "Use Cortex MCP project_map/get_context before broad exploration; use search, get_note, and get_section for focused reads.",
+    "Cortex MCP project_map/get_context: ground with project_map({node:\"repo:cortex\",depth:1,limit:20}) and get_context({node:\"repo:cortex\"}); discover notes with search, then get_note({note:\"notes/example.md\"}) and get_section({note:\"notes/example.md\",section_id:\"sec-...\"}). Use namespaced graph IDs, never absolute paths; preserve applies_to.repository. On writable:false use ensure_marker:true explicitly or replace_note; on conflicts reread and reapply with the new revision/hash.",
   ];
   const capBytes = Math.min(tokenCap, HARD_TOKEN_CAP) * 4;
   const context = lines.join("\n");

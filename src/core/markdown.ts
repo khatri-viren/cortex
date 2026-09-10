@@ -177,6 +177,10 @@ export type SectionRange = {
   bodyStart: number;
 };
 
+export type ReadableSectionRange = Omit<SectionRange, "marker"> & {
+  marker?: number;
+};
+
 /** Return all sections matching an ID or case-insensitive heading selector. */
 export function findSections(parsed: ParsedNote, selector: SectionSelector): Section[] {
   if (selector.id) return parsed.sections.filter((section) => section.id === selector.id);
@@ -193,15 +197,30 @@ export function findSections(parsed: ParsedNote, selector: SectionSelector): Sec
  * patching and reconciliation use the same hierarchy-aware document model.
  */
 export function locateSection(text: string, section: Section, directBody = false): SectionRange | undefined {
+  const range = locateReadableSection(text, section, directBody);
+  if (range.marker === undefined) return undefined;
+  return range as SectionRange;
+}
+
+/**
+ * Locate a section for reading. Unlike locateSection, this range does not
+ * require a Cortex marker. A marker is a write protocol, not a prerequisite
+ * for inspecting Markdown authored outside Cortex.
+ */
+export function locateReadableSection(text: string, section: Section, directBody = false): ReadableSectionRange {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const start = Math.max(0, section.startLine - 1);
   const hierarchicalEnd = Math.min(Math.max(start, section.endLine), lines.length);
   const directEnd = lines.slice(start + 1, hierarchicalEnd).findIndex((line) => HEADING_RE.test(line));
   const end = directBody && directEnd >= 0 ? start + 1 + directEnd : hierarchicalEnd;
-  const markerOffset = lines.slice(start + 1, hierarchicalEnd).findIndex((line) => SECTION_MARKER_RE.test(line));
-  if (markerOffset < 0) return undefined;
-  const marker = start + 1 + markerOffset;
-  return { lines, start, end, marker, bodyStart: marker + 1 };
+  // A marker belongs to this heading only when it is the first non-empty line
+  // after that heading. Scanning the complete hierarchy range would mistake a
+  // child section's marker for a writable marker on a markerless parent.
+  let marker: number | undefined;
+  let markerIndex = start + 1;
+  while (markerIndex < hierarchicalEnd && lines[markerIndex]!.trim() === "") markerIndex += 1;
+  if (markerIndex < hierarchicalEnd && SECTION_MARKER_RE.test(lines[markerIndex]!)) marker = markerIndex;
+  return { lines, start, end, marker, bodyStart: marker === undefined ? start + 1 : marker + 1 };
 }
 
 /** Extract a section body using the canonical marker and hierarchy-aware range. */
@@ -210,6 +229,26 @@ export function getSectionBody(text: string, section: Section, trim = false, dir
   if (!range) return undefined;
   const body = range.lines.slice(range.bodyStart, range.end).join("\n");
   return trim ? body.replace(/^\n+|\n+$/g, "") : body;
+}
+
+/** Extract a section body whether or not the section has a writable marker. */
+export function getReadableSectionBody(text: string, section: Section, trim = false, directBody = false): string {
+  const range = locateReadableSection(text, section, directBody);
+  const body = range.lines.slice(range.bodyStart, range.end).join("\n");
+  return trim ? body.replace(/^\n+|\n+$/g, "") : body;
+}
+
+/**
+ * Insert the write marker for one uniquely selected markerless section.
+ * Callers are responsible for revision checks and write serialization.
+ */
+export function insertSectionMarker(text: string, section: Section, id = `sec-${crypto.randomUUID()}`): { text: string; id: string; inserted: boolean } {
+  const range = locateReadableSection(text, section);
+  if (range.marker !== undefined) return { text, id: section.id ?? id, inserted: false };
+  const lines = range.lines;
+  const insertionPoint = range.start + 1;
+  lines.splice(insertionPoint, 0, `<!-- cortex:section id="${id}" -->`);
+  return { text: lines.join("\n"), id, inserted: true };
 }
 
 /** Extract only the content owned directly by a section, excluding child headings. */

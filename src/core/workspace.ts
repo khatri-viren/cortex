@@ -20,6 +20,10 @@ const DEFAULT_IGNORES = [
   "**/*.key",
 ];
 
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 export type WorkspaceManifest = {
   version: typeof WORKSPACE_VERSION;
   workspace_root: string;
@@ -61,6 +65,19 @@ export type WorkspaceConfig = {
   repositories: WorkspaceRepository[];
   diagnostics: WorkspaceDiagnostic[];
 };
+
+/**
+ * Resolve the user-facing repository selectors accepted by workspace tools.
+ * Repository ids are canonical, while the basename of the configured path is
+ * a useful compatibility alias (for example, `cortex` for `cortex`). Keep
+ * this lookup shared so graph, Git, and attachment paths cannot disagree.
+ */
+export function workspaceRepositoryMatches(repositories: readonly WorkspaceRepository[], selector: string): WorkspaceRepository[] {
+  const normalized = selector.trim().toLocaleLowerCase();
+  const id = normalized.startsWith("repo:") ? normalized.slice("repo:".length) : normalized;
+  if (!id) return [];
+  return repositories.filter((repository) => repository.id.toLocaleLowerCase() === id || basename(repository.path).toLocaleLowerCase() === id);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -166,7 +183,8 @@ function discoverRepositories(root: string, included: string[], excluded: string
   return readdirSync(root, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && isDiscoverable(entry.name, included, excluded))
     .map((entry) => ({ id: entry.name, path: entry.name, absolutePath: join(root, entry.name), exists: true, gitRoot: gitRoot(join(root, entry.name)) }))
-    .filter((repository) => repository.gitRoot !== undefined);
+    .filter((repository) => repository.gitRoot !== undefined)
+    .sort((left, right) => compareText(left.id, right.id));
 }
 
 export function loadWorkspaceConfig(vaultRoot: string, workspaceOverride?: string): WorkspaceConfig {
@@ -192,7 +210,7 @@ export function loadWorkspaceConfig(vaultRoot: string, workspaceOverride?: strin
       diagnostics.push({ severity: "warning", code: "missing-included-repository", message: `Included repository '${name}' was not found as a Git repository under the workspace root.`, path: name });
     }
   }
-  for (const entry of readdirSync(workspaceRoot, { withFileTypes: true })) {
+  for (const entry of readdirSync(workspaceRoot, { withFileTypes: true }).sort((left, right) => compareText(left.name, right.name))) {
     // An allowlist states the intended scope, so unlisted directories are deliberate omissions rather than gaps.
     if (entry.isDirectory() && isDiscoverable(entry.name, include, exclude) && !gitRoot(join(workspaceRoot, entry.name))) {
       diagnostics.push({ severity: "warning", code: "non-repository-directory", message: `Directory '${entry.name}' is not a Git repository and was not indexed.`, path: entry.name });
@@ -231,7 +249,7 @@ export function removeWorkspaceRepository(vaultRoot: string, repositoryId: strin
 export function repositoryRelativePath(workspaceRoot: string, repository: WorkspaceRepository, target: string): string {
   const absolute = isAbsolute(target) ? resolve(target) : resolve(repository.absolutePath, target);
   const relativePath = normalizedRelative(repository.absolutePath, absolute);
-  if (relativePath === "." || isWorkspaceIgnored(relativePath, [".git", "node_modules", ".cortex", "target"])) throw new Error(`Workspace target '${target}' is not indexable.`);
+  if (relativePath !== "." && isWorkspaceIgnored(relativePath, [".git", "node_modules", ".cortex", "target"])) throw new Error(`Workspace target '${target}' is not indexable.`);
   if (normalizedRelative(workspaceRoot, absolute).startsWith("../")) throw new Error(`Workspace target '${target}' is outside the workspace.`);
   return relativePath;
 }

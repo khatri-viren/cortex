@@ -187,7 +187,7 @@ export function createApiServer(runtime: VaultRuntime, port: number, uiDist?: st
         if (url.pathname === "/api/section" && request.method === "GET") {
           const selector = url.searchParams.get("selector");
           if (!selector) throw new ServiceError("INVALID_INPUT", "Query parameter 'selector' is required.");
-          return json(request, runtime.getSection(selector, url.searchParams.get("section_id") ?? undefined, url.searchParams.get("heading") ?? undefined));
+          return json(request, runtime.getSection(selector, url.searchParams.get("section_id") ?? undefined, url.searchParams.get("heading") ?? undefined, numberParam(url, "limit"), url.searchParams.get("cursor") ?? undefined));
         }
         if (url.pathname === "/api/search" && request.method === "GET") return json(request, runtime.search(url.searchParams.get("query") ?? "", numberParam(url, "limit")));
         if (url.pathname === "/api/project-map" && request.method === "GET") return json(request, runtime.projectMap(url.searchParams.get("node") ?? "project:root", numberParam(url, "depth"), numberParam(url, "limit")));

@@ -30,6 +30,7 @@
     "desktop:native-baseline": "bun run scripts/native-desktop-baseline.ts",
     "benchmark:e2e": "bun run bench/e2e/run.ts",
     "benchmark:e2e:aggregate": "bun run bench/e2e/aggregate.ts",
+    "benchmark:mcp": "bun run bench/mcp-replay.ts",
     "git:status": "bun run src/cli.ts git:status",
     "git:history": "bun run src/cli.ts git:history",
     "git:diff": "bun run src/cli.ts git:diff",

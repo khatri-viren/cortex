@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFrontmatter, parseFrontmatter, serializeFrontmatter } from "../src/core/frontmatter.js";
 import { directoryNodeId, fileNodeId, noteNodeId, projectNodeId, repositoryRelativePath } from "../src/core/identity.js";
-import { addMissingSectionMarkers, findSections, getSectionBody, parseMarkdown, replaceSectionBody } from "../src/core/markdown.js";
+import { addMissingSectionMarkers, findSections, getReadableSectionBody, getSectionBody, insertSectionMarker, parseMarkdown, replaceSectionBody } from "../src/core/markdown.js";
 import { reconcileMarkdown } from "../src/core/reconcile.js";
 import { migrateVault } from "../src/core/migration.js";
 import { initVault, scanVault } from "../src/core/vault.js";
@@ -105,6 +105,19 @@ describe("markdown", () => {
     expect(replaced).toContain("Parent body");
     expect(replaced).toContain("## Child");
     expect(replaced).toContain("Sibling body");
+  });
+
+  test("reads markerless sections and inserts a marker only when explicitly requested", () => {
+    const text = "# Markerless\n\nAuthored outside Cortex.\n\n## Child\n\nChild body";
+    const parsed = parseMarkdown(text);
+    const section = findSections(parsed, { heading: "markerless" })[0];
+    expect(getReadableSectionBody(text, section, true, true)).toBe("Authored outside Cortex.");
+    expect(getSectionBody(text, section, true)).toBeUndefined();
+
+    const inserted = insertSectionMarker(text, section, "sec-11111111-1111-4111-8111-111111111111");
+    expect(inserted.inserted).toBe(true);
+    expect(inserted.id).toBe("sec-11111111-1111-4111-8111-111111111111");
+    expect(getSectionBody(inserted.text, parseMarkdown(inserted.text).sections[0]!, true, true)).toBe("Authored outside Cortex.");
   });
 
   test("reconciliation uses the same nested section ranges", () => {

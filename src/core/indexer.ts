@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { buildProjectGraph, walkProjectFiles } from "./project-graph.js";
 import { repositoryRelativePath } from "./identity.js";
 import { parseMarkdown } from "./markdown.js";
@@ -186,6 +186,7 @@ export class VaultIndexer {
     const graphRelevant = changedPaths.some((path) => !isMarkdown(path));
     if (markdownChanged && !graphRelevant) {
       const parsedByPath = new Map<string, ReturnType<typeof parseMarkdown>>();
+      const targetKeys: string[] = [];
       let requiresFullReconciliation = false;
       for (const absolutePath of changedPaths) {
         const preloadedFile = preloaded.get(absolutePath);
@@ -197,7 +198,21 @@ export class VaultIndexer {
         parsedByPath.set(absolutePath, parsed);
         const previous = this.store.noteByPath(repositoryRelativePath(this.vaultRoot, absolutePath));
         const next = parsed.frontmatter;
-        if (!previous || !next || previous.title !== next.title || previous.type !== next.type || JSON.stringify(previous.aliases) !== JSON.stringify(next.aliases)) requiresFullReconciliation = true;
+        if (!next) {
+          requiresFullReconciliation = true;
+          continue;
+        }
+        if (!previous) {
+          // A new valid note can be inserted without rescanning the vault. A
+          // note carrying vault-local attachments still needs the graph
+          // builder because those targets are resolved against the complete
+          // source tree. Workspace attachments are refreshed separately by
+          // VaultRuntime after the vault write.
+          if (next.applies_to.length > 0) requiresFullReconciliation = true;
+          else targetKeys.push(basename(repositoryRelativePath(this.vaultRoot, absolutePath), ".md"), next.title, ...next.aliases);
+          continue;
+        }
+        if (previous.title !== next.title || previous.type !== next.type || JSON.stringify(previous.aliases) !== JSON.stringify(next.aliases)) requiresFullReconciliation = true;
       }
       if (!requiresFullReconciliation) {
         const affectedIds = new Set<string>();
@@ -207,9 +222,11 @@ export class VaultIndexer {
             const previous = this.store.noteByPath(relativePath);
             const parsed = parsedByPath.get(absolutePath);
             const preloadedFile = preloaded.get(absolutePath);
-            if (!parsed || !preloadedFile || !previous) continue;
-            affectedIds.add(previous.id);
-            work.projectionDeletes += 1;
+            if (!parsed || !preloadedFile || !parsed.frontmatter) continue;
+            if (previous) {
+              affectedIds.add(previous.id);
+              work.projectionDeletes += 1;
+            }
             work.projectionWrites += 1;
             this.store.replaceMarkdown(this.markdownRecord(absolutePath, parsed, { content: String(preloadedFile.content), mtimeMs: preloadedFile.mtimeMs }));
             const updated = this.store.noteByPath(relativePath);
@@ -218,7 +235,7 @@ export class VaultIndexer {
               this.store.upsertNoteGraphNode(updated);
             }
           }
-          this.store.resolveLinksFor([...affectedIds], []);
+          this.store.resolveLinksFor([...affectedIds], targetKeys);
           this.store.refreshUnresolvedLinkDiagnostics([...affectedIds]);
           this.store.refreshWikilinkEdgesFor([...affectedIds]);
           this.store.setState("last_incremental_rebuild", new Date().toISOString());

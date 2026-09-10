@@ -1,9 +1,9 @@
 import { mkdirSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 import { Database, constants } from "bun:sqlite";
 import type { Diagnostic, ParsedNote, NoteType } from "./types.js";
 import type { FileKind, GraphBuild, IndexedMarkdown, IndexedNoteHeader, IndexedNoteRecord, IndexSearchResult } from "./index-types.js";
-import { directoryNodeId, noteNodeId } from "./identity.js";
+import { directoryNodeId, fileNodeId, noteNodeId } from "./identity.js";
 
 export const SCHEMA_VERSION = "1";
 export const PROJECTION_VERSION = "1";
@@ -227,7 +227,9 @@ export class IndexStore {
     for (const node of graph.nodes) {
       this.db.query("INSERT OR REPLACE INTO workspace_graph_nodes (node_id, repository_id, kind, path, name, metadata_json, stale) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)").run(node.nodeId, repositoryId, node.kind, node.path ?? null, node.name, JSON.stringify(node.metadata ?? {}));
     }
+    const nodeIds = new Set(graph.nodes.map((node) => node.nodeId));
     for (const edge of graph.edges) {
+      if (!nodeIds.has(edge.fromId) || !nodeIds.has(edge.toId)) continue;
       this.db.query("INSERT OR IGNORE INTO workspace_graph_edges (from_id, to_id, kind, metadata_json) VALUES (?1, ?2, ?3, ?4)").run(edge.fromId, edge.toId, edge.kind, JSON.stringify(edge.metadata ?? {}));
     }
     for (const diagnostic of diagnostics) {
@@ -286,6 +288,27 @@ export class IndexStore {
     return row ? this.indexedNote(row.note_id) : undefined;
   }
 
+  /**
+   * Resolve the exact note identities accepted by the MCP selector contract.
+   * This deliberately performs the title/alias/stem comparison in one place
+   * so callers do not accidentally apply different case or filename rules.
+   */
+  noteMatches(selector: string): IndexedNoteRecord[] {
+    const normalized = selector.trim().toLocaleLowerCase();
+    if (!normalized) return [];
+    const rows = this.db.query<{ note_id: string }, []>("SELECT note_id FROM notes ORDER BY path").all();
+    return rows
+      .map((row) => this.indexedNote(row.note_id))
+      .filter((note): note is IndexedNoteRecord => Boolean(note))
+      .filter((note) => {
+        const stem = basename(note.path, extname(note.path)).toLocaleLowerCase();
+        return note.path === selector.trim()
+          || note.title.toLocaleLowerCase() === normalized
+          || stem === normalized
+          || note.aliases.some((alias) => alias.toLocaleLowerCase() === normalized);
+      });
+  }
+
   noteHeaders(): IndexedNoteHeader[] {
     return this.db.query<IndexedNoteHeader, []>("SELECT note_id, path, title, type, updated_at FROM notes ORDER BY path").all();
   }
@@ -333,8 +356,8 @@ export class IndexStore {
     if (!terms) return { hits: [], truncated: false };
     const rows = this.db.query<{ note_id: string; title: string; path: string; snippet: string }, [string, number]>(
       "SELECT notes_fts.note_id, notes_fts.title, notes.path, snippet(notes_fts, 2, '', '', '...', 24) as snippet FROM notes_fts JOIN notes ON notes.note_id = notes_fts.note_id WHERE notes_fts MATCH ?1 LIMIT ?2",
-    ).all(terms, limit);
-    return { hits: rows, truncated: rows.length >= limit };
+    ).all(terms, limit + 1);
+    return { hits: rows.slice(0, limit), truncated: rows.length > limit };
   }
 
   graphNodeIdByPath(path: string): string | undefined {
@@ -356,6 +379,7 @@ export class IndexStore {
   linkRepositoriesToProject(repositoryIds: string[]): void {
     this.db.query("DELETE FROM workspace_graph_edges WHERE from_id = 'project:root' AND to_id LIKE 'repo:%'").run();
     for (const repositoryId of repositoryIds) {
+      if (!this.unifiedNode("project:root") || !this.unifiedNode(`repo:${repositoryId}`)) continue;
       this.db.query("INSERT OR IGNORE INTO workspace_graph_edges (from_id, to_id, kind, metadata_json) VALUES ('project:root', ?1, 'contains', '{}')").run(`repo:${repositoryId}`);
     }
   }
@@ -363,6 +387,10 @@ export class IndexStore {
   replaceWorkspaceAttachmentEdges(edges: Array<{ fromId: string; toId: string; kind: string; metadata?: Record<string, unknown> }>): void {
     this.db.run("DELETE FROM workspace_graph_edges WHERE from_id LIKE 'note:%'");
     for (const edge of edges) {
+      // Attachments are derived from filesystem metadata and can race a
+      // workspace rebuild. Keep the persisted graph closed even when a target
+      // disappeared or was excluded between resolution and insertion.
+      if (!this.unifiedNode(edge.fromId) || !this.unifiedNode(edge.toId)) continue;
       this.db.query("INSERT OR IGNORE INTO workspace_graph_edges (from_id, to_id, kind, metadata_json) VALUES (?1, ?2, ?3, ?4)").run(edge.fromId, edge.toId, edge.kind, JSON.stringify(edge.metadata ?? {}));
     }
   }
@@ -371,6 +399,13 @@ export class IndexStore {
     return this.db.query<{ node_id: string; kind: string; path: string | null; name: string; metadata_json: string }, [string]>("SELECT node_id, kind, path, name, metadata_json FROM graph_nodes WHERE node_id = ?1").get(nodeId)
       ?? this.db.query<{ node_id: string; kind: string; path: string | null; name: string; metadata_json: string }, [string]>("SELECT node_id, kind, path, name, metadata_json FROM workspace_graph_nodes WHERE node_id = ?1").get(nodeId)
       ?? undefined;
+  }
+
+  unifiedNodes(): Array<{ node_id: string; kind: string; path: string | null; name: string; metadata_json: string }> {
+    return [
+      ...this.db.query<{ node_id: string; kind: string; path: string | null; name: string; metadata_json: string }, []>("SELECT node_id, kind, path, name, metadata_json FROM graph_nodes ORDER BY node_id").all(),
+      ...this.db.query<{ node_id: string; kind: string; path: string | null; name: string; metadata_json: string }, []>("SELECT node_id, kind, path, name, metadata_json FROM workspace_graph_nodes ORDER BY node_id").all(),
+    ];
   }
 
   unifiedEdgesFrom(nodeId: string): Array<{ from_id: string; to_id: string; kind: string; metadata_json: string }> {
@@ -402,6 +437,13 @@ export class IndexStore {
     this.db.query("DELETE FROM notes WHERE path = ?1").run(path);
     this.db.query("DELETE FROM files WHERE path = ?1").run(path);
     this.db.query("DELETE FROM diagnostics WHERE path = ?1").run(path);
+    // A Markdown file without valid frontmatter is represented as a file node
+    // by the full graph builder. Remove that identity when the same path later
+    // becomes a valid note so a path-local replacement cannot leave a stale
+    // duplicate node behind.
+    const fileNode = fileNodeId(this.vaultRoot, join(this.vaultRoot, path));
+    this.db.query("DELETE FROM graph_edges WHERE from_id = ?1 OR to_id = ?1").run(fileNode);
+    this.db.query("DELETE FROM graph_nodes WHERE node_id = ?1").run(fileNode);
   }
 
   replaceMarkdown(note: IndexedMarkdown): void {
@@ -500,7 +542,9 @@ export class IndexStore {
     for (const node of graph.nodes) {
       this.db.query("INSERT INTO graph_nodes (node_id, kind, path, name, metadata_json) VALUES (?1, ?2, ?3, ?4, ?5)").run(node.nodeId, node.kind, node.path ?? null, node.name, JSON.stringify(node.metadata ?? {}));
     }
+    const nodeIds = new Set(graph.nodes.map((node) => node.nodeId));
     for (const edge of graph.edges) {
+      if (!nodeIds.has(edge.fromId) || !nodeIds.has(edge.toId)) continue;
       this.db.query("INSERT OR IGNORE INTO graph_edges (from_id, to_id, kind, metadata_json) VALUES (?1, ?2, ?3, ?4)").run(edge.fromId, edge.toId, edge.kind, JSON.stringify(edge.metadata ?? {}));
     }
     this.insertDiagnostics(".cortex/project-graph", graph.diagnostics);
@@ -510,6 +554,7 @@ export class IndexStore {
     this.db.query("DELETE FROM graph_edges WHERE kind = 'wikilink'").run();
     const links = this.db.query<{ source_note_id: string; target_note_id: string | null; target_section: string | null; row_id: number }, []>("SELECT source_note_id, target_note_id, target_section, row_id FROM links WHERE target_note_id IS NOT NULL").all();
     for (const link of links) {
+      if (!this.unifiedNode(`note:${link.source_note_id}`) || !this.unifiedNode(`note:${link.target_note_id}`)) continue;
       this.db.query("INSERT OR IGNORE INTO graph_edges (from_id, to_id, kind, metadata_json) VALUES (?1, ?2, 'wikilink', ?3)").run(`note:${link.source_note_id}`, `note:${link.target_note_id}`, JSON.stringify({ rowId: link.row_id, section: link.target_section }));
     }
   }
@@ -569,7 +614,10 @@ export class IndexStore {
     const placeholders = ids.map(() => "?").join(",");
     this.db.query(`DELETE FROM graph_edges WHERE kind = 'wikilink' AND (from_id IN (${ids.map(() => "?").join(",")}) OR to_id IN (${ids.map(() => "?").join(",")}))`).run(...ids.map(noteNodeId), ...ids.map(noteNodeId));
     const links = this.db.query<{ source_note_id: string; target_note_id: string; target_section: string | null; row_id: number }, string[]>(`SELECT source_note_id, target_note_id, target_section, row_id FROM links WHERE target_note_id IS NOT NULL AND (source_note_id IN (${placeholders}) OR target_note_id IN (${placeholders}))`).all(...ids, ...ids);
-    for (const link of links) this.db.query("INSERT OR IGNORE INTO graph_edges (from_id, to_id, kind, metadata_json) VALUES (?1, ?2, 'wikilink', ?3)").run(`note:${link.source_note_id}`, `note:${link.target_note_id}`, JSON.stringify({ rowId: link.row_id, section: link.target_section }));
+    for (const link of links) {
+      if (!this.unifiedNode(`note:${link.source_note_id}`) || !this.unifiedNode(`note:${link.target_note_id}`)) continue;
+      this.db.query("INSERT OR IGNORE INTO graph_edges (from_id, to_id, kind, metadata_json) VALUES (?1, ?2, 'wikilink', ?3)").run(`note:${link.source_note_id}`, `note:${link.target_note_id}`, JSON.stringify({ rowId: link.row_id, section: link.target_section }));
+    }
   }
 
   /** Restore the changed note node and its directory containment edge after a path-local replacement. */
@@ -577,8 +625,21 @@ export class IndexStore {
     const nodeId = noteNodeId(note.id);
     this.db.query("INSERT OR REPLACE INTO graph_nodes (node_id, kind, path, name, metadata_json) VALUES (?1, 'note', ?2, ?3, ?4)").run(nodeId, note.path, note.title, JSON.stringify({ type: note.type }));
     const parent = dirname(note.path);
-    const parentId = parent === "." ? "project:root" : directoryNodeId(this.vaultRoot, join(this.vaultRoot, parent));
-    this.db.query("INSERT OR IGNORE INTO graph_edges (from_id, to_id, kind, metadata_json) VALUES (?1, ?2, 'contains', '{}')").run(parentId, nodeId);
+    let parentId = "project:root";
+    if (parent !== ".") {
+      const parts = parent.split("/").filter(Boolean);
+      let ancestor = ".";
+      for (const part of parts) {
+        ancestor = ancestor === "." ? part : `${ancestor}/${part}`;
+        const directoryId = directoryNodeId(this.vaultRoot, join(this.vaultRoot, ancestor));
+        const parentOfDirectory = dirname(ancestor);
+        const ancestorParentId = parentOfDirectory === "." ? "project:root" : directoryNodeId(this.vaultRoot, join(this.vaultRoot, parentOfDirectory));
+        this.db.query("INSERT OR IGNORE INTO graph_nodes (node_id, kind, path, name, metadata_json) VALUES (?1, 'directory', ?2, ?3, '{}')").run(directoryId, ancestor, basename(ancestor));
+        if (this.unifiedNode(ancestorParentId)) this.db.query("INSERT OR IGNORE INTO graph_edges (from_id, to_id, kind, metadata_json) VALUES (?1, ?2, 'contains', '{}')").run(ancestorParentId, directoryId);
+      }
+      parentId = directoryNodeId(this.vaultRoot, join(this.vaultRoot, parent));
+    }
+    if (this.unifiedNode(parentId)) this.db.query("INSERT OR IGNORE INTO graph_edges (from_id, to_id, kind, metadata_json) VALUES (?1, ?2, 'contains', '{}')").run(parentId, nodeId);
   }
 
   counts(): { noteCount: number; sectionCount: number; linkCount: number; tableRowCount: number; graphNodeCount: number; graphEdgeCount: number; diagnosticCount: number } {

@@ -17,6 +17,13 @@ type RunResult = {
   correct: boolean;
   session_id: string | null;
   result_excerpt: string;
+  tool_counts?: Record<string, number>;
+  tool_failures?: Record<string, number>;
+  tool_output_bytes?: Record<string, number>;
+  retry_count?: number;
+  fallback_used?: boolean;
+  output_cap_events?: number;
+  timeout_events?: number;
 };
 
 const resultsFile = process.argv[2];
@@ -51,7 +58,24 @@ type ConditionAgg = {
   num_turns: number;
   wall_ms: number;
   correct_rate: number;
+  error_rate: number;
+  tool_counts: Record<string, number>;
+  tool_failures: Record<string, number>;
+  tool_output_bytes: Record<string, number>;
+  retry_count: number;
+  fallback_rate: number;
+  output_cap_events: number;
+  timeout_events: number;
 };
+
+function medianCounters(rows: RunResult[], field: "tool_counts" | "tool_failures" | "tool_output_bytes"): Record<string, number> {
+  const keys = new Set<string>();
+  for (const row of rows) for (const key of Object.keys(row[field] ?? {})) keys.add(key);
+  return Object.fromEntries([...keys].sort().map((key) => [
+    key,
+    median(rows.map((row) => row[field]?.[key] ?? 0)),
+  ]));
+}
 
 function aggregateCondition(rows: RunResult[]): ConditionAgg {
   return {
@@ -65,6 +89,14 @@ function aggregateCondition(rows: RunResult[]): ConditionAgg {
     num_turns: median(rows.map((r) => r.num_turns)),
     wall_ms: median(rows.map((r) => r.wall_ms)),
     correct_rate: rows.length === 0 ? 0 : rows.filter((r) => r.correct).length / rows.length,
+    error_rate: rows.length === 0 ? 0 : rows.filter((r) => r.is_error).length / rows.length,
+    tool_counts: medianCounters(rows, "tool_counts"),
+    tool_failures: medianCounters(rows, "tool_failures"),
+    tool_output_bytes: medianCounters(rows, "tool_output_bytes"),
+    retry_count: median(rows.map((r) => r.retry_count ?? 0)),
+    fallback_rate: rows.length === 0 ? 0 : rows.filter((r) => r.fallback_used === true).length / rows.length,
+    output_cap_events: median(rows.map((r) => r.output_cap_events ?? 0)),
+    timeout_events: median(rows.map((r) => r.timeout_events ?? 0)),
   };
 }
 

@@ -335,7 +335,7 @@ describe("Workspace note attachments", () => {
     expect(result.edges[0]).toMatchObject({ fromId: "note:note-1", toId: fileId("alpha", "src/index.ts"), kind: "documents" });
   });
 
-  test("skips applies_to entries without a repository field", () => {
+  test("diagnoses applies_to entries without a repository field", () => {
     const vault = tempVault();
     const workspaceRoot = tempWorkspaceRoot();
     initRepo(workspaceRoot, "alpha", { "src/index.ts": "export const value = 1;\n" });
@@ -345,7 +345,7 @@ describe("Workspace note attachments", () => {
       { noteId: "note-1", path: "notes/one.md", appliesTo: [{ target: "src/index.ts", relation: "documents" }] },
     ]);
     expect(result.edges).toEqual([]);
-    expect(result.diagnostics).toEqual([]);
+    expect(result.diagnostics.some((item) => item.code === "missing-workspace-repository")).toBe(true);
   });
 
   test("rejects attachments to an unknown repository or an out-of-bounds target", () => {

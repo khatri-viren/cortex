@@ -33,8 +33,17 @@ can filter them. See the `notes` skill for the conventions.
 ## Agent workflow
 
 - Use the `cortex` MCP server's `project_map`, `get_context`, and `search` tools before
-  broad grep/read exploration.
+  broad grep/read exploration. Canonical grounding examples are
+  `project_map({node: "repo:cortex", depth: 1, limit: 20})` and
+  `get_context({node: "repo:cortex"})`.
 - Read notes through `get_note` and `get_section`; prefer focused sections over full files.
+- Use `get_note({note: "notes/example.md"})` to discover section IDs, then
+  `get_section({note: "notes/example.md", section_id: "sec-..."})` for the body.
+- Use namespaced graph IDs (`project:root`, `repo:<id>`, `file:<id>:<relative-path>`,
+  `dir:<id>:<relative-path>`, and `note:<uuid>`); absolute paths are rejected through MCP.
+- Preserve `applies_to.repository` in workspace mode. On a non-writable section, explicitly
+  request `ensure_marker: true` or use a full-note update. On conflict, reread the bounded
+  current state and explicitly reapply with the new revision/hash; Cortex does not rebase.
 - For existing notes, use `patch_section` with the current section revision. Use
   `replace_note` only with a fresh file hash and complete validated Markdown.
 - After meaningful code changes, update the relevant note through MCP when one exists.

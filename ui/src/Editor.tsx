@@ -26,6 +26,7 @@ import {
 import type { NoteLinkSuggestion, NoteSummary } from "./api";
 import type { ApiSection } from "../../src/api/contracts";
 import { SectionOutline } from "./components/section-outline";
+import { markdownBackquoteKey } from "./markdown-input";
 
 // Only the vault's actually-used fence languages get a grammar; matches
 // @atomic-editor/editor's own code-languages.ts entries so more can be
@@ -72,6 +73,47 @@ const sourceTheme = EditorView.theme({
   ".cm-activeLine": {
     backgroundColor: "color-mix(in oklch, var(--primary) 6%, transparent)",
   },
+});
+
+// Atomic Editor's task widget normally maps its replacement DOM node back to
+// the source range with `posAtDOM`. A replaced widget can lose that mapping
+// after a virtualized long document is laid out, leaving a click visually
+// inert even though the checkbox is present. Capture the click before the
+// widget's own listener and resolve the owning Markdown line from screen
+// coordinates. The source remains canonical, and the normal update listener
+// still reports the resulting transaction to App.tsx.
+const taskCheckboxFallback = ViewPlugin.fromClass(class {
+  private readonly view: EditorView;
+
+  constructor(view: EditorView) {
+    this.view = view;
+    view.dom.addEventListener("click", this.handleClick, true);
+  }
+
+  private readonly handleClick = (event: Event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement) || !target.matches(".cm-atomic-task-checkbox")) return;
+
+    const rect = target.getBoundingClientRect();
+    const position = this.view.posAtCoords({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }, false);
+    const line = this.view.state.doc.lineAt(position);
+    const match = line.text.match(/^(\s*(?:[-+*]|\d+[.)])\s+)(\[[ xX]\])/);
+    if (!match) return;
+
+    const markerFrom = line.from + match[1].length;
+    const next = /\[x\]/i.test(match[2]) ? "[ ]" : "[x]";
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    this.view.dispatch({
+      changes: { from: markerFrom, to: markerFrom + 3, insert: next },
+      userEvent: "input.type",
+    });
+  };
+
+  destroy() {
+    this.view.dom.removeEventListener("click", this.handleClick, true);
+  }
 });
 
 // GitHub-style heading slug, used to resolve same-document `[text](#anchor)`
@@ -200,6 +242,9 @@ export const Editor = memo(function Editor({
   // Source mode, since that's a separate conditional JSX branch) would seed
   // the doc with a stale note's content instead of the current one.
   const valueRef = useRef(value);
+  const internalSourceValueRef = useRef<string | undefined>(undefined);
+  const sourceContentRevisionRef = useRef(contentRevision);
+  const synchronizingSourceRef = useRef(false);
   onChangeRef.current = onChange;
   linkTargetsRef.current = linkTargets;
   valueRef.current = value;
@@ -236,6 +281,7 @@ export const Editor = memo(function Editor({
     const state = EditorState.create({
       doc: valueRef.current,
       extensions: [
+        markdownBackquoteKey,
         lineNumbers(),
         highlightSpecialChars(),
         drawSelection(),
@@ -247,8 +293,10 @@ export const Editor = memo(function Editor({
         EditorView.lineWrapping,
         EditorView.editable.of(!disabledRef.current),
         EditorView.updateListener.of((update) => {
-          if (update.docChanged)
-            onChangeRef.current(update.state.doc.toString());
+          if (!update.docChanged) return;
+          const next = update.state.doc.toString();
+          if (!synchronizingSourceRef.current) internalSourceValueRef.current = next;
+          onChangeRef.current(next);
         }),
         sourceTheme,
       ],
@@ -258,12 +306,29 @@ export const Editor = memo(function Editor({
   }, []);
 
   useEffect(() => {
+    if (sourceContentRevisionRef.current !== contentRevision) {
+      sourceContentRevisionRef.current = contentRevision;
+      internalSourceValueRef.current = undefined;
+    }
     const current = view.current;
-    if (!current || current.state.doc.toString() === value) return;
+    if (!current) return;
+    const currentDocument = current.state.doc.toString();
+    if (currentDocument === value) {
+      internalSourceValueRef.current = undefined;
+      return;
+    }
+    // App's document session intentionally publishes keystrokes on the next
+    // animation frame. Until that frame lands, `value` may still be the old
+    // prop even though CodeMirror already owns the newer local document.
+    // Never replace that local document with the stale prop snapshot.
+    if (internalSourceValueRef.current === currentDocument) return;
+    synchronizingSourceRef.current = true;
     current.dispatch({
       changes: { from: 0, to: current.state.doc.length, insert: value },
     });
-  }, [value]);
+    synchronizingSourceRef.current = false;
+    internalSourceValueRef.current = undefined;
+  }, [contentRevision, value]);
 
   useEffect(() => {
     if (!focusRequest || focusRequest.path !== notePath) return;
@@ -288,6 +353,8 @@ export const Editor = memo(function Editor({
 
   const readingExtensions = useMemo(
     () => [
+      taskCheckboxFallback,
+      markdownBackquoteKey,
       // Keep a direct reference to the reading view. Section tracking uses
       // CM6's line blocks (including estimated off-screen positions), which
       // remain stable across virtualization and preserve duplicate-heading
@@ -362,6 +429,8 @@ export const Editor = memo(function Editor({
     const viewport: HTMLElement = viewportElement;
 
     let bottomPinned = false;
+    let lastMaxScroll = 0;
+    let lastScrollTop = 0;
 
     function bottomTolerance() {
       return Math.max(2, Math.min(160, viewport.clientHeight * 0.25));
@@ -415,8 +484,25 @@ export const Editor = memo(function Editor({
     function scheduleUpdate() {
       const maxScroll = viewport.scrollHeight - viewport.clientHeight;
       const tolerance = bottomTolerance();
-      if (maxScroll > 0 && viewport.scrollTop >= maxScroll - tolerance) bottomPinned = true;
+      // A ResizeObserver callback can see the newly measured height before a
+      // scroll event reaches this handler. Remember whether the previous
+      // layout was already at its end so a growing virtualized document is
+      // still treated as the same bottom visit.
+      const grewAfterPreviousBottom = maxScroll > lastMaxScroll + 1
+        && lastMaxScroll > 0
+        && lastScrollTop >= lastMaxScroll - tolerance;
+      if (maxScroll > 0 && (viewport.scrollTop >= maxScroll - tolerance || grewAfterPreviousBottom)) bottomPinned = true;
       else if (maxScroll > 0 && viewport.scrollTop < maxScroll - tolerance * 2) bottomPinned = false;
+      // The live-preview editor refines its height as virtualized blocks are
+      // measured. If the user reached the end before that refinement, keep
+      // the outer document viewport pinned to the newly discovered end so
+      // the final section can become active instead of leaving a stale
+      // bottom slice below the current scroll position.
+      if (bottomPinned && maxScroll > 0 && viewport.scrollTop < maxScroll) {
+        viewport.scrollTop = maxScroll;
+      }
+      lastMaxScroll = maxScroll;
+      lastScrollTop = viewport.scrollTop;
       if (frame) return;
       frame = requestAnimationFrame(() => {
         frame = 0;
