@@ -45,6 +45,35 @@ describe("MCP server", () => {
       expect(tools.tools.map((tool) => tool.name)).toContain("replace_note");
       expect(tools.tools).toHaveLength(MCP_TOOL_NAMES.length);
 
+      const schemaFor = (name: string) => tools.tools.find((tool) => tool.name === name)?.inputSchema as {
+        properties?: Record<string, { type?: string }>;
+        required?: string[];
+      };
+      expect(tools.tools.every((tool) => Object.keys(tool.inputSchema.properties ?? {}).length > 0)).toBe(true);
+      expect(schemaFor("project_map").properties?.depth?.type).toBe("integer");
+      expect(schemaFor("project_map").properties?.limit?.type).toBe("integer");
+      expect(schemaFor("list_notes").properties?.limit?.type).toBe("integer");
+      expect(schemaFor("patch_section").properties?.ensure_marker?.type).toBe("boolean");
+      expect(schemaFor("create_note").properties?.tags?.type).toBe("array");
+      expect(schemaFor("create_note").properties?.applies_to?.type).toBe("array");
+      expect(schemaFor("workspace_status").properties?.include_git?.type).toBe("boolean");
+      expect(schemaFor("get_note").properties?.note?.type).toBe("string");
+      expect(schemaFor("get_note").required).toContain("note");
+      expect(schemaFor("patch_section").required).toEqual(expect.arrayContaining(["note", "expected_revision", "new_content"]));
+
+      const legacy = await mcp.client.callTool({ name: "get_note", arguments: { path: "project-map.md" } });
+      expect(structured(legacy).warnings).toEqual([
+        expect.objectContaining({ code: "DEPRECATED_FIELD", field: "path", canonical_field: "note" }),
+      ]);
+
+      const stringified = await mcp.client.callTool({ name: "project_map", arguments: { depth: "1", limit: "30" } });
+      expect(stringified.isError).toBe(true);
+      expect(structured(stringified).error).toMatchObject({ code: "INVALID_INPUT" });
+      expect(structured(stringified).error.details.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: ["depth"], code: "invalid_type" }),
+        expect.objectContaining({ path: ["limit"], code: "invalid_type" }),
+      ]));
+
       const noteResult = await mcp.client.callTool({ name: "get_note", arguments: { note: "project-map.md" } });
       const note = structured(noteResult);
       expect(note.note.title).toBe("Project Map");

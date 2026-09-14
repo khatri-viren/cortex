@@ -84,13 +84,14 @@ describe("Phase 2b Claude integration", () => {
 
   test("keeps the project configuration and skill discoverable", () => {
     const mcp = JSON.parse(readFileSync(join(process.cwd(), ".mcp.json"), "utf8"));
-    expect(mcp.mcpServers.cortex.command).toBe("bun");
+    const cortexServer = mcp.mcpServers.cortex;
+    expect(cortexServer.command).toBe("/Applications/Cortex.app/Contents/MacOS/cortex-sidecar");
+    expect(cortexServer.env).toMatchObject({ CORTEX_PACKAGED: "1" });
 
     // Claude Code does not expand ${CLAUDE_PROJECT_DIR} inside .mcp.json, so the
-    // launch command must be fully resolved or the server dies on startup.
-    const args: string[] = mcp.mcpServers.cortex.args;
+    // packaged launch arguments must be fully resolved or the server dies on startup.
+    const args: string[] = cortexServer.args;
     expect(args.join(" ")).not.toContain("${");
-    expect(args).toContain(join(process.cwd(), "src", "cli.ts"));
 
     // The vault is a separate repository, so it must be named explicitly rather
     // than inferred from an ambient CORTEX_VAULT_ROOT that only exists in some shells.

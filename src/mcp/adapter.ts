@@ -63,24 +63,37 @@ function valueType(value: unknown): string {
 }
 
 /**
- * Build the schema exposed to the MCP SDK. Every canonical field is listed so
- * clients keep seeing the stable contract, but values are intentionally raw.
- * Strict validation happens in normalizeMcpArguments after alias handling.
+ * Build the schema exposed to the MCP SDK. The SDK uses the same schema both
+ * to generate tools/list and to validate a call before invoking the handler.
+ * Cortex needs those responsibilities separated: clients must see the precise
+ * canonical contract, while the handler must receive raw values so it can
+ * normalize deprecated aliases and return Cortex's structured INVALID_INPUT.
  *
  * The preprocess marker lets direct callers and future transports preserve a
  * malformed non-object value until Cortex can turn it into INVALID_INPUT. The
  * MCP protocol currently requires an arguments object, so this is primarily a
  * defensive boundary for SDK and adapter callers.
  */
-export function rawObjectIngressSchema(schema: z.AnyZodObject): z.ZodTypeAny {
+export function rawObjectIngressSchema(schema: z.AnyZodObject): z.AnyZodObject {
   const rawShape = Object.fromEntries(
     Object.keys(schema.shape).map((key) => [key, z.any().optional()]),
   ) as z.ZodRawShape;
 
-  return z.preprocess(
+  const rawParser = z.preprocess(
     (value) => isObjectRecord(value) ? value : { [RAW_INGRESS_FIELD]: value },
     z.object(rawShape).passthrough(),
   );
+
+  // Keep an actual ZodObject so the MCP SDK can derive the complete JSON
+  // Schema. Override only its async parse entrypoint, which is the one the SDK
+  // invokes before dispatching to the handler. The canonical schema passed to
+  // normalizeMcpArguments remains untouched.
+  const advertisedSchema = z.object(schema.shape);
+  Object.defineProperty(advertisedSchema, "safeParseAsync", {
+    configurable: true,
+    value: rawParser.safeParseAsync.bind(rawParser),
+  });
+  return advertisedSchema;
 }
 
 export class McpIngressError extends ServiceError {
