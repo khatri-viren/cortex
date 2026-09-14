@@ -37,6 +37,11 @@ describe("Phase 2b Claude integration", () => {
     expect(second.rebuilt).toBe(false);
     expect(second.context).toContain("Index: current");
 
+    writeFileSync(join(vault, "notes", "engine.md"), readFileSync(join(vault, "notes", "engine.md"), "utf8") + "\nNew session refresh marker.\n");
+    const refreshed = buildSessionContext(vault);
+    expect(refreshed.rebuilt).toBe(true);
+    expect(refreshed.context).toContain("Index: rebuilt");
+
     const dbPath = join(vault, ".cortex", "index.sqlite");
     for (const suffix of ["", "-wal", "-shm"]) if (existsSync(dbPath + suffix)) unlinkSync(dbPath + suffix);
     expect(buildSessionContext(vault).rebuilt).toBe(true);

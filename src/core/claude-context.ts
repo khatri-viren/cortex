@@ -109,10 +109,12 @@ function renderSummary(indexer: VaultIndexer, vaultRoot: string, tokenCap: numbe
 export function buildSessionContext(vaultRoot: string, requestedTokenCap = DEFAULT_TOKEN_CAP): SessionContext {
   const root = resolve(vaultRoot);
   const tokenCap = Math.max(1, Math.min(Math.floor(requestedTokenCap), HARD_TOKEN_CAP));
-  const wasIndexed = indexExists(root);
   const indexer = new VaultIndexer(root);
   try {
-    const rebuilt = !wasIndexed || !indexer.store.getState("last_full_rebuild");
+    // A new agent session must validate the source snapshot before reusing the
+    // persisted projection. Checking only for the database and a rebuild
+    // timestamp leaves edits made between sessions invisible to MCP context.
+    const rebuilt = !indexer.warmRead().valid;
     if (rebuilt) indexer.fullRebuild();
     const context = renderSummary(indexer, root, tokenCap, rebuilt);
     return { context, tokenEstimate: tokenEstimate(context), rebuilt };

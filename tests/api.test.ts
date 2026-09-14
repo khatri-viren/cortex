@@ -77,6 +77,17 @@ describe("Phase 3 local API", () => {
     });
   });
 
+  test("reports vault projection freshness and returns to current after rebuild", async () => {
+    await withApi(async (base, vault) => {
+      const notePath = join(vault, "notes", "engine.md");
+      expect((await (await fetch(base + "/api/health")).json()).index_status).toBe("current");
+      writeFileSync(notePath, readFileSync(notePath, "utf8") + "\nHealth freshness marker.\n");
+      expect((await (await fetch(base + "/api/health")).json()).index_status).toBe("stale");
+      expect((await fetch(base + "/api/index/rebuild", { method: "POST" })).status).toBe(200);
+      expect((await (await fetch(base + "/api/health")).json()).index_status).toBe("current");
+    });
+  });
+
   test("returns a deterministic, bounded graph neighborhood", async () => {
     await withApi(async (base) => {
       const responses = await Promise.all([
