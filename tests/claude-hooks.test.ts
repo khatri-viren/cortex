@@ -37,6 +37,11 @@ describe("Phase 2b Claude integration", () => {
     expect(second.rebuilt).toBe(false);
     expect(second.context).toContain("Index: current");
 
+    writeFileSync(join(vault, "notes", "engine.md"), readFileSync(join(vault, "notes", "engine.md"), "utf8") + "\nNew session refresh marker.\n");
+    const refreshed = buildSessionContext(vault);
+    expect(refreshed.rebuilt).toBe(true);
+    expect(refreshed.context).toContain("Index: rebuilt");
+
     const dbPath = join(vault, ".cortex", "index.sqlite");
     for (const suffix of ["", "-wal", "-shm"]) if (existsSync(dbPath + suffix)) unlinkSync(dbPath + suffix);
     expect(buildSessionContext(vault).rebuilt).toBe(true);
@@ -79,13 +84,14 @@ describe("Phase 2b Claude integration", () => {
 
   test("keeps the project configuration and skill discoverable", () => {
     const mcp = JSON.parse(readFileSync(join(process.cwd(), ".mcp.json"), "utf8"));
-    expect(mcp.mcpServers.cortex.command).toBe("bun");
+    const cortexServer = mcp.mcpServers.cortex;
+    expect(cortexServer.command).toBe("/Applications/Cortex.app/Contents/MacOS/cortex-sidecar");
+    expect(cortexServer.env).toMatchObject({ CORTEX_PACKAGED: "1" });
 
     // Claude Code does not expand ${CLAUDE_PROJECT_DIR} inside .mcp.json, so the
-    // launch command must be fully resolved or the server dies on startup.
-    const args: string[] = mcp.mcpServers.cortex.args;
+    // packaged launch arguments must be fully resolved or the server dies on startup.
+    const args: string[] = cortexServer.args;
     expect(args.join(" ")).not.toContain("${");
-    expect(args).toContain(join(process.cwd(), "src", "cli.ts"));
 
     // The vault is a separate repository, so it must be named explicitly rather
     // than inferred from an ambient CORTEX_VAULT_ROOT that only exists in some shells.

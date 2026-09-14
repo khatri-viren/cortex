@@ -2,15 +2,15 @@
   "mcpServers": {
     "cortex": {
       "type": "stdio",
-      "command": "bun",
+      "command": "/Applications/Cortex.app/Contents/MacOS/cortex-sidecar",
       "args": [
-        "run",
-        "/Users/khatri_viren/Developer/Projects/cortex/src/cli.ts",
         "mcp",
         "--vault",
         "/Users/khatri_viren/Developer/Projects/cortex-notes"
       ],
-      "env": {}
+      "env": {
+        "CORTEX_PACKAGED": "1"
+      }
     }
   }
 }

@@ -194,6 +194,12 @@ test("vault footer exposes the theme switch beside the vault control", async ({ 
 
 test("stale index status exposes a refresh action", async ({ page }) => {
   let refreshCalls = 0;
+  let sourceCalls = 0;
+  await page.route("**/api/note*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get("source") === "true") sourceCalls += 1;
+    await route.continue();
+  });
   await page.route("**/api/workspace/status*", async (route) => {
     await route.fulfill({
       status: 200,
@@ -208,11 +214,15 @@ test("stale index status exposes a refresh action", async ({ page }) => {
   });
 
   await page.goto("/?vault=phase-c-stale");
+  await page.getByTestId("note-row").first().click();
+  await expect(page.locator("h1").first()).toBeVisible();
+  const sourceCallsBeforeRefresh = sourceCalls;
   const refresh = page.getByTestId("refresh-index");
   await expect(refresh).toBeVisible();
   await refresh.click();
   await expect(refresh.locator("svg")).toHaveClass(/animate-spin/);
   await expect.poll(() => refreshCalls).toBe(1);
+  await expect.poll(() => sourceCalls).toBeGreaterThan(sourceCallsBeforeRefresh);
 });
 
 test("session (open tabs) persists across reload, scoped by vault", async ({ page }) => {

@@ -17,7 +17,7 @@ import {
   RefreshCwIcon,
   XIcon,
 } from "lucide-react";
-import type { ApiContext, ApiGraphEdge, ApiGraphNode, ApiHistory, ApiNoteMetadataPatch, ApiNoteSource, ApiSection, ApiVaultCheck, ApiVaultTree, ApiVaultTreeNode, ApiWorkspaceStatus } from "../../src/api/contracts";
+import type { ApiContext, ApiGraphEdge, ApiGraphNode, ApiHealth, ApiHistory, ApiNoteMetadataPatch, ApiNoteSource, ApiSection, ApiVaultCheck, ApiVaultTree, ApiVaultTreeNode, ApiWorkspaceStatus } from "../../src/api/contracts";
 import type { NoteFrontmatter } from "../../src/core/types";
 const Editor = lazy(() => import("./Editor").then((module) => ({ default: module.Editor })));
 const GraphPane = lazy(() => import("./GraphPane").then((module) => ({ default: module.GraphPane })));
@@ -317,6 +317,8 @@ function WorkspaceApp() {
   const [workspaceStatus, setWorkspaceStatus] = useState<ApiWorkspaceStatus>();
   const [workspaceGitLoaded, setWorkspaceGitLoaded] = useState(false);
   const [noteCount, setNoteCount] = useState<number>();
+  const [indexStatus, setIndexStatus] = useState<ApiHealth["index_status"]>("current");
+  const [indexStatusError, setIndexStatusError] = useState<string>();
   const [vaultCheck, setVaultCheck] = useState<ApiVaultCheck>();
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -371,9 +373,9 @@ function WorkspaceApp() {
     [tabs, notes],
   );
   const isStale = workspaceStatus?.repositories.some((repository) => repository.status === "stale") ?? false;
-  const isIndexing = workspaceStatus?.phase === "warming" || workspaceStatus?.phase === "rebuilding" || workspaceStatus?.repositories.some((repository) => repository.status === "warming" || repository.status === "rebuilding") || false;
-  const indexError = workspaceStatus?.phase === "error";
-  const indexNeedsRefresh = isStale || indexError || indexRefreshError;
+  const isIndexing = indexStatus === "rebuilding" || workspaceStatus?.phase === "warming" || workspaceStatus?.phase === "rebuilding" || workspaceStatus?.repositories.some((repository) => repository.status === "warming" || repository.status === "rebuilding") || false;
+  const indexError = indexStatus === "error" || workspaceStatus?.phase === "error";
+  const indexNeedsRefresh = indexStatus === "stale" || isStale || indexError || indexRefreshError;
   const canGoBack = navHistory.index > 0;
   const canGoForward = navHistory.index < navHistory.stack.length - 1;
 
@@ -501,8 +503,8 @@ function WorkspaceApp() {
     return queued;
   }
 
-  function refreshWorkspaceSignals() {
-    getWorkspaceStatus().then((next) => {
+  function refreshWorkspaceSignals(): Promise<void> {
+    const workspaceRequest = getWorkspaceStatus().then((next) => {
       setWorkspaceStatus((current) => {
         const previousGitCounts = new Map((current?.repositories ?? []).map((repository) => [repository.id, repository.gitChangedFileCount]));
         return {
@@ -514,7 +516,30 @@ function WorkspaceApp() {
         };
       });
     }).catch(() => undefined);
-    getHealth().then((health) => setNoteCount(health.index.noteCount)).catch(() => undefined);
+    const healthRequest = getHealth().then((health) => {
+      setNoteCount(health.index.noteCount);
+      setIndexStatus(health.index_status);
+      setIndexStatusError(health.index_error);
+    }).catch((cause: unknown) => {
+      setIndexStatus("error");
+      setIndexStatusError(cause instanceof Error ? cause.message : String(cause));
+    });
+    return Promise.all([workspaceRequest, healthRequest]).then(() => undefined);
+  }
+
+  async function refreshActiveNoteData(): Promise<void> {
+    const requested = activeNotePath;
+    if (!requested || isDirtyRef.current) return;
+    try {
+      const next = await getNoteSource(requested);
+      if (selectedRef.current !== requested || isDirtyRef.current) return;
+      applySource(next, true);
+      const nextContext = await getContext("note:" + next.note.id);
+      if (selectedRef.current === requested && !isDirtyRef.current) setContext(nextContext);
+    } catch {
+      // The catalog and index status still refresh even if the open note was
+      // closed or became unavailable during the rebuild.
+    }
   }
 
   async function refreshIndex() {
@@ -526,7 +551,8 @@ function WorkspaceApp() {
       await rebuildIndex();
       setCreationIssue((current) => current?.kind === "create" ? undefined : current);
       refreshVaultData();
-      refreshWorkspaceSignals();
+      await refreshWorkspaceSignals();
+      await refreshActiveNoteData();
       setStatus("Index refreshed");
     } catch (cause: unknown) {
       setIndexRefreshError(true);
@@ -740,7 +766,7 @@ function WorkspaceApp() {
       // Versioned scopes keep body-only edits from refetching the whole tree
       // and catalog. Empty batches represent projection status transitions.
       if (events.length === 0 || scopes.has("catalog") || scopes.has("tree")) refreshVaultData();
-      if (events.length === 0 || scopes.has("projection") || scopes.has("repository")) refreshWorkspaceSignals();
+      if (events.length === 0 || scopes.has("projection") || scopes.has("repository") || scopes.has("content")) refreshWorkspaceSignals();
       const activeEvent = activeNotePath
         ? events.find((event) => eventMatchesPath(event.path, activeNotePath))
         : undefined;
@@ -1361,7 +1387,7 @@ function WorkspaceApp() {
               </div>
               {conflict && <Alert variant="destructive" className="m-3 shrink-0"><AlertTitle>External edit needs your decision</AlertTitle><AlertDescription><p>Conflicts: {conflict.sections.join(", ")}</p><div className="mt-2 flex gap-2"><Button size="sm" variant="outline" onClick={() => void takeTheirs()}>Take theirs</Button><Button size="sm" variant="outline" onClick={() => void keepMine()}>Keep mine</Button></div></AlertDescription></Alert>}
               {deletedNote && activeNotePath === deletedNote.path && <Alert variant="destructive" className="m-3 shrink-0" data-testid="deleted-note-recovery"><AlertTitle>Note deleted externally</AlertTitle><AlertDescription><p>Your unsaved draft is preserved. Restore it at the original path or close this tab.</p><div className="mt-2 flex gap-2"><Button size="sm" variant="outline" onClick={() => void recreateDeletedNote()}>Restore local draft</Button><Button size="sm" variant="outline" onClick={discardDeletedNote}>Close tab</Button></div></AlertDescription></Alert>}
-              <footer data-testid="workspace-status-footer" className="relative z-20 flex h-8 shrink-0 items-center gap-3 bg-background/92 px-4 text-[11px] text-muted-foreground backdrop-blur-md before:pointer-events-none before:absolute before:inset-x-0 before:-top-10 before:h-10 before:bg-gradient-to-b before:from-transparent before:via-background/65 before:to-background before:backdrop-blur-[2px] before:content-['']"><span className="relative z-10 flex items-center gap-1"><FilesIcon className="size-3" />{noteCount ?? notes.length} notes</span><span className="relative z-10 flex items-center gap-1"><DatabaseIcon className="size-3" />{workspaceStatus?.repositories.length ?? 0} repositories</span><span aria-live="polite" className={"relative z-10 ml-auto flex items-center gap-1.5" + ((indexNeedsRefresh || isIndexing || isRefreshing) ? " text-warning" : "")}>
+              <footer data-testid="workspace-status-footer" className="relative z-20 flex h-8 shrink-0 items-center gap-3 bg-background/92 px-4 text-[11px] text-muted-foreground backdrop-blur-md before:pointer-events-none before:absolute before:inset-x-0 before:-top-10 before:h-10 before:bg-gradient-to-b before:from-transparent before:via-background/65 before:to-background before:backdrop-blur-[2px] before:content-['']"><span className="relative z-10 flex items-center gap-1"><FilesIcon className="size-3" />{noteCount ?? notes.length} notes</span><span className="relative z-10 flex items-center gap-1"><DatabaseIcon className="size-3" />{workspaceStatus?.repositories.length ?? 0} repositories</span><span aria-live="polite" title={indexStatusError} className={"relative z-10 ml-auto flex items-center gap-1.5" + ((indexNeedsRefresh || isIndexing || isRefreshing) ? " text-warning" : "")}>
                 {indexNeedsRefresh || isRefreshing ? <button type="button" data-testid="refresh-index" aria-label={isRefreshing ? "Refreshing index" : "Refresh index"} title={isRefreshing ? "Refreshing index…" : "Refresh index"} disabled={isRefreshing} onClick={() => void refreshIndex()} className="group/refresh inline-flex size-5 items-center justify-center rounded-sm text-warning transition-colors hover:bg-warning/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-warning/40 disabled:cursor-wait"><RefreshCwIcon className={"size-3 transition-transform " + (isRefreshing ? "animate-spin" : "group-hover/refresh:rotate-45")} aria-hidden="true" /><span className="sr-only">{isRefreshing ? "Refreshing index" : "Refresh index"}</span></button> : isIndexing ? <Loader2Icon className="size-3 animate-spin" aria-hidden="true" /> : <span className="size-1.5 rounded-full bg-primary" aria-hidden="true" />}
                 <span>{isRefreshing ? "Refreshing index…" : isIndexing ? (workspaceStatus?.phase === "warming" ? "Workspace warming…" : "Index rebuilding…") : indexError || indexRefreshError ? "Index error" : isStale ? "Index stale" : "Index current"}</span>
               </span></footer>

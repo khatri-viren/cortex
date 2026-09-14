@@ -186,6 +186,8 @@ export type IndexRefreshResult = {
   workspace?: WorkspaceIndexReport;
 };
 
+export type VaultIndexStatus = "current" | "stale" | "rebuilding" | "error";
+
 export type VaultCheckResult = {
   vaultRoot: string;
   diagnostics: Diagnostic[];
@@ -198,6 +200,8 @@ export type HealthResult = {
   status: "ok";
   phase: 3;
   index: IndexCounts;
+  index_status: VaultIndexStatus;
+  index_error?: string;
   workspace: { active: boolean; phase: IndexPhase; error?: string };
   watchers: {
     vault: "starting" | "native" | "polling";

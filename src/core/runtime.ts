@@ -21,7 +21,7 @@ import { GitAdapter } from "./git.js";
 import { RUNTIME_DIRECTORY } from "./vault.js";
 import type { Diagnostic, NoteFrontmatter, Section } from "./types.js";
 import { ServiceError } from "./errors.js";
-import type { DiffResult, GraphDirection, GraphEdgeRecord, GraphNodeRecord, GraphQueryResult, HealthResult, HistoryResult, IndexPhase, IndexRefreshResult, NoteCreateInput, NoteLinkSuggestion, NoteRecord, NoteSelector, NoteSource, NoteUpdateInput, RepositoryDiffResult, RepositoryHistoryResult, RepositoryRestoreResult, SectionReadResult, VaultChangeEvent, VaultChangeScope, VaultChangeSet, VaultCheckResult, VaultTree, VaultTreeNode, WorkspaceStatus, WriteResult } from "./runtime-types.js";
+import type { DiffResult, GraphDirection, GraphEdgeRecord, GraphNodeRecord, GraphQueryResult, HealthResult, HistoryResult, IndexPhase, IndexRefreshResult, NoteCreateInput, NoteLinkSuggestion, NoteRecord, NoteSelector, NoteSource, NoteUpdateInput, RepositoryDiffResult, RepositoryHistoryResult, RepositoryRestoreResult, SectionReadResult, VaultChangeEvent, VaultChangeScope, VaultChangeSet, VaultCheckResult, VaultIndexStatus, VaultTree, VaultTreeNode, WorkspaceStatus, WriteResult } from "./runtime-types.js";
 import type { IndexReport } from "./index-types.js";
 import { startWatcher, type WatcherHandle } from "./watcher.js";
 import { isWorkspaceIgnored, loadWorkspaceConfig, workspaceIgnorePatterns, workspaceManifestPath, repositoryRelativePath as workspaceRepositoryRelativePath, workspaceRepositoryMatches, type WorkspaceConfig, type WorkspaceRepository } from "./workspace.js";
@@ -1289,10 +1289,20 @@ export class VaultRuntime {
   }
 
   health(): HealthResult {
+    let index_status: VaultIndexStatus = "stale";
+    let index_error: string | undefined;
+    try {
+      index_status = this.indexer.warmRead().valid ? "current" : "stale";
+    } catch (error) {
+      index_status = "error";
+      index_error = error instanceof Error ? error.message : String(error);
+    }
     return {
       status: "ok",
       phase: 3,
       index: this.indexer.store.counts(),
+      index_status,
+      ...(index_error ? { index_error } : {}),
       workspace: { active: Boolean(this.workspace), phase: this.workspacePhase, error: this.workspaceError },
       watchers: {
         vault: this.watcher?.mode ?? "starting",
