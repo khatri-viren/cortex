@@ -279,6 +279,7 @@ function WorkspaceApp() {
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   const [tabs, setTabs] = useState<string[]>(initialSession.tabs);
+  const tabsScrollRef = useRef<HTMLDivElement>(null);
   const [contextPanelOpen, setContextPanelOpen] = useState(initialSession.contextPanelOpen);
   const [expandedTreePaths, setExpandedTreePaths] = useState<Set<string>>(() => new Set(initialSession.expandedTreePaths));
   const [navHistory, setNavHistory] = useState<{ stack: string[]; index: number }>({ stack: [], index: -1 });
@@ -372,6 +373,19 @@ function WorkspaceApp() {
     () => tabs.map((path) => ({ path, title: notes.find((note) => note.path === path)?.title ?? path })),
     [tabs, notes],
   );
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const strip = tabsScrollRef.current;
+      const activeTab = strip?.querySelector<HTMLElement>('[data-active-tab="true"]');
+      if (!strip || !activeTab) return;
+      const stripBox = strip.getBoundingClientRect();
+      const activeBox = activeTab.getBoundingClientRect();
+      if (activeBox.left < stripBox.left) strip.scrollLeft += activeBox.left - stripBox.left;
+      if (activeBox.right > stripBox.right) strip.scrollLeft += activeBox.right - stripBox.right;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [selected, openTabs.length]);
   const isStale = workspaceStatus?.repositories.some((repository) => repository.status === "stale") ?? false;
   const isIndexing = indexStatus === "rebuilding" || workspaceStatus?.phase === "warming" || workspaceStatus?.phase === "rebuilding" || workspaceStatus?.repositories.some((repository) => repository.status === "warming" || repository.status === "rebuilding") || false;
   const indexError = indexStatus === "error" || workspaceStatus?.phase === "error";
@@ -1320,11 +1334,11 @@ function WorkspaceApp() {
               <div className={`flex min-w-0 flex-1 items-center gap-2 px-3 ${route === "notes" ? "note-toolbar-surface" : ""}`}>
                 <Button variant="ghost" size="icon-sm" aria-label="Back" disabled={isCreatingNote || !canGoBack} onClick={goBack}><ArrowLeftIcon /></Button>
                 <Button variant="ghost" size="icon-sm" aria-label="Forward" disabled={isCreatingNote || !canGoForward} onClick={goForward}><ArrowRightIcon /></Button>
-                <div className="cortex-tabs-scroll ml-3 flex min-w-0 flex-1 items-center gap-2 overflow-x-auto overscroll-x-contain" role="tablist" aria-label="Open notes">
+                <div ref={tabsScrollRef} className="cortex-tabs-scroll ml-3 flex min-w-0 flex-1 items-center gap-2 overflow-x-auto overscroll-x-contain" role="tablist" aria-label="Open notes">
                   {openTabs.map((tab) => (
-                    <div key={tab.path} data-active-tab={selected === tab.path ? "true" : "false"} className={"group flex max-w-[220px] shrink-0 items-center text-xs transition-colors " + (selected === tab.path ? "rounded-md bg-muted/50 font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}>
-                      <button type="button" role="tab" aria-selected={selected === tab.path} data-testid="open-tab" disabled={isCreatingNote} onClick={() => openPath(tab.path)} className="min-w-0 flex-1 truncate px-1 py-1.5 text-left">{tab.title}</button>
-                      <button type="button" aria-label={`Close ${tab.title}`} disabled={isCreatingNote} onClick={(event) => closeTab(tab.path, event)} className="rounded px-1 py-1.5 opacity-0 hover:bg-muted group-hover:opacity-100"><XIcon className="size-3" /></button>
+                    <div key={tab.path} data-active-tab={selected === tab.path ? "true" : "false"} className={"group flex min-h-8 max-w-[240px] shrink-0 items-center rounded-md text-[13px] transition-colors " + (selected === tab.path ? "bg-primary/20 font-medium text-primary-foreground ring-1 ring-primary/30 shadow-sm dark:bg-primary/10 dark:text-primary dark:ring-primary/20" : "text-muted-foreground hover:bg-muted/55 hover:text-foreground")}>
+                      <button type="button" role="tab" aria-selected={selected === tab.path} aria-current={selected === tab.path ? "page" : undefined} data-testid="open-tab" disabled={isCreatingNote} onClick={() => openPath(tab.path)} className="min-w-0 flex-1 truncate px-2 py-1.5 text-left">{tab.title}</button>
+                      <button type="button" aria-label={`Close ${tab.title}`} disabled={isCreatingNote} onClick={(event) => closeTab(tab.path, event)} className="rounded px-1.5 py-1.5 opacity-0 hover:bg-primary/15 group-hover:opacity-100"><XIcon className="size-3" /></button>
                     </div>
                   ))}
                 </div>

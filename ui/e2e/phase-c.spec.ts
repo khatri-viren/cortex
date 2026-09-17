@@ -49,7 +49,7 @@ test("opening notes adds tabs, and tabs support back/forward and close", async (
   await expect(openNotesStrip).toHaveCSS("scrollbar-width", "none");
   const activeTabShell = page.locator('[data-active-tab="true"]');
   await expect(activeTabShell).toHaveCount(1);
-  await expect(activeTabShell).toHaveClass(/bg-muted\/50/);
+  await expect(activeTabShell).toHaveClass(/bg-primary\/20/);
 
   const backButton = page.getByRole("button", { name: "Back", exact: true });
   const forwardButton = page.getByRole("button", { name: "Forward", exact: true });
@@ -66,6 +66,36 @@ test("opening notes adds tabs, and tabs support back/forward and close", async (
   await tabs.first().hover();
   await page.getByLabel(/^Close /).first().click();
   await expect(tabs).toHaveCount(1);
+});
+
+test("keeps the active tab visible when the tab strip overflows", async ({ page }) => {
+  await page.addInitScript(() => {
+    const tabs = Array.from({ length: 8 }, (_, index) => `notes/tab-${index}.md`);
+    localStorage.setItem("cortex.vaultSession.phase-c-active-tab-visibility", JSON.stringify({
+      tabs,
+      activeTabPath: tabs.at(-1),
+      expandedTreePaths: [],
+      contextPanelOpen: false,
+      panel: "context",
+      mode: "reading",
+    }));
+  });
+  await page.goto("/?vault=phase-c-active-tab-visibility");
+
+  const strip = page.getByRole("tablist", { name: "Open notes" });
+  const activeShell = page.locator('[data-active-tab="true"]');
+  await expect(activeShell).toHaveCount(1);
+  await expect.poll(async () => {
+    return strip.evaluate((element) => {
+      const active = element.querySelector<HTMLElement>('[data-active-tab="true"]');
+      if (!active) return false;
+      const stripBox = element.getBoundingClientRect();
+      const activeBox = active.getBoundingClientRect();
+      const left = activeBox.left - stripBox.left + element.scrollLeft;
+      const right = activeBox.right - stripBox.left + element.scrollLeft;
+      return left >= element.scrollLeft - 1 && right <= element.scrollLeft + element.clientWidth + 1;
+    });
+  }).toBe(true);
 });
 
 test("Cmd/Ctrl+W closes the active tab and requests the window close on the last tab", async ({ page }) => {

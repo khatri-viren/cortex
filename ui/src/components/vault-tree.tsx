@@ -12,7 +12,7 @@ type VaultTreeProps = {
 };
 
 type FlatTreeRow = { node: ApiVaultTreeNode; depth: number };
-const ROW_HEIGHT = 28;
+const ROW_HEIGHT = 36;
 const OVERSCAN = 12;
 
 function sortedNodes(nodes: ApiVaultTreeNode[]): ApiVaultTreeNode[] {
@@ -55,7 +55,7 @@ function TreeRow({ node, depth, selectedPath, expandedPaths, onToggle, onOpen }:
       aria-selected={node.kind !== "directory" && selectedPath === node.path}
       title={title}
       className={
-        "group/tree-row flex h-7 min-w-0 items-center gap-2 rounded-[9px] px-2 text-[12px] leading-5 transition-colors " +
+        "group/tree-row flex h-8 min-w-0 items-center gap-2 rounded-[9px] px-2 text-[13px] leading-5 transition-colors " +
         (node.kind !== "directory" && selectedPath === node.path
           ? "bg-muted/90 font-medium text-foreground"
           : "text-muted-foreground hover:bg-muted/65 hover:text-foreground") +
@@ -122,7 +122,7 @@ export function VaultTree({ nodes, selectedPath, expandedPaths, onToggle, onOpen
     <div ref={viewportRef} role="tree" aria-label="Vault files" className="min-h-0 h-full overflow-auto overscroll-contain">
       <div className="relative" style={{ height: rows.length * ROW_HEIGHT }}>
         {visibleRows.map(({ node, depth }, index) => (
-          <div key={node.path} className="absolute inset-x-0 h-7" style={{ top: (first + index) * ROW_HEIGHT }}>
+          <div key={node.path} className="absolute inset-x-0 h-8" style={{ top: (first + index) * ROW_HEIGHT }}>
             <TreeRow {...{ node, depth, selectedPath, expandedPaths, onToggle, onOpen }} />
           </div>
         ))}
