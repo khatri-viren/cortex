@@ -22,6 +22,58 @@ Markdown in the code repo, and before leaving a plan only in the conversation.
 - Treat note UUIDs, `id`, and `created_at` as immutable.
 - Keep note links and `applies_to` targets valid when changing note metadata.
 
+## Rich Markdown blocks in Reading mode
+
+Cortex renders supported rich blocks when a note is viewed in Reading mode. Keep the
+Markdown source as the contract: Source mode remains raw, and Live mode currently remains
+the CodeMirror editing surface.
+
+### Mermaid diagrams
+
+Use a fenced block whose language is `mermaid` or `mmd` (case-insensitive). Mermaid syntax
+is rendered offline in strict mode and sanitized before it is inserted into the page. Common
+diagram types include `flowchart`, `sequenceDiagram`, `classDiagram`, `stateDiagram-v2`,
+`erDiagram`, `gantt`, and Mermaid's `xychart-beta` chart syntax.
+
+````markdown
+```mermaid
+flowchart LR
+  Draft --> Review
+  Review --> Published
+```
+````
+
+### Explicit charts
+
+Use a `chart` fence containing versioned JSON. The current contract supports `bar`, `line`,
+`area`, and `pie` charts:
+
+````markdown
+```chart
+{
+  "version": 1,
+  "type": "bar",
+  "name": "Revenue",
+  "xKey": "month",
+  "series": [{"key": "revenue", "label": "Revenue"}],
+  "data": [
+    {"month": "Jan", "revenue": 120},
+    {"month": "Feb", "revenue": 180}
+  ]
+}
+```
+````
+
+`version: 1`, `type`, and a non-empty `data` array are required. `xKey`, `name`, and
+`series` are optional; each series has a required `key` and optional `label` and safe CSS
+`color`. Values must be strings or finite numbers. The current limits are 50,000 characters
+per rich-block source, 500 data rows, 8 series, and 500 characters per string value.
+
+Do not expect arbitrary JavaScript, Python, CSV, Vega, Graphviz, or unlabeled code fences to
+be executed or inferred as charts. Unsupported fences remain code. Invalid, oversized, or
+failed Mermaid/chart blocks remain inspectable and expose their source through the fallback
+UI. Do not add network/CDN dependencies, event handlers, or executable code to note content.
+
 ## Wikilinks
 
 - `[[Target]]` resolves against the target note's `title` or an `aliases` entry — **not**

@@ -27,6 +27,8 @@ import type { NoteLinkSuggestion, NoteSummary } from "./api";
 import type { ApiSection } from "../../src/api/contracts";
 import { SectionOutline } from "./components/section-outline";
 import { markdownBackquoteKey } from "./markdown-input";
+import { hasRichMarkdownBlock, MarkdownReader } from "./MarkdownReader";
+import { nextBottomPinnedState } from "./scroll-state";
 
 // Only the vault's actually-used fence languages get a grammar; matches
 // @atomic-editor/editor's own code-languages.ts entries so more can be
@@ -158,16 +160,20 @@ type EditorProps = {
   onFocusComplete?: (request: { path: string; nonce: number }) => void;
 };
 
+const EMPTY_LINK_TARGETS: string[] = [];
+const EMPTY_NOTES: NoteSummary[] = [];
+const EMPTY_SECTIONS: ApiSection[] = [];
+
 export const Editor = memo(function Editor({
   value,
   mode,
   onChange,
-  linkTargets = [],
+  linkTargets = EMPTY_LINK_TARGETS,
   notePath,
-  notes = [],
+  notes = EMPTY_NOTES,
   suggestNoteLinks,
   onOpenNote,
-  sections = [],
+  sections = EMPTY_SECTIONS,
   contentRevision = 0,
   jumpRequest,
   disabled = false,
@@ -180,6 +186,7 @@ export const Editor = memo(function Editor({
   const readingViewRef = useRef<EditorView | null>(null);
   const scheduleActiveSectionRef = useRef<() => void>(() => undefined);
   const [activeSectionIndex, setActiveSectionIndex] = useState(0);
+  const [readerJumpRequest, setReaderJumpRequest] = useState<{ section: ApiSection; nonce: number }>();
   const disabledRef = useRef(disabled);
   const onFocusCompleteRef = useRef(onFocusComplete);
   disabledRef.current = disabled;
@@ -488,11 +495,14 @@ export const Editor = memo(function Editor({
       // scroll event reaches this handler. Remember whether the previous
       // layout was already at its end so a growing virtualized document is
       // still treated as the same bottom visit.
-      const grewAfterPreviousBottom = maxScroll > lastMaxScroll + 1
-        && lastMaxScroll > 0
-        && lastScrollTop >= lastMaxScroll - tolerance;
-      if (maxScroll > 0 && (viewport.scrollTop >= maxScroll - tolerance || grewAfterPreviousBottom)) bottomPinned = true;
-      else if (maxScroll > 0 && viewport.scrollTop < maxScroll - tolerance * 2) bottomPinned = false;
+      bottomPinned = nextBottomPinnedState({
+        bottomPinned,
+        lastMaxScroll,
+        lastScrollTop,
+        maxScroll,
+        scrollTop: viewport.scrollTop,
+        tolerance,
+      });
       // The live-preview editor refines its height as virtualized blocks are
       // measured. If the user reached the end before that refinement, keep
       // the outer document viewport pinned to the newly discovered end so
@@ -538,6 +548,7 @@ export const Editor = memo(function Editor({
 
   const jumpToSection = useCallback((section: ApiSection, index: number) => {
     setActiveSectionIndex(index);
+    setReaderJumpRequest((current) => ({ section, nonce: (current?.nonce ?? 0) + 1 }));
     editorHandleRef.current?.revealText(revealQueryFor(section));
   }, []);
 
@@ -545,6 +556,7 @@ export const Editor = memo(function Editor({
     if (!jumpRequest) return;
     const index = outlineSections.findIndex((section) => section.startLine === jumpRequest.section.startLine);
     if (index >= 0) setActiveSectionIndex(index);
+    setReaderJumpRequest(jumpRequest);
     editorHandleRef.current?.revealText(revealQueryFor(jumpRequest.section));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jumpRequest]);
@@ -565,23 +577,24 @@ export const Editor = memo(function Editor({
   }, []);
 
   if (mode !== "source") {
+    const useRichReader = mode === "reading" && hasRichMarkdownBlock(value);
     return (
       <div className="relative flex min-h-[440px] min-w-0 w-full max-[700px]:min-h-[420px]">
         <div
           ref={readingHostRef}
-          className="atomic-editor-host min-h-[440px] min-w-0 flex-1 overflow-visible max-[700px]:min-h-[420px]"
+          className={(useRichReader ? "markdown-reader-host " : "atomic-editor-host ") + "min-h-[440px] min-w-0 flex-1 overflow-visible max-[700px]:min-h-[420px]"}
           aria-label="Markdown editor"
         >
-          <AtomicCodeMirrorEditor
-            documentId={notePath ? notePath + ":" + contentRevision : notePath}
-            markdownSource={value}
-            readOnly={mode === "reading" || disabled}
-            codeLanguages={CODE_LANGUAGES}
-            onMarkdownChange={onChange}
-            onLinkClick={handleLinkClick}
-            extensions={readingExtensions}
-            editorHandleRef={editorHandleRef}
-          />
+          {useRichReader ? <MarkdownReader value={value} sections={sections} jumpRequest={readerJumpRequest} notes={notes} onChange={onChange} onOpenNote={onOpenNote} /> : <AtomicCodeMirrorEditor
+              documentId={notePath ? notePath + ":" + contentRevision : notePath}
+              markdownSource={value}
+              readOnly={mode === "reading" || disabled}
+              codeLanguages={CODE_LANGUAGES}
+              onMarkdownChange={onChange}
+              onLinkClick={handleLinkClick}
+              extensions={readingExtensions}
+              editorHandleRef={editorHandleRef}
+            />}
         </div>
         <SectionOutline
           sections={outlineSections}
