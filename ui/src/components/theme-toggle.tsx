@@ -10,7 +10,7 @@ export function ThemeToggle() {
     <Button
       variant="ghost"
       size="icon-sm"
-      className="relative"
+      className="relative group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:shrink-0"
       data-testid="theme-toggle"
       aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
       onClick={toggleTheme}

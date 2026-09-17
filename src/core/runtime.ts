@@ -1162,12 +1162,13 @@ export class VaultRuntime {
     return candidate;
   }
 
-  search(query: string, limit?: number): { hits: Array<{ note_id: string; title: string; path: string; snippet: string }>; truncated: boolean } {
+  search(query: string, limit?: number, titlesOnly = false): { hits: Array<{ note_id: string; title: string; path: string; snippet: string }>; truncated: boolean } {
     const normalized = query.trim();
     if (!normalized) throw new ServiceError("INVALID_INPUT", "Search query cannot be empty.");
     const words = normalized.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
     if (!words.length) throw new ServiceError("INVALID_INPUT", "Search query cannot be empty.");
-    return this.indexer.store.searchNotes(normalized, clamp(limit, 10, MAX_SEARCH_LIMIT));
+    const searchLimit = clamp(limit, 10, MAX_SEARCH_LIMIT);
+    return titlesOnly ? this.indexer.store.searchNoteTitles(normalized, searchLimit) : this.indexer.store.searchNotes(normalized, searchLimit);
   }
 
   listNotes(prefix?: string, tag?: string, limit?: number, cursor?: string): { notes: NoteRecord[]; truncated: boolean; next_cursor?: string } {

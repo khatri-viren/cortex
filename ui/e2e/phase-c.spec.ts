@@ -14,6 +14,17 @@ test("shows recents and the filesystem explorer", async ({ page }) => {
   await expect(page.getByText("Plans", { exact: true })).not.toBeVisible();
 });
 
+test("sidebar search matches note titles without searching note bodies", async ({ page }) => {
+  await page.goto("/?vault=phase-c-title-search");
+  const search = page.getByRole("textbox", { name: "Search notes" });
+
+  await search.fill("backend");
+  await expect(page.getByTestId("search-result")).toHaveCount(0);
+
+  await search.fill("Engine");
+  await expect(page.getByTestId("search-result")).toContainText("Engine Notes");
+});
+
 test("folder disclosures replace the folder glyph only while the row is hovered", async ({ page }) => {
   await page.goto("/?vault=phase-c-test");
   const disclosureButton = page.getByLabel("Collapse notes");
@@ -141,6 +152,12 @@ test("collapsing the sidebar keeps title-bar controls on one non-overlapping row
 
   await toggle.click();
   await expect(page.locator('[data-slot="sidebar"][data-state="collapsed"]')).toBeVisible();
+  const titleBarSections = page.locator("header > div");
+  await expect(titleBarSections).toHaveCount(2);
+  await expect(titleBarSections.nth(0)).toHaveCSS("height", "52px");
+  await expect(titleBarSections.nth(1)).toHaveCSS("height", "52px");
+  const [leftHeaderColor, rightHeaderColor] = await Promise.all([titleBarSections.nth(0).evaluate((element) => getComputedStyle(element).backgroundColor), titleBarSections.nth(1).evaluate((element) => getComputedStyle(element).backgroundColor)]);
+  expect(leftHeaderColor).toBe(rightHeaderColor);
 
   const [toggleBox, nodesBox, graphBox, backBox, forwardBox] = await Promise.all([toggle.boundingBox(), nodes.boundingBox(), graph.boundingBox(), back.boundingBox(), forward.boundingBox()]);
   expect(toggleBox).not.toBeNull();
@@ -155,6 +172,33 @@ test("collapsing the sidebar keeps title-bar controls on one non-overlapping row
   expect(graphBox!.x + graphBox!.width).toBeLessThanOrEqual(backBox!.x);
   expect(backBox!.x + backBox!.width).toBeLessThanOrEqual(forwardBox!.x);
   expect(Math.abs((toggleBox!.y + toggleBox!.height / 2) - (backBox!.y + backBox!.height / 2))).toBeLessThanOrEqual(1);
+});
+
+test("collapsed sidebar centers its icon controls", async ({ page }) => {
+  await page.goto("/?vault=phase-c-collapsed-controls");
+  await page.getByRole("button", { name: "Toggle sidebar" }).click();
+  await expect(page.locator('[data-slot="sidebar"][data-state="collapsed"]')).toBeVisible();
+
+  await expect(page.getByTestId("sidebar-search-toggle")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Search notes" })).not.toBeVisible();
+  const [searchBox, vaultBox, themeBox] = await Promise.all([page.getByTestId("sidebar-search-toggle").boundingBox(), page.getByTestId("vault-switcher").boundingBox(), page.getByTestId("theme-toggle").boundingBox()]);
+  expect(searchBox).not.toBeNull();
+  expect(vaultBox).not.toBeNull();
+  expect(themeBox).not.toBeNull();
+  const searchCenter = searchBox!.x + searchBox!.width / 2;
+  for (const box of [vaultBox, themeBox]) {
+    expect(Math.abs(box!.x + box!.width / 2 - searchCenter)).toBeLessThanOrEqual(1);
+  }
+
+  await page.getByTestId("sidebar-search-toggle").click();
+  await expect(page.getByRole("textbox", { name: "Search notes" })).toBeVisible();
+});
+
+test("opening the vault switcher expands the collapsed rail", async ({ page }) => {
+  await page.goto("/?vault=phase-c-collapsed-vault-menu");
+  await page.getByRole("button", { name: "Toggle sidebar" }).click();
+  await page.getByTestId("vault-switcher").click();
+  await expect(page.locator('[data-slot="sidebar"][data-state="expanded"]')).toBeVisible();
 });
 
 test("the Nodes and Graph switcher stays available and follows the active view", async ({ page }) => {

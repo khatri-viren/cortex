@@ -70,6 +70,8 @@ describe("Phase 3 local API", () => {
 
       const search = await fetch(base + "/api/search?query=Engine");
       expect((await search.json()).hits.length).toBeGreaterThan(0);
+      const titleSearch = await fetch(base + "/api/search?query=backend&titles_only=true");
+      expect((await titleSearch.json()).hits.some((hit: { path: string }) => hit.path === "notes/engine.md")).toBe(false);
 
       const invalid = await fetch(base + "/api/note");
       expect(invalid.status).toBe(400);

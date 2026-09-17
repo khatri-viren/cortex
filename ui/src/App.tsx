@@ -15,6 +15,7 @@ import {
   NetworkIcon,
   PlusIcon,
   RefreshCwIcon,
+  SearchIcon,
   XIcon,
 } from "lucide-react";
 import type { ApiContext, ApiGraphEdge, ApiGraphNode, ApiHealth, ApiHistory, ApiNoteMetadataPatch, ApiNoteSource, ApiSection, ApiVaultCheck, ApiVaultTree, ApiVaultTreeNode, ApiWorkspaceStatus } from "../../src/api/contracts";
@@ -217,6 +218,64 @@ function WorkspaceViewSwitcher({ route, onNavigate, disabled = false }: { route:
         <span>Graph</span>
       </Button>
     </div>
+  );
+}
+
+function SidebarSearch({ query, disabled, onChange }: { query: string; disabled: boolean; onChange: (value: string) => void }) {
+  const { state, toggleSidebar } = useSidebar();
+
+  if (state === "collapsed") {
+    return (
+      <Tooltip>
+        <TooltipTrigger
+          render={<Button type="button" variant="ghost" size="icon-sm" className="size-8" data-testid="sidebar-search-toggle" aria-label="Search notes" onClick={toggleSidebar} disabled={disabled} />}
+        >
+          <SearchIcon />
+        </TooltipTrigger>
+        <TooltipContent side="right">Search notes</TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  return <SidebarInput placeholder="Search" aria-label="Search notes" value={query} disabled={disabled} onChange={(event) => onChange(event.target.value)} />;
+}
+
+type SidebarFooterControlsProps = {
+  vaultName: string;
+  vaultMenuOpen: boolean;
+  vaultMenuStatus: string;
+  activeVaultId: string | null;
+  vaults: VaultEntry[];
+  disabled: boolean;
+  onToggleVaultMenu: () => void;
+  onSwitchVault: (vaultId: string) => void;
+  onRevealVault: (vaultId: string) => void;
+  onAddVault: () => void;
+};
+
+function SidebarFooterControls({ vaultName, vaultMenuOpen, vaultMenuStatus, activeVaultId, vaults, disabled, onToggleVaultMenu, onSwitchVault, onRevealVault, onAddVault }: SidebarFooterControlsProps) {
+  const { state, toggleSidebar } = useSidebar();
+  const collapsed = state === "collapsed";
+  const handleVaultMenuToggle = () => {
+    if (collapsed) {
+      toggleSidebar();
+      if (!vaultMenuOpen) onToggleVaultMenu();
+      return;
+    }
+    onToggleVaultMenu();
+  };
+
+  return (
+    <SidebarFooter className={collapsed ? "relative items-center p-2" : "relative p-3"}>
+      <div className={collapsed ? "flex flex-col items-center gap-2" : "flex items-center gap-1.5"}>
+        <button type="button" aria-label="Switch vault" title={vaultName} data-testid="vault-switcher" disabled={disabled} onClick={handleVaultMenuToggle} className={collapsed ? "flex size-8 flex-none items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50" : "flex min-w-0 flex-1 items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50"}>
+          <ChevronsUpDownIcon data-testid="vault-switcher-glyph" className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          {!collapsed && <span className="min-w-0 flex-1 truncate">{vaultName}</span>}
+        </button>
+        <ThemeToggle />
+      </div>
+      {vaultMenuOpen && isTauri && <div className="absolute right-2 bottom-[calc(100%+8px)] left-2 z-40 rounded-lg border bg-popover p-1.5 shadow-xl"><div className="px-2 py-1.5 text-[10px] font-semibold tracking-wide text-muted-foreground uppercase">Switch vault</div>{vaults.map((vault) => <div key={vault.id} className="flex items-center gap-1"><button type="button" disabled={disabled} className="min-w-0 flex-1 truncate rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted disabled:opacity-50" onClick={() => onSwitchVault(vault.id)}>{vault.id === activeVaultId ? "✓ " : ""}{vault.name}</button><button type="button" aria-label={`Reveal ${vault.name}`} disabled={disabled} className="rounded-md px-1.5 py-1 text-[10px] text-muted-foreground hover:bg-muted disabled:opacity-50" onClick={() => onRevealVault(vault.id)}>↗</button></div>)}<button type="button" disabled={disabled} className="mt-1 w-full rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50" onClick={onAddVault}>+ Add vault…</button>{vaultMenuStatus && <p className="px-2 py-1 text-[10px] text-muted-foreground">{vaultMenuStatus}</p>}</div>}
+    </SidebarFooter>
   );
 }
 
@@ -861,7 +920,7 @@ function WorkspaceApp() {
       return;
     }
     const timer = setTimeout(() => {
-      searchNotes(query).then((result) => setSearchResults(result.hits)).catch(() => setSearchResults([]));
+      searchNotes(query, true).then((result) => setSearchResults(result.hits)).catch(() => setSearchResults([]));
     }, 160);
     return () => clearTimeout(timer);
   }, [query]);
@@ -1322,8 +1381,8 @@ function WorkspaceApp() {
       <SidebarProvider defaultOpen className="!min-h-0 h-full flex-1 flex-col overflow-hidden [contain:layout]">
         <SidebarAlignedToolbar>
           {({ sidebarWidth, collapsed }) => (
-            <header className={`relative z-30 h-[52px] w-full shrink-0 overflow-hidden bg-background ${collapsed ? "flex items-center" : "grid"}`} style={collapsed ? undefined : { gridTemplateColumns: `${sidebarWidth} minmax(0, 1fr)` }}>
-              <div className={`flex shrink-0 items-center gap-2 bg-sidebar ${collapsed ? "" : "min-w-0 border-r border-sidebar-border"} ${isTauriMac ? "pl-24 pr-3" : "px-3"}`}>
+            <header className={`relative z-30 h-[52px] w-full shrink-0 overflow-hidden ${collapsed ? `flex items-stretch ${route === "notes" ? "bg-[var(--cortex-reading-surface)]" : "bg-background"}` : "grid bg-background"}`} style={collapsed ? undefined : { gridTemplateColumns: `${sidebarWidth} minmax(0, 1fr)` }}>
+              <div className={`flex shrink-0 items-center gap-2 ${collapsed ? (route === "notes" ? "bg-[var(--cortex-reading-surface)]" : "bg-background") : "min-w-0 border-r border-sidebar-border bg-sidebar"} ${isTauriMac ? "pl-24 pr-3" : "px-3"}`}>
                 <SidebarTrigger
                   aria-label="Toggle sidebar"
                   size="icon-lg"
@@ -1336,7 +1395,7 @@ function WorkspaceApp() {
                 <Button variant="ghost" size="icon-sm" aria-label="Forward" disabled={isCreatingNote || !canGoForward} onClick={goForward}><ArrowRightIcon /></Button>
                 <div ref={tabsScrollRef} className="cortex-tabs-scroll ml-3 flex min-w-0 flex-1 items-center gap-2 overflow-x-auto overscroll-x-contain" role="tablist" aria-label="Open notes">
                   {openTabs.map((tab) => (
-                    <div key={tab.path} data-active-tab={selected === tab.path ? "true" : "false"} className={"group flex min-h-8 max-w-[240px] shrink-0 items-center rounded-md text-[13px] transition-colors " + (selected === tab.path ? "bg-primary/20 font-medium text-primary-foreground ring-1 ring-primary/30 shadow-sm dark:bg-primary/10 dark:text-primary dark:ring-primary/20" : "text-muted-foreground hover:bg-muted/55 hover:text-foreground")}>
+                    <div key={tab.path} data-active-tab={selected === tab.path ? "true" : "false"} className={"group flex min-h-8 max-w-[240px] shrink-0 items-center rounded-md text-[13px] transition-colors " + (selected === tab.path ? "bg-primary/20 font-medium text-primary-foreground dark:bg-primary/10 dark:text-primary" : "text-muted-foreground hover:bg-muted/55 hover:text-foreground")}>
                       <button type="button" role="tab" aria-selected={selected === tab.path} aria-current={selected === tab.path ? "page" : undefined} data-testid="open-tab" disabled={isCreatingNote} onClick={() => openPath(tab.path)} className="min-w-0 flex-1 truncate px-2 py-1.5 text-left">{tab.title}</button>
                       <button type="button" aria-label={`Close ${tab.title}`} disabled={isCreatingNote} onClick={(event) => closeTab(tab.path, event)} className="rounded px-1.5 py-1.5 opacity-0 hover:bg-primary/15 group-hover:opacity-100"><XIcon className="size-3" /></button>
                     </div>
@@ -1365,9 +1424,9 @@ function WorkspaceApp() {
 
         <div className="flex min-h-0 w-full flex-1">
           <Sidebar collapsible="icon" className="!top-[52px] !h-[calc(100svh-52px)]">
-            <SidebarHeader className="gap-2.5">
-              <SidebarInput placeholder="Search" aria-label="Search notes" value={query} disabled={isCreatingNote} onChange={(event) => setQuery(event.target.value)} />
-              {searchResults.length > 0 && <SidebarGroup><SidebarGroupLabel>Search results</SidebarGroupLabel><SidebarMenu>{searchResults.map((result) => <SidebarMenuItem key={result.path}><SidebarMenuButton size="lg" data-testid="search-result" onClick={() => openPath(result.path)}><FileTextIcon /><div className="flex min-w-0 flex-col items-start gap-0.5 group-data-[collapsible=icon]:hidden"><span className="truncate font-medium">{result.title}</span><span className="truncate text-[10px] text-muted-foreground">{result.snippet}</span></div></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu></SidebarGroup>}
+            <SidebarHeader className="gap-2.5 group-data-[collapsible=icon]:items-center">
+              <SidebarSearch query={query} disabled={isCreatingNote} onChange={setQuery} />
+              {searchResults.length > 0 && <SidebarGroup><SidebarGroupLabel>Search results</SidebarGroupLabel><SidebarMenu>{searchResults.map((result) => <SidebarMenuItem key={result.path}><SidebarMenuButton size="lg" data-testid="search-result" onClick={() => openPath(result.path)}><FileTextIcon /><div className="flex min-w-0 flex-col items-start gap-0.5 group-data-[collapsible=icon]:hidden"><span className="truncate font-medium">{result.title}</span></div></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu></SidebarGroup>}
             </SidebarHeader>
             <SidebarContent>
               <SidebarGroup>
@@ -1379,16 +1438,18 @@ function WorkspaceApp() {
                 {vaultTree ? <VaultTree nodes={vaultTree.children} selectedPath={selected} expandedPaths={expandedTreePaths} onToggle={toggleTreePath} onOpen={openTreeNode} /> : <p className="px-2 text-[11px] text-muted-foreground group-data-[collapsible=icon]:hidden">Loading files…</p>}
               </SidebarGroup>
             </SidebarContent>
-            <SidebarFooter className="relative p-3">
-              <div className="flex items-center gap-1.5">
-                <button type="button" aria-label="Switch vault" data-testid="vault-switcher" disabled={isCreatingNote} onClick={() => { setVaultMenuOpen((open) => !open); setVaultMenuStatus(""); }} className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50">
-                  <ChevronsUpDownIcon data-testid="vault-switcher-glyph" className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-                  <span className="min-w-0 flex-1 truncate group-data-[collapsible=icon]:hidden">{vaultName}</span>
-                </button>
-                <ThemeToggle />
-              </div>
-              {vaultMenuOpen && isTauri && <div className="absolute right-2 bottom-[calc(100%+8px)] left-2 z-40 rounded-lg border bg-popover p-1.5 shadow-xl"><div className="px-2 py-1.5 text-[10px] font-semibold tracking-wide text-muted-foreground uppercase">Switch vault</div>{(vaultRegistry?.vaults ?? []).map((vault) => <div key={vault.id} className="flex items-center gap-1"><button type="button" disabled={isCreatingNote} className="min-w-0 flex-1 truncate rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted disabled:opacity-50" onClick={() => void switchVault(vault.id)}>{vault.id === activeVaultId ? "✓ " : ""}{vault.name}</button><button type="button" aria-label={`Reveal ${vault.name}`} disabled={isCreatingNote} className="rounded-md px-1.5 py-1 text-[10px] text-muted-foreground hover:bg-muted disabled:opacity-50" onClick={() => void revealVault(vault.id)}>↗</button></div>)}<button type="button" disabled={isCreatingNote} className="mt-1 w-full rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50" onClick={() => void addVaultFromMenu()}>+ Add vault…</button>{vaultMenuStatus && <p className="px-2 py-1 text-[10px] text-muted-foreground">{vaultMenuStatus}</p>}</div>}
-            </SidebarFooter>
+            <SidebarFooterControls
+              vaultName={vaultName}
+              vaultMenuOpen={vaultMenuOpen}
+              vaultMenuStatus={vaultMenuStatus}
+              activeVaultId={activeVaultId}
+              vaults={vaultRegistry?.vaults ?? []}
+              disabled={isCreatingNote}
+              onToggleVaultMenu={() => { setVaultMenuOpen((open) => !open); setVaultMenuStatus(""); }}
+              onSwitchVault={(vaultId) => void switchVault(vaultId)}
+              onRevealVault={(vaultId) => void revealVault(vaultId)}
+              onAddVault={() => void addVaultFromMenu()}
+            />
           </Sidebar>
 
           <SidebarInset data-testid="workspace" className="relative min-w-0">

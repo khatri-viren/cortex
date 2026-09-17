@@ -56,12 +56,13 @@ function TreeRow({ node, depth, selectedPath, expandedPaths, onToggle, onOpen }:
       title={title}
       className={
         "group/tree-row flex h-8 min-w-0 items-center gap-2 rounded-[9px] px-2 text-[13px] leading-5 transition-colors " +
+        (collapsed ? "justify-center gap-0 px-0 " : "") +
         (node.kind !== "directory" && selectedPath === node.path
           ? "bg-muted/90 font-medium text-foreground"
           : "text-muted-foreground hover:bg-muted/65 hover:text-foreground") +
         (node.kind === "file" && !node.openable ? " opacity-55" : "")
       }
-      style={{ paddingLeft: collapsed ? 6 : 8 + depth * 16 }}
+      style={{ paddingLeft: collapsed ? 0 : 8 + depth * 16 }}
       tabIndex={node.kind === "directory" ? -1 : 0}
       onClick={activate}
       onKeyDown={(event) => {

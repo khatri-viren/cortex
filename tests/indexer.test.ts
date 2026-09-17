@@ -62,6 +62,8 @@ describe("Phase 1 indexer", () => {
     expect(indexer.store.noteByPath("notes/engine.md")).toMatchObject({ path: "notes/engine.md", title: "Engine Notes" });
     expect(indexer.store.noteById(indexer.store.noteByPath("notes/engine.md")!.id)?.aliases).toContain("Backend Notes");
     expect(indexer.store.searchNotes("backend", 20).hits.some((hit) => hit.path === "notes/engine.md")).toBe(true);
+    expect(indexer.store.searchNoteTitles("backend", 20).hits.some((hit) => hit.path === "notes/engine.md")).toBe(false);
+    expect(indexer.store.searchNoteTitles("engine", 20).hits.some((hit) => hit.path === "notes/engine.md")).toBe(true);
     expect(indexer.store.graphNodeIdByPath("src.ts")).toBe("file:src.ts");
     expect(indexer.store.fileHash("notes/engine.md")).toMatch(/^[0-9a-f]{64}$/);
     indexer.close();

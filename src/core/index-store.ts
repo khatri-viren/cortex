@@ -360,6 +360,16 @@ export class IndexStore {
     return { hits: rows.slice(0, limit), truncated: rows.length > limit };
   }
 
+  searchNoteTitles(query: string, limit: number): IndexSearchResult {
+    const normalized = query.trim().toLocaleLowerCase();
+    if (!normalized) return { hits: [], truncated: false };
+    const escaped = normalized.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+    const rows = this.db.query<{ note_id: string; title: string; path: string; snippet: string }, [string, number]>(
+      "SELECT note_id, title, path, '' as snippet FROM notes WHERE lower(title) LIKE ?1 ESCAPE '\\' ORDER BY updated_at DESC, path ASC LIMIT ?2",
+    ).all(`%${escaped}%`, limit + 1);
+    return { hits: rows.slice(0, limit), truncated: rows.length > limit };
+  }
+
   graphNodeIdByPath(path: string): string | undefined {
     return this.db.query<{ node_id: string }, [string]>("SELECT node_id FROM graph_nodes WHERE path = ?1").get(path)?.node_id;
   }

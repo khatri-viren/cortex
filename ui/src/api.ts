@@ -49,8 +49,8 @@ export function getVaultTree(): Promise<ApiVaultTree> {
   return request<ApiVaultTree>("/api/vault/tree");
 }
 
-export function searchNotes(query: string): Promise<SearchResponse> {
-  return request<SearchResponse>("/api/search?query=" + encodeURIComponent(query) + "&limit=20");
+export function searchNotes(query: string, titlesOnly = false): Promise<SearchResponse> {
+  return request<SearchResponse>("/api/search?query=" + encodeURIComponent(query) + "&limit=20" + (titlesOnly ? "&titles_only=true" : ""));
 }
 
 export function createNote(input: { title: string; type?: "note" | "map" | "table"; aliases?: string[]; tags?: string[]; applies_to?: ApiNoteMetadataPatch["applies_to"]; body?: string; path?: string }): Promise<{ path: string; id: string }> {
