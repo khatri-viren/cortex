@@ -61,6 +61,7 @@ test("renders Mermaid and validated chart fences in Reading mode", async ({ page
     await expect(page.getByTestId("markdown-reader")).toBeVisible();
     await expect(page.getByTestId("mermaid-block")).toBeVisible({ timeout: 15_000 });
     await expect(page.getByTestId("mermaid-block").locator("svg")).toBeVisible();
+    await expect(page.getByTestId("mermaid-block").locator("svg text").filter({ hasText: "Draft" })).toBeVisible();
     await expect(page.getByTestId("chart-block")).toBeVisible();
     await expect(page.locator("pre code").filter({ hasText: "This remains a code block" })).toBeVisible();
     await expect(page.getByText("Workflow", { exact: true })).toBeVisible();

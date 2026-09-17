@@ -117,7 +117,14 @@ function MermaidBlock({ source, theme }: { source: string; theme: "light" | "dar
     setState({ status: "loading" });
     void import("mermaid").then(async ({ default: mermaid }) => {
       if (disposed) return;
-      mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: theme === "dark" ? "dark" : "base" });
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: "strict",
+        theme: theme === "dark" ? "dark" : "base",
+        // Keep labels in native SVG text nodes so DOMPurify's SVG profile
+        // does not remove them along with Mermaid's foreignObject labels.
+        htmlLabels: false,
+      });
       const result = await mermaid.render(id, source);
       if (disposed) return;
       const svg = DOMPurify.sanitize(result.svg, { USE_PROFILES: { svg: true, svgFilters: true } });
