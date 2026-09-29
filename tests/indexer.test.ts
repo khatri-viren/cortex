@@ -254,7 +254,7 @@ describe("Git adapter", () => {
 });
 
 describe("watcher", () => {
-  test("delivers a filesystem event and persists a snapshot", async () => {
+  test("delivers a filesystem event and restarts promptly with a saved snapshot", async () => {
     const vault = tempVault();
     let handle: Awaited<ReturnType<typeof startWatcher>> | undefined;
     const eventPromise = new Promise<string>((resolve) => {
@@ -274,6 +274,14 @@ describe("watcher", () => {
     await handle?.stop();
     await handle?.flushSnapshot();
     expect(existsSync(join(vault, ".cortex", "watcher.snapshot"))).toBe(true);
+
+    const restartedAt = performance.now();
+    const restarted = await startWatcher(vault, async () => {});
+    try {
+      expect(performance.now() - restartedAt).toBeLessThan(2_000);
+    } finally {
+      await restarted.stop();
+    }
   });
 
   test("does not overlap slow packaged polling callbacks", async () => {

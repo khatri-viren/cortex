@@ -192,10 +192,10 @@ export async function startWatcher(
   mkdirSync(join(vaultRoot, RUNTIME_DIRECTORY), { recursive: true });
   const eventQueue = createEventQueue(vaultRoot, onEvents, options);
 
-  if (existsSync(snapshotPath)) {
-    const historical = await parcelWatcher.getEventsSince(vaultRoot, snapshotPath);
-    eventQueue.queue(historical as WatchEvent[]);
-  }
+  // A persisted native snapshot can make getEventsSince wait indefinitely on
+  // macOS FSEvents. Callers reconcile their source projection on startup, so
+  // a watcher must subscribe to future events without blocking readiness on
+  // historical replay.
 
   let subscription: Awaited<ReturnType<ParcelWatcher["subscribe"]>>;
   try {

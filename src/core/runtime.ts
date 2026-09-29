@@ -307,6 +307,9 @@ export class VaultRuntime {
           service.publishChanges(normalized);
         });
       });
+      // The second validation closes the gap between the first warm read and
+      // watcher subscription without depending on native snapshot replay.
+      if (!indexer.warmRead().valid) indexer.fullRebuild();
       return service;
     } catch (error) {
       indexer.close();
