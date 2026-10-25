@@ -469,3 +469,67 @@ describe("VaultRuntime workspace integration", () => {
     }
   });
 });
+
+describe("Workspace changed-path projection budgets", () => {
+  test("a one-file edit reads one file, duplicate events write nothing, and the graph matches a fresh build", () => {
+    const vault = tempVault();
+    const root = tempWorkspaceRoot();
+    const repo = initRepo(root, "app", {
+      "package.json": '{"dependencies":{"example":"1"}}',
+      "src/a.ts": "import { b } from './b.js'; export const a = b;",
+      "src/b.ts": "export const b = 1;",
+      ...Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`src/extra-${i}.ts`, `export const value = ${i};`])),
+    });
+    const config = initializeWorkspaceManifest(vault, root);
+    const store = newStore(vault);
+    const fresh = newStore(vault);
+    try {
+      const projector = new WorkspaceIndexer(store, config);
+      projector.fullRebuild();
+      const changes = () => store.db.query<{ n: number }, []>("SELECT total_changes() AS n").get()!.n;
+      const before = changes();
+      const noop = projector.incrementalRebuild("app", [join(repo, "src/a.ts")]);
+      expect(noop.work).toEqual({ filesRead: 1, graphRebuilds: 0 });
+      expect(changes() - before).toBe(0);
+      writeFileSync(join(repo, "src/a.ts"), "import { value } from './extra-1.js'; export const a = value;");
+      const edited = projector.incrementalRebuild("app", [join(repo, "src/a.ts")]);
+      expect(edited.work).toEqual({ filesRead: 1, graphRebuilds: 1 });
+      const afterEdit = changes();
+      projector.incrementalRebuild("app", [join(repo, "src/a.ts")]);
+      expect(changes()).toBe(afterEdit);
+      const warm = projector.fullRebuild();
+      expect(warm.work).toEqual({ filesRead: 0, graphRebuilds: 0 });
+      expect(changes()).toBe(afterEdit);
+      new WorkspaceIndexer(fresh, config).fullRebuild();
+      const normalized = (index: IndexStore) => ({
+        files: index.db.query("SELECT path,kind,content_hash FROM workspace_files ORDER BY path").all(),
+        nodes: index.db.query("SELECT node_id,kind,path,name,metadata_json,stale FROM workspace_graph_nodes ORDER BY node_id").all(),
+        edges: index.db.query("SELECT from_id,to_id,kind,metadata_json FROM workspace_graph_edges ORDER BY from_id,to_id,kind,metadata_json").all(),
+        diagnostics: index.workspaceDiagnostics(),
+      });
+      expect(normalized(store)).toEqual(normalized(fresh));
+    } finally { store.close(); fresh.close(); }
+  });
+
+  test("file deletions, new directories and ignore-policy changes reconcile against the filesystem", () => {
+    const vault = tempVault();
+    const root = tempWorkspaceRoot();
+    const repo = initRepo(root, "app", { "src/a.ts": "import './b.js';", "src/b.ts": "export {};" });
+    const config = initializeWorkspaceManifest(vault, root);
+    const store = newStore(vault);
+    try {
+      const projector = new WorkspaceIndexer(store, config);
+      projector.fullRebuild();
+      require("node:fs").unlinkSync(join(repo, "src/b.ts"));
+      projector.incrementalRebuild("app", [join(repo, "src/b.ts")]);
+      expect(store.workspaceDiagnostics().some(item => item.code === "unresolved-import")).toBe(true);
+      mkdirSync(join(repo, "nested"));
+      writeFileSync(join(repo, "nested/c.ts"), "export {};");
+      projector.incrementalRebuild("app", [join(repo, "nested")]);
+      expect(store.workspaceCounts().fileCount).toBe(2);
+      config.manifest.ignore.push("nested");
+      projector.incrementalRebuild("app", [join(repo, "src/a.ts")]);
+      expect(store.workspaceCounts().fileCount).toBe(1);
+    } finally { store.close(); }
+  });
+});

@@ -53,6 +53,11 @@ export function buildCommand(target: string, outputPath = sidecarOutputPath(targ
     bunTargetForRustTarget(target),
     "--external",
     "@parcel/watcher",
+    // playwright-core reads its own package files from disk, and Bun records
+    // the absolute build-machine path for them. It is shipped in the bundle's
+    // node_modules (resolved through NODE_PATH) instead of embedded.
+    "--external",
+    "playwright-core",
     sidecarEntry,
     "--outfile",
     outputPath,

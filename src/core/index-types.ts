@@ -115,6 +115,7 @@ export type WorkspaceRepositoryRecord = {
 };
 
 export type WorkspaceIndexReport = {
+  work?: { filesRead: number; graphRebuilds: number };
   mode: "full" | "incremental";
   repositories: string[];
   fileCount: number;

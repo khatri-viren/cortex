@@ -1,3 +1,5 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:net";
@@ -77,11 +79,23 @@ async function runSmoke(args: SmokeArguments): Promise<void> {
   const vaultA = join(tempRoot, "vault-a");
   const vaultB = join(tempRoot, "vault-b");
   const children: Bun.Subprocess[] = [];
+  const clients: Client[] = [];
+  const owners = new Set<number>();
   try {
     if (!statSync(sidecar).isFile() || !statSync(uiDist).isDirectory()) throw new Error("Bundle is missing the release sidecar or UI resources.");
     initVault(vaultA);
     initVault(vaultB);
     const snapshots = [markdownSnapshot(vaultA), markdownSnapshot(vaultB)];
+    // Start MCP first with only packaged mode, matching a real agent host.
+    // The later desktop environment must not be required by the shared owner.
+    const mcpEnv: Record<string, string> = { ...Bun.env, CORTEX_PACKAGED: "1" };
+    for (const key of ["NODE_PATH", "CORTEX_UI_DIST", "CORTEX_CHROMIUM_PATH", "CORTEX_PACKAGED_CHROMIUM_PATH"]) delete mcpEnv[key];
+    for (const vault of [vaultA, vaultB]) {
+      const client = new Client({ name: "packaged-mcp-first-smoke", version: "1" });
+      clients.push(client);
+      await client.connect(new StdioClientTransport({ command: sidecar, args: ["mcp", "--vault", vault], cwd: tempRoot, env: mcpEnv, stderr: "ignore" }));
+      owners.add((JSON.parse(readFileSync(join(vault, ".cortex/runtime-owner/owner.json"), "utf8")) as { pid: number }).pid);
+    }
     const ports = await Promise.all([freePort(), freePort()]);
     for (const [vault, port] of [[vaultA, ports[0]], [vaultB, ports[1]]] as const) {
       const child = Bun.spawn([sidecar, "dev", "--vault", vault, "--port", String(port)], {
@@ -112,6 +126,16 @@ async function runSmoke(args: SmokeArguments): Promise<void> {
     console.log(`Packaged two-vault smoke passed for ${basename(args.bundle)} on ports ${ports.join(" and ")}.`);
   } finally {
     await Promise.all(children.map(stopProcess));
+    await Promise.all(clients.map(client => client.close().catch(() => undefined)));
+    for (const pid of owners) {
+      try { process.kill(pid, "SIGTERM"); } catch {}
+      let alive = true;
+      for (let n = 0; n < 100; n++) {
+        try { process.kill(pid, 0); } catch { alive = false; break; }
+        await Bun.sleep(30);
+      }
+      if (alive) { try { process.kill(pid, "SIGKILL"); } catch {} }
+    }
     rmSync(tempRoot, { recursive: true, force: true });
   }
 }

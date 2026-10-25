@@ -30,7 +30,7 @@ function responseHeaders(request: Request, overrides: Record<string, string> = {
   const origin = request.headers.get("origin");
   return {
     ...JSON_HEADERS,
-    ...(origin && ALLOWED_CORS_ORIGINS.has(origin) ? { "access-control-allow-origin": origin, vary: "Origin" } : {}),
+    ...(origin && ALLOWED_CORS_ORIGINS.has(origin) ? { "access-control-allow-origin": origin, "access-control-expose-headers": "content-disposition,x-cortex-pdf-sha256,x-cortex-pdf-renderer", vary: "Origin" } : {}),
     ...overrides,
   };
 }
@@ -143,7 +143,7 @@ function eventStream(request: Request, runtime: VaultRuntime, since?: number): R
   });
 }
 
-export function createApiServer(runtime: VaultRuntime, port: number, uiDist?: string): ReturnType<typeof Bun.serve> {
+export function createApiServer(runtime: VaultRuntime, port: number, uiDist?: string, intercept?: (request: Request) => Promise<Response | undefined>): ReturnType<typeof Bun.serve> {
   return Bun.serve({
     hostname: "127.0.0.1",
     port,
@@ -151,6 +151,13 @@ export function createApiServer(runtime: VaultRuntime, port: number, uiDist?: st
     async fetch(request) {
       const url = new URL(request.url);
       try {
+        const intercepted = await intercept?.(request);
+        if (intercepted) {
+          for (const [key, value] of Object.entries(responseHeaders(request))) {
+            if (key.startsWith("access-control") || key === "vary") intercepted.headers.set(key, value);
+          }
+          return intercepted;
+        }
         if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: responseHeaders(request, { "access-control-allow-methods": "GET,POST,PATCH,PUT,OPTIONS", "access-control-allow-headers": "content-type" }) });
         if (url.pathname === "/events" && request.method === "GET") return eventStream(request, runtime, numberParam(url, "since"));
         if (url.pathname === "/api/changes" && request.method === "GET") return json(request, runtime.changesSince(numberParam(url, "since") ?? 0));

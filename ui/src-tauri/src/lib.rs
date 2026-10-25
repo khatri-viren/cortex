@@ -88,6 +88,7 @@ fn sanitize_pdf_filename(input: &str) -> String {
 #[tauri::command]
 async fn save_pdf(
     app: AppHandle,
+    window: WebviewWindow,
     filename: String,
     bytes: Vec<u8>,
 ) -> Result<Option<String>, String> {
@@ -98,6 +99,7 @@ async fn save_pdf(
         app_for_dialog
             .dialog()
             .file()
+            .set_parent(&window)
             .set_file_name(filename)
             .add_filter("PDF document", &["pdf"])
             .blocking_save_file()

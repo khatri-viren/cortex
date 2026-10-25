@@ -1,0 +1,1 @@
+I made Cortex: a local-first notes system where Markdown, code, Git history, and agent context stay attached instead of drifting into separate tools.

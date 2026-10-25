@@ -31,6 +31,8 @@ describe("Phase 3 local API", () => {
       const desktop = await fetch(base + "/api/health", { headers: { origin: "tauri://localhost" } });
       expect(desktop.headers.get("access-control-allow-origin")).toBe("tauri://localhost");
       expect(desktop.headers.get("vary")).toBe("Origin");
+      expect(desktop.headers.get("access-control-expose-headers")).toContain("content-disposition");
+      expect(desktop.headers.get("access-control-expose-headers")).toContain("x-cortex-pdf-sha256");
 
       const dev = await fetch(base + "/api/health", { headers: { origin: "http://127.0.0.1:5175" } });
       expect(dev.headers.get("access-control-allow-origin")).toBe("http://127.0.0.1:5175");

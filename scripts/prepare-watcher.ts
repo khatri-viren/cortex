@@ -71,6 +71,8 @@ export function prepareWatcherResource(
   const nativePackagePath = join(targetParcel, nativePackage);
   const runtimePackages = new Set<string>();
   copyRuntimePackage("@parcel/watcher", sourceNodeModules, targetNodeModules, runtimePackages);
+  // The sidecar loads playwright-core from the bundle's node_modules for PDF export.
+  copyRuntimePackage("playwright-core", sourceNodeModules, targetNodeModules, runtimePackages);
   mkdirSync(targetParcel, { recursive: true });
   cpSync(sourceNative, nativePackagePath, { recursive: true, force: true });
 

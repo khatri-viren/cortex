@@ -113,6 +113,9 @@ CREATE TABLE IF NOT EXISTS workspace_repositories (
   status TEXT NOT NULL,
   last_indexed_at TEXT
 );
+CREATE TABLE IF NOT EXISTS workspace_file_facts (
+ repository_id TEXT NOT NULL, path TEXT NOT NULL, content_hash TEXT NOT NULL, facts_json TEXT NOT NULL, PRIMARY KEY(repository_id,path)
+);
 CREATE TABLE IF NOT EXISTS workspace_files (
   repository_id TEXT NOT NULL,
   path TEXT NOT NULL,
@@ -171,7 +174,7 @@ export class IndexStore {
     this.db.run("PRAGMA busy_timeout = 5000;");
     this.db.run("PRAGMA journal_mode = WAL;");
     this.db.run(SCHEMA);
-    this.db.query("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('schema_version', ?1)").run(SCHEMA_VERSION);
+    this.db.query("INSERT INTO schema_meta (key, value) VALUES ('schema_version', ?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE value!=excluded.value").run(SCHEMA_VERSION);
   }
 
   close(): void {
@@ -219,23 +222,43 @@ export class IndexStore {
     this.db.query("DELETE FROM workspace_graph_nodes WHERE repository_id = ?1 OR node_id = ?2").run(repositoryId, `repo:${repositoryId}`);
   }
 
+  /** Reconcile only changed rows; unchanged projections must not churn the WAL. */
+  private reconcileWorkspaceRows(table: string, keys: string[], desired: Array<Record<string, string | number | null>>, where: string, bindings: string[]): void {
+    const previous = this.db.query<Record<string, string | number | null>, string[]>(`SELECT * FROM ${table} WHERE ${where}`).all(...bindings);
+    const key = (row: Record<string, string | number | null>) => JSON.stringify(keys.map(column => row[column]));
+    const next = new Map(desired.map(row => [key(row), row]));
+    const old = new Map(previous.map(row => [key(row), row]));
+    const remove = this.db.query(`DELETE FROM ${table} WHERE ${keys.map(column => column + " IS ?").join(" AND ")}`);
+    for (const row of previous) if (!next.has(key(row))) remove.run(...keys.map(column => row[column]));
+    for (const row of desired) {
+      const before = old.get(key(row));
+      const columns = Object.keys(row);
+      if (before && columns.every(column => column === "indexed_at" || row[column] === before[column])) continue;
+      this.db.query(`INSERT OR REPLACE INTO ${table} (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})`).run(...columns.map(column => row[column]));
+    }
+  }
+
   replaceWorkspaceRepository(repositoryId: string, repositoryPath: string, files: Array<{ path: string; kind: string; hash: string; size: number; mtimeMs: number }>, graph: GraphBuild, diagnostics: Diagnostic[]): void {
-    this.resetWorkspaceRepository(repositoryId);
-    for (const file of files) {
-      this.db.query("INSERT INTO workspace_files (repository_id, path, kind, content_hash, size, mtime_ms, status, indexed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'ok', ?7)").run(repositoryId, file.path, file.kind, file.hash, file.size, file.mtimeMs, new Date().toISOString());
-    }
-    for (const node of graph.nodes) {
-      this.db.query("INSERT OR REPLACE INTO workspace_graph_nodes (node_id, repository_id, kind, path, name, metadata_json, stale) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)").run(node.nodeId, repositoryId, node.kind, node.path ?? null, node.name, JSON.stringify(node.metadata ?? {}));
-    }
-    const nodeIds = new Set(graph.nodes.map((node) => node.nodeId));
-    for (const edge of graph.edges) {
-      if (!nodeIds.has(edge.fromId) || !nodeIds.has(edge.toId)) continue;
-      this.db.query("INSERT OR IGNORE INTO workspace_graph_edges (from_id, to_id, kind, metadata_json) VALUES (?1, ?2, ?3, ?4)").run(edge.fromId, edge.toId, edge.kind, JSON.stringify(edge.metadata ?? {}));
-    }
-    for (const diagnostic of diagnostics) {
-      this.db.query("INSERT INTO workspace_diagnostics (repository_id, path, severity, code, message, line, column_number) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)").run(repositoryId, diagnostic.filePath ?? repositoryPath, diagnostic.severity, diagnostic.code, diagnostic.message, diagnostic.line ?? null, diagnostic.column ?? null);
-    }
-    this.db.query("INSERT OR REPLACE INTO workspace_repositories (repository_id, path, status, last_indexed_at) VALUES (?1, ?2, 'ready', ?3)").run(repositoryId, repositoryPath, new Date().toISOString());
+    const now = new Date().toISOString();
+    const nodeIds = new Set(graph.nodes.map(node => node.nodeId));
+    // Read/remove old edges before removing nodes used to scope this repository.
+    // Preserve note attachment and project-root edges owned by other projections.
+    this.reconcileWorkspaceRows("workspace_graph_edges", ["from_id", "to_id", "kind", "metadata_json"],
+      graph.edges.filter(edge => nodeIds.has(edge.fromId) && nodeIds.has(edge.toId)).map(edge => ({
+        from_id: edge.fromId, to_id: edge.toId, kind: edge.kind, metadata_json: JSON.stringify(edge.metadata ?? {}),
+      })), "from_id IN (SELECT node_id FROM workspace_graph_nodes WHERE repository_id=?)", [repositoryId]);
+    this.reconcileWorkspaceRows("workspace_graph_nodes", ["node_id"], graph.nodes.map(node => ({
+      node_id: node.nodeId, repository_id: repositoryId, kind: node.kind, path: node.path ?? null, name: node.name, metadata_json: JSON.stringify(node.metadata ?? {}), stale: 0,
+    })), "repository_id=?", [repositoryId]);
+    this.reconcileWorkspaceRows("workspace_files", ["repository_id", "path"], files.map(file => ({
+      repository_id: repositoryId, path: file.path, kind: file.kind, content_hash: file.hash, size: file.size, mtime_ms: file.mtimeMs, status: "ok", indexed_at: now,
+    })), "repository_id=?", [repositoryId]);
+    this.reconcileWorkspaceRows("workspace_diagnostics", ["repository_id", "path", "severity", "code", "message", "line", "column_number"], diagnostics.map(diagnostic => ({
+      repository_id: repositoryId, path: diagnostic.filePath ?? repositoryPath, severity: diagnostic.severity, code: diagnostic.code, message: diagnostic.message, line: diagnostic.line ?? null, column_number: diagnostic.column ?? null,
+    })), "repository_id=?", [repositoryId]);
+    this.reconcileWorkspaceRows("workspace_repositories", ["repository_id"], [{
+      repository_id: repositoryId, path: repositoryPath, status: "ready", last_indexed_at: now,
+    }], "repository_id=?", [repositoryId]);
   }
 
   markWorkspaceRepositoryMissing(repositoryId: string): void {
@@ -387,22 +410,18 @@ export class IndexStore {
   }
 
   linkRepositoriesToProject(repositoryIds: string[]): void {
-    this.db.query("DELETE FROM workspace_graph_edges WHERE from_id = 'project:root' AND to_id LIKE 'repo:%'").run();
-    for (const repositoryId of repositoryIds) {
-      if (!this.unifiedNode("project:root") || !this.unifiedNode(`repo:${repositoryId}`)) continue;
-      this.db.query("INSERT OR IGNORE INTO workspace_graph_edges (from_id, to_id, kind, metadata_json) VALUES ('project:root', ?1, 'contains', '{}')").run(`repo:${repositoryId}`);
-    }
+    const rows = repositoryIds.filter(id => this.unifiedNode("project:root") && this.unifiedNode(`repo:${id}`)).map(id => ({
+      from_id: "project:root", to_id: `repo:${id}`, kind: "contains", metadata_json: "{}",
+    }));
+    this.reconcileWorkspaceRows("workspace_graph_edges", ["from_id", "to_id", "kind", "metadata_json"], rows,
+      "from_id='project:root' AND to_id LIKE 'repo:%'", []);
   }
 
   replaceWorkspaceAttachmentEdges(edges: Array<{ fromId: string; toId: string; kind: string; metadata?: Record<string, unknown> }>): void {
-    this.db.run("DELETE FROM workspace_graph_edges WHERE from_id LIKE 'note:%'");
-    for (const edge of edges) {
-      // Attachments are derived from filesystem metadata and can race a
-      // workspace rebuild. Keep the persisted graph closed even when a target
-      // disappeared or was excluded between resolution and insertion.
-      if (!this.unifiedNode(edge.fromId) || !this.unifiedNode(edge.toId)) continue;
-      this.db.query("INSERT OR IGNORE INTO workspace_graph_edges (from_id, to_id, kind, metadata_json) VALUES (?1, ?2, ?3, ?4)").run(edge.fromId, edge.toId, edge.kind, JSON.stringify(edge.metadata ?? {}));
-    }
+    const rows = edges.filter(edge => this.unifiedNode(edge.fromId) && this.unifiedNode(edge.toId)).map(edge => ({
+      from_id: edge.fromId, to_id: edge.toId, kind: edge.kind, metadata_json: JSON.stringify(edge.metadata ?? {}),
+    }));
+    this.reconcileWorkspaceRows("workspace_graph_edges", ["from_id", "to_id", "kind", "metadata_json"], rows, "from_id LIKE 'note:%'", []);
   }
 
   unifiedNode(nodeId: string): { node_id: string; kind: string; path: string | null; name: string; metadata_json: string } | undefined {

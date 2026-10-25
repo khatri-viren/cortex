@@ -217,7 +217,7 @@ function findReexportSpecifier(tokens: ModuleToken[], start: number): string | u
   return undefined;
 }
 
-function extractModuleSpecifiers(source: string): string[] {
+export function extractModuleSpecifiers(source: string): string[] {
   const tokens = tokenizeModuleSource(source);
   const specifiers: string[] = [];
   for (let index = 0; index < tokens.length; index += 1) {
@@ -250,6 +250,8 @@ export type ProjectFile = {
   hash?: string;
   size?: number;
   mtimeMs?: number;
+  moduleSpecifiers?: string[];
+  packageJson?: string;
 };
 
 export type ProjectWalkOptions = {
@@ -499,8 +501,8 @@ export function buildProjectGraphFromSource(source: GraphSource): GraphBuild {
   for (const entry of files.filter((candidate) => !candidate.isDirectory && MODULE_EXTENSIONS.has(extname(candidate.path).toLowerCase()))) {
     const sourceId = pathToNode.get(entry.path);
     if (!sourceId) continue;
-    const content = readFileSync(entry.absolutePath, "utf8");
-    for (const importPath of extractModuleSpecifiers(content)) {
+    const specifiers = entry.moduleSpecifiers ?? extractModuleSpecifiers(readFileSync(entry.absolutePath, "utf8"));
+    for (const importPath of specifiers) {
       if (!importPath.startsWith(".")) continue;
       const targetPath = candidatePaths(policy, entry.path, importPath, knownPaths)[0];
       if (!targetPath) {
@@ -519,7 +521,7 @@ export function buildProjectGraphFromSource(source: GraphSource): GraphBuild {
   const packageJson = filesByPath.get("package.json");
   if (packageJson) {
     try {
-      const manifest = JSON.parse(readFileSync(packageJson.absolutePath, "utf8")) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+      const manifest = JSON.parse(packageJson.packageJson ?? readFileSync(packageJson.absolutePath, "utf8")) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
       const packageManifestNodeId = pathToNode.get("package.json");
       for (const [section, dependencies] of [["dependencies", manifest.dependencies], ["devDependencies", manifest.devDependencies]] as const) {
         if (!dependencies || !packageManifestNodeId) continue;

@@ -7,15 +7,8 @@ import type { Diagnostic, VaultScan } from "./types.js";
 
 export const RUNTIME_DIRECTORY = ".cortex";
 
-export function isGitVault(vaultRoot: string): boolean {
-  return existsSync(join(resolve(vaultRoot), ".git"));
-}
-
-export function requireGitVault(vaultRoot: string): string {
-  const root = resolve(vaultRoot);
-  if (!isGitVault(root)) throw new Error(`Vault is not a Git repository: ${root}`);
-  return root;
-}
+export { isGitVault, requireGitVault } from "./vault-path.js";
+import { requireGitVault } from "./vault-path.js";
 
 export function vaultFiles(root: string): string[] {
   const result: string[] = [];

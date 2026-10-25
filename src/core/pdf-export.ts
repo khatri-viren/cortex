@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
-import { chromium } from "playwright-core";
 import { unified } from "unified";
 import remarkGfm from "remark-gfm";
 import remarkParse from "remark-parse";
@@ -220,18 +220,49 @@ export async function markdownToHtml(input: MarkdownPdfInput): Promise<{ title: 
   return { title: normalized.title, html: printDocument(normalized.title, embedLocalImages(content, input.notePath, input.vaultRoot)) };
 }
 
+type PlaywrightCore = typeof import("playwright-core");
+
+// `playwright-core` reads its own package files when it is evaluated, so it is
+// loaded on demand instead of at import time. A missing or relocated copy then
+// only fails PDF export rather than every Cortex command that imports this module.
+function loadPlaywrightCore(): Promise<PlaywrightCore> {
+  const manifest = resolve(dirname(process.execPath), "../Resources/node_modules/playwright-core/package.json");
+  if (process.env.CORTEX_PACKAGED === "1" && existsSync(manifest)) {
+    return Promise.resolve(createRequire(manifest)("playwright-core") as PlaywrightCore);
+  }
+  return import("playwright-core");
+}
+
+function discoverPlaywrightChromiumPath(): string | undefined {
+  try {
+    const playwright = createRequire(import.meta.url)("playwright-core") as PlaywrightCore;
+    return playwright.chromium.executablePath();
+  } catch {
+    return undefined;
+  }
+}
+
+/** Discover packaged resources independently of the process that started Cortex. */
+export function bundledChromiumPath(executable = process.execPath, platform: NodeJS.Platform = process.platform): string | undefined {
+  const root = resolve(dirname(executable), "../Resources/chromium");
+  const candidates = platform === "darwin"
+    ? ["Chromium.app/Contents/MacOS/Google Chrome for Testing", "Chromium.app/Contents/MacOS/Chromium"]
+    : [platform === "win32" ? "chrome.exe" : "chrome"];
+  return candidates.map(path => resolve(root, path)).find(path => statSync(path, { throwIfNoEntry: false })?.isFile());
+}
+
 function chromiumPath(): string | undefined {
   const configured = process.env.CORTEX_CHROMIUM_PATH?.trim();
   if (configured) return configured;
   const packaged = process.env.CORTEX_PACKAGED_CHROMIUM_PATH?.trim();
   if (packaged) return packaged;
-  if (process.env.CORTEX_PACKAGED === "1") return undefined;
+  if (process.env.CORTEX_PACKAGED === "1") return bundledChromiumPath();
 
   // `playwright-core` does not download a browser, but when a pinned browser
   // has already been installed in the developer's Playwright cache it exposes
   // the deterministic executable path. This keeps `desktop:dev` usable while
-  // still requiring packaged builds to provide CORTEX_PACKAGED_CHROMIUM_PATH.
-  const discovered = chromium.executablePath();
+  // packaged builds discover the browser relative to their own executable.
+  const discovered = discoverPlaywrightChromiumPath();
   return discovered && existsSync(discovered) ? discovered : undefined;
 }
 
@@ -264,13 +295,14 @@ export async function renderMarkdownPdf(input: MarkdownPdfInput, options: PdfRen
   const deadlineTimer = setTimeout(() => controller.abort(deadline), deadlineMs);
   const forwardAbort = () => controller.abort(abortReason(options.signal, new ServiceError("EXPORT_CANCELLED", "PDF export was cancelled.")));
   options.signal?.addEventListener("abort", forwardAbort, { once: true });
-  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+  let browser: Awaited<ReturnType<PlaywrightCore["chromium"]["launch"]>> | undefined;
   try {
     const { title, html } = await withAbort(markdownToHtml(input), controller.signal, deadline);
     const executablePath = chromiumPath();
     if (!executablePath) {
       throw new ServiceError("EXPORT_RENDERER_UNAVAILABLE", "PDF export requires a bundled Chromium executable. Set CORTEX_CHROMIUM_PATH for development.");
     }
+    const { chromium } = await withAbort(loadPlaywrightCore(), controller.signal, deadline);
     browser = await withAbort(chromium.launch({ executablePath, headless: true }), controller.signal, deadline);
     const page = await browser.newPage();
     // PDF rendering is intentionally offline. Local images are embedded by

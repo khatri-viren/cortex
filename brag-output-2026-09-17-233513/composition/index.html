@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en" data-resolution="landscape">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: #111312; }
+      body { color: #f5f7f4; font-family: system-ui, sans-serif; }
+      #root { position: relative; width: 100%; height: 100%; overflow: hidden; background: #111312; }
+      .scene { position: absolute; inset: 0; overflow: hidden; }
+      .canvas { position: absolute; inset: 0; overflow: hidden; }
+      .glow { position: absolute; width: 720px; height: 720px; border-radius: 50%; background: radial-gradient(circle, rgba(184,240,90,.14) 0%, rgba(184,240,90,.04) 38%, rgba(184,240,90,0) 72%); }
+      .glow.one { top: -270px; right: -120px; }
+      .glow.two { bottom: -360px; left: -220px; opacity: .7; }
+      .eyebrow, .micro, .mono { font-family: ui-monospace, monospace; letter-spacing: .08em; text-transform: uppercase; }
+      .eyebrow { color: #b8f05a; font-size: 20px; font-weight: 650; }
+      .micro { color: rgba(245,247,244,.55); font-size: 16px; }
+      .rule { position: absolute; height: 3px; background: #b8f05a; transform-origin: left center; }
+      .ghost { position: absolute; color: #697167; font-size: 156px; font-weight: 700; letter-spacing: -.08em; white-space: nowrap; }
+      .hook-wrap { position: absolute; left: 148px; top: 248px; }
+      .hook { margin: 38px 0 0; width: 1120px; font-size: 106px; line-height: 1.01; letter-spacing: -.055em; font-weight: 680; }
+      .hook span { display: block; }
+      .hook .dim { color: rgba(245,247,244,.52); }
+      .hook .accent { color: #b8f05a; }
+      .hook-sub { margin-top: 46px; color: rgba(245,247,244,.6); font-size: 30px; letter-spacing: -.015em; }
+      .file-line { position: absolute; color: rgba(245,247,244,.56); font-size: 18px; }
+      .file-line.one { left: 148px; top: 158px; }
+      .file-line.two { right: 148px; bottom: 136px; }
+
+      .shell-label { position: absolute; left: 136px; top: 96px; }
+      .shell-headline { position: absolute; left: 136px; top: 138px; margin: 0; font-size: 58px; letter-spacing: -.045em; font-weight: 630; }
+      .window { position: absolute; left: 136px; top: 260px; width: 1648px; height: 690px; overflow: hidden; border: 2px solid rgba(245,247,244,.18); border-radius: 24px; background: #1b1e1c; box-shadow: 0 26px 90px rgba(0,0,0,.32); }
+      .window-bar { height: 58px; display: flex; align-items: center; gap: 12px; padding: 0 24px; border-bottom: 2px solid rgba(245,247,244,.1); background: #171a18; }
+      .traffic { width: 13px; height: 13px; border-radius: 50%; background: rgba(245,247,244,.26); }
+      .traffic.active { background: #b8f05a; }
+      .window-title { margin-left: 18px; color: rgba(245,247,244,.56); font-size: 18px; letter-spacing: .01em; }
+      .window-body { display: grid; grid-template-columns: 286px 1fr 310px; height: calc(100% - 58px); }
+      .rail { padding: 28px 20px; background: #171a18; }
+      .rail.right { border-left: 2px solid rgba(245,247,244,.08); }
+      .rail.left { border-right: 2px solid rgba(245,247,244,.08); }
+      .search { height: 38px; display: flex; align-items: center; padding: 0 12px; border: 1px solid rgba(245,247,244,.16); border-radius: 8px; color: rgba(245,247,244,.5); font-size: 15px; }
+      .rail-title { margin: 34px 0 13px; color: rgba(245,247,244,.57); font-size: 14px; font-weight: 680; letter-spacing: .1em; text-transform: uppercase; }
+      .note-row { display: flex; align-items: center; gap: 10px; padding: 11px 12px; border-radius: 8px; color: rgba(245,247,244,.67); font-size: 16px; }
+      .note-row.selected { background: rgba(184,240,90,.13); color: #f5f7f4; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(245,247,244,.28); }
+      .dot.lime { background: #b8f05a; box-shadow: 0 0 16px rgba(184,240,90,.7); }
+      .center { position: relative; padding: 38px 56px; background: #242625; }
+      .tabs { display: flex; gap: 26px; color: rgba(245,247,244,.61); font-size: 15px; }
+      .tabs .active { color: #b8f05a; }
+      .doc-meta { margin-top: 48px; color: rgba(245,247,244,.59); font-size: 15px; }
+      .doc-title { margin: 12px 0 18px; font-size: 48px; letter-spacing: -.045em; font-weight: 650; }
+      .doc-rule { width: 100%; height: 1px; background: rgba(245,247,244,.12); }
+      .doc-h2 { margin-top: 38px; font-size: 27px; font-weight: 650; }
+      .doc-copy { max-width: 670px; margin-top: 18px; color: rgba(245,247,244,.67); font-size: 21px; line-height: 1.55; }
+      .doc-code { margin-top: 30px; padding: 18px 20px; border: 1px solid rgba(184,240,90,.23); border-radius: 10px; background: rgba(17,19,18,.34); color: #b8f05a; font-family: ui-monospace, monospace; font-size: 15px; line-height: 1.7; }
+      .context-head { display: flex; align-items: center; justify-content: space-between; color: #f5f7f4; font-size: 18px; }
+      .context-item { margin-top: 24px; padding-top: 18px; border-top: 1px solid rgba(245,247,244,.1); }
+      .context-label { color: #b8f05a; font-family: ui-monospace, monospace; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; }
+      .context-value { margin-top: 8px; color: rgba(245,247,244,.7); font-size: 16px; line-height: 1.35; }
+      .status { position: absolute; right: 26px; bottom: 20px; color: rgba(245,247,244,.59); font-family: ui-monospace, monospace; font-size: 13px; }
+
+      .graph-label { position: absolute; left: 138px; top: 108px; }
+      .graph-title { position: absolute; left: 138px; top: 150px; margin: 0; font-size: 62px; letter-spacing: -.055em; font-weight: 640; }
+      .graph-sub { position: absolute; left: 142px; top: 238px; color: rgba(245,247,244,.58); font-size: 24px; }
+      .graph-board { position: absolute; left: 130px; top: 328px; width: 1660px; height: 574px; border: 2px solid rgba(245,247,244,.12); border-radius: 24px; background: rgba(36,38,37,.82); }
+      .grid { position: absolute; inset: 0; opacity: .26; background-image: linear-gradient(rgba(245,247,244,.06) 1px, transparent 1px), linear-gradient(90deg, rgba(245,247,244,.06) 1px, transparent 1px); background-size: 84px 84px; }
+      .edge { position: absolute; height: 3px; transform-origin: left center; background: rgba(184,240,90,.7); box-shadow: 0 0 16px rgba(184,240,90,.42); }
+      .edge.e1 { left: 550px; top: 250px; width: 370px; transform: rotate(-19deg); }
+      .edge.e2 { left: 550px; top: 270px; width: 390px; transform: rotate(24deg); }
+      .edge.e3 { left: 915px; top: 260px; width: 340px; transform: rotate(-24deg); }
+      .edge.e4 { left: 920px; top: 280px; width: 340px; transform: rotate(21deg); }
+      .node { position: absolute; display: flex; flex-direction: column; justify-content: center; width: 250px; height: 112px; padding: 0 24px; border: 2px solid rgba(245,247,244,.2); border-radius: 14px; background: #202321; box-shadow: 0 16px 30px rgba(0,0,0,.18); }
+      .node .kind { color: rgba(245,247,244,.62); font-family: ui-monospace, monospace; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; }
+      .node .name { margin-top: 9px; color: #f5f7f4; font-size: 19px; font-weight: 620; }
+      .node.center-node { left: 705px; top: 204px; width: 300px; height: 124px; border-color: #b8f05a; background: #293127; }
+      .node.left-node { left: 270px; top: 136px; }
+      .node.bottom-left { left: 260px; top: 356px; }
+      .node.right-node { left: 1188px; top: 142px; }
+      .node.bottom-right { left: 1188px; top: 356px; }
+      .rel { position: absolute; color: #b8f05a; font-family: ui-monospace, monospace; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; }
+      .rel.r1 { left: 610px; top: 168px; }
+      .rel.r2 { left: 615px; top: 374px; }
+      .rel.r3 { left: 1022px; top: 170px; }
+      .rel.r4 { left: 1035px; top: 374px; }
+      .graph-footer { position: absolute; left: 138px; bottom: 102px; color: rgba(245,247,244,.72); font-size: 27px; }
+      .graph-footer strong { color: #b8f05a; font-weight: 560; }
+
+      .close-label { position: absolute; left: 138px; top: 108px; }
+      .close-title { position: absolute; left: 138px; top: 152px; margin: 0; font-size: 62px; letter-spacing: -.05em; font-weight: 640; }
+      .close-sub { position: absolute; left: 142px; top: 244px; color: rgba(245,247,244,.58); font-size: 25px; }
+      .promise-row { position: absolute; left: 138px; top: 380px; display: flex; gap: 24px; }
+      .promise { position: relative; width: 500px; height: 215px; padding: 30px; border: 2px solid rgba(245,247,244,.15); border-radius: 16px; background: #202321; }
+      .promise.lime { border-color: rgba(184,240,90,.7); background: #2a3325; }
+      .promise-num { color: #b8f05a; font-family: ui-monospace, monospace; font-size: 16px; }
+      .promise-name { margin-top: 36px; font-size: 29px; letter-spacing: -.03em; font-weight: 620; }
+      .promise-copy { margin-top: 10px; color: rgba(245,247,244,.52); font-size: 17px; }
+      .close-bottom { position: absolute; left: 138px; bottom: 102px; display: flex; align-items: center; gap: 28px; }
+      .wordmark { color: #b8f05a; font-size: 46px; letter-spacing: -.045em; font-weight: 700; }
+      .tagline { color: rgba(245,247,244,.65); font-size: 24px; }
+      .tiny { position: absolute; right: 138px; bottom: 110px; color: rgba(245,247,244,.58); font-family: ui-monospace, monospace; font-size: 14px; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="20.8" data-width="1920" data-height="1080">
+      <audio id="bg-music" data-start="0" data-duration="20.8" data-volume="0.28" src="assets/music/happy-beats-business-moves-vol-12-by-ende-dot-app.mp3"></audio>
+
+      <section id="scene-hook" class="scene clip" data-start="0" data-duration="3.2" data-track-index="0">
+        <div class="canvas">
+          <div class="glow one" id="s1-glow" data-layout-allow-overflow="true"></div>
+          <div class="glow two" id="s1-glow-two" data-layout-allow-overflow="true"></div>
+          <div class="ghost" style="left: 1290px; top: 170px;">context</div>
+          <div class="file-line one mono">/vault/notes/project-spec.md</div>
+          <div class="file-line two mono">/src/mcp/server.ts   /git/history</div>
+          <div class="rule" id="s1-rule" style="left: 148px; top: 184px; width: 740px;"></div>
+          <div class="hook-wrap" id="s1-copy">
+            <div class="eyebrow">Cortex / local-first notes</div>
+            <h1 class="hook"><span class="dim">Notes are not</span><span>the context.</span><span class="accent">Cortex is.</span></h1>
+            <div class="hook-sub">The work around the note, made visible.</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="scene-shell" class="scene clip" data-start="3.2" data-duration="5.5" data-track-index="1">
+        <div class="canvas">
+          <div class="glow one" id="s2-glow" data-layout-allow-overflow="true"></div>
+          <div class="shell-label eyebrow">A living workspace</div>
+          <h2 class="shell-headline">One note. The work around it.</h2>
+          <div class="window" id="s2-window">
+            <div class="window-bar"><span class="traffic active"></span><span class="traffic"></span><span class="traffic"></span><span class="window-title">Cortex / cortex-notes</span></div>
+            <div class="window-body">
+              <aside class="rail left" id="s2-left">
+                <div class="search">⌕&nbsp;&nbsp; Search notes</div>
+                <div class="rail-title">Recents</div>
+                <div class="note-row selected"><span class="dot lime"></span>Project Spec</div>
+                <div class="note-row"><span class="dot"></span>Desktop V2 Plan</div>
+                <div class="rail-title">Everything&nbsp;&nbsp; <span style="color:#b8f05a;">32</span></div>
+                <div class="note-row"><span class="dot"></span>plans/</div>
+                <div class="note-row"><span class="dot"></span>notes/</div>
+              </aside>
+              <main class="center" id="s2-center">
+                <div class="tabs"><span>Source</span><span class="active">Reading</span><span>Live</span></div>
+                <div class="doc-meta mono">notes/project-spec.md&nbsp;&nbsp; · &nbsp;&nbsp;note&nbsp;&nbsp; · &nbsp;&nbsp;Git tracked</div>
+                <h3 class="doc-title">Project Spec</h3>
+                <div class="doc-rule"></div>
+                <div class="doc-h2">Markdown is the source of truth.</div>
+                <div class="doc-copy">Humans read and edit through a polished surface. Agents read and write the same files through MCP, guided by skills and hooks.</div>
+                <div class="doc-code"><span style="display:block;">applies_to: cortex</span><span style="display:block;">relation: documents</span><span style="display:block;">target: .</span></div>
+                <div class="status">● Index current</div>
+              </main>
+              <aside class="rail right" id="s2-right">
+                <div class="context-head">Context <span style="color:#b8f05a;">⌁</span></div>
+                <div class="context-item"><div class="context-label">Implements</div><div class="context-value">src/mcp/server.ts</div></div>
+                <div class="context-item"><div class="context-label">Related notes</div><div class="context-value"><span style="display:block;">Cortex Desktop V2</span><span style="display:block;">Rich Markdown Rendering</span></div></div>
+                <div class="context-item"><div class="context-label">Repository</div><div class="context-value"><span style="display:block;">cortex</span><span style="display:block;color:#b8f05a;">0 changed</span></div></div>
+              </aside>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="scene-graph" class="scene clip" data-start="8.7" data-duration="6" data-track-index="2">
+        <div class="canvas">
+          <div class="glow two" id="s3-glow" data-layout-allow-overflow="true"></div>
+          <div class="graph-label eyebrow">From note to graph</div>
+          <h2 class="graph-title">Context, attached.</h2>
+          <div class="graph-sub">Relationships are part of the document, not a second system to maintain.</div>
+          <div class="graph-board" id="s3-board">
+            <div class="grid"></div>
+            <div class="edge e1" id="s3-e1"></div><div class="edge e2" id="s3-e2"></div><div class="edge e3" id="s3-e3"></div><div class="edge e4" id="s3-e4"></div>
+            <div class="node center-node" id="s3-n0"><div class="kind">note</div><div class="name">Project Spec</div></div>
+            <div class="node left-node" id="s3-n1"><div class="kind">repository</div><div class="name">cortex</div></div>
+            <div class="node bottom-left" id="s3-n2"><div class="kind">vault</div><div class="name">cortex-notes</div></div>
+            <div class="node right-node" id="s3-n3"><div class="kind">source file</div><div class="name">src/mcp/server.ts</div></div>
+            <div class="node bottom-right" id="s3-n4"><div class="kind">history</div><div class="name">Git history</div></div>
+            <div class="rel r1" id="s3-r1">documents</div><div class="rel r2" id="s3-r2">owned by</div><div class="rel r3" id="s3-r3">implements</div><div class="rel r4" id="s3-r4">versioned by</div>
+          </div>
+          <div class="graph-footer" id="s3-footer"><strong>Markdown</strong> → code → repository → agent context</div>
+        </div>
+      </section>
+
+      <section id="scene-close" class="scene clip" data-start="14.7" data-duration="6.1" data-track-index="3">
+        <div class="canvas">
+          <div class="glow one" id="s4-glow" data-layout-allow-overflow="true"></div>
+          <div class="close-label eyebrow">The core stays simple</div>
+          <h2 class="close-title">One local core. Two faces.</h2>
+          <div class="close-sub">A human surface for reading. An agent interface for context.</div>
+          <div class="promise-row">
+            <div class="promise" id="s4-p1"><div class="promise-num">01 / STORAGE</div><div class="promise-name">Markdown source of truth</div><div class="promise-copy">Plain files under Git. No shadow copy.</div></div>
+            <div class="promise lime" id="s4-p2"><div class="promise-num">02 / INDEX</div><div class="promise-name">Rebuildable SQLite index</div><div class="promise-copy">Fast search and a graph you can regenerate.</div></div>
+            <div class="promise" id="s4-p3"><div class="promise-num">03 / MCP</div><div class="promise-name">Strict MCP tools</div><div class="promise-copy">Bounded context, right where the agent needs it.</div></div>
+          </div>
+          <div class="close-bottom" id="s4-mark"><div class="wordmark">Cortex</div><div class="tagline">Context that stays attached.</div></div>
+          <div class="tiny">notes / code / history / context</div>
+        </div>
+      </section>
+    </div>
+    <script>
+      const tl = gsap.timeline({ paused: true });
+      const easeOut = "power3.out";
+      const easeInOut = "power2.inOut";
+      tl.fromTo("#s1-copy", { x: -60, opacity: 0 }, { x: 0, opacity: 1, duration: 0.8, ease: easeOut }, 0.18)
+        .fromTo("#s1-rule", { scaleX: 0 }, { scaleX: 1, duration: 0.7, ease: easeOut }, 0.08)
+        .fromTo("#s1-glow", { scale: 0.86, opacity: 0 }, { scale: 1, opacity: 1, duration: 1.2, ease: easeOut }, 0)
+        .to("#s1-glow", { scale: 1.08, duration: 2.4, ease: easeInOut }, 1.2)
+        .fromTo("#s2-window", { y: 90, opacity: 0 }, { y: 0, opacity: 1, duration: 0.8, ease: easeOut }, 3.22)
+        .fromTo("#s2-left", { x: -44, opacity: 0 }, { x: 0, opacity: 1, duration: 0.55, ease: easeOut }, 3.65)
+        .fromTo("#s2-center", { y: 28, opacity: 0 }, { y: 0, opacity: 1, duration: 0.65, ease: easeOut }, 4.0)
+        .fromTo("#s2-right", { x: 44, opacity: 0 }, { x: 0, opacity: 1, duration: 0.55, ease: easeOut }, 4.35)
+        .fromTo("#s2-glow", { scale: 0.8, opacity: 0 }, { scale: 1, opacity: 1, duration: 1.1, ease: easeOut }, 3.2)
+        .fromTo("#s3-board", { scale: 0.94, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.7, ease: easeOut }, 8.72)
+        .fromTo("#s3-n0", { scale: 0.7, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.65, ease: easeOut }, 9.05)
+        .fromTo("#s3-n1", { x: -70, opacity: 0 }, { x: 0, opacity: 1, duration: 0.55, ease: easeOut }, 9.55)
+        .fromTo("#s3-n2", { x: -70, opacity: 0 }, { x: 0, opacity: 1, duration: 0.55, ease: easeOut }, 10.0)
+        .fromTo("#s3-n3", { x: 70, opacity: 0 }, { x: 0, opacity: 1, duration: 0.55, ease: easeOut }, 10.45)
+        .fromTo("#s3-n4", { x: 70, opacity: 0 }, { x: 0, opacity: 1, duration: 0.55, ease: easeOut }, 10.9)
+        .fromTo(["#s3-e1", "#s3-e2", "#s3-e3", "#s3-e4"], { scaleX: 0 }, { scaleX: 1, duration: 0.45, stagger: 0.16, ease: easeOut }, 11.15)
+        .fromTo(["#s3-r1", "#s3-r2", "#s3-r3", "#s3-r4"], { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.35, stagger: 0.2, ease: easeOut }, 11.55)
+        .fromTo("#s3-footer", { y: 20, opacity: 0 }, { y: 0, opacity: 1, duration: 0.6, ease: easeOut }, 12.65)
+        .to("#s3-e3", { backgroundColor: "#d7ff9b", duration: 0.3, yoyo: true, repeat: 1, ease: easeInOut }, 13.1)
+        .fromTo("#s4-p1", { y: 46, opacity: 0 }, { y: 0, opacity: 1, duration: 0.6, ease: easeOut }, 14.78)
+        .fromTo("#s4-p2", { y: 62, opacity: 0 }, { y: 0, opacity: 1, duration: 0.6, ease: easeOut }, 15.16)
+        .fromTo("#s4-p3", { y: 46, opacity: 0 }, { y: 0, opacity: 1, duration: 0.6, ease: easeOut }, 15.54)
+        .fromTo("#s4-mark", { y: 26, opacity: 0 }, { y: 0, opacity: 1, duration: 0.7, ease: easeOut }, 17.25)
+        .fromTo("#s4-glow", { scale: 0.78, opacity: 0 }, { scale: 1, opacity: 1, duration: 1.1, ease: easeOut }, 14.72)
+        .to("#s4-glow", { scale: 1.08, duration: 2.8, ease: easeInOut }, 17.35);
+      window.__timelines["main"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>

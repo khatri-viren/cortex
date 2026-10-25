@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import { createRequire } from "node:module";
 import { RUNTIME_DIRECTORY } from "./vault.js";
 
 type ParcelWatcher = typeof import("@parcel/watcher");
@@ -180,7 +181,10 @@ export async function startWatcher(
   if (options?.forcePolling) return startPollingWatcher(vaultRoot, onEvents, options);
   let parcelWatcher: ParcelWatcher;
   try {
-    parcelWatcher = await import("@parcel/watcher");
+    const packagedWatcher = resolve(dirname(process.execPath), "../Resources/node_modules/@parcel/watcher/index.js");
+    parcelWatcher = process.env.CORTEX_PACKAGED === "1" && existsSync(packagedWatcher)
+      ? createRequire(packagedWatcher)(packagedWatcher) as ParcelWatcher
+      : await import("@parcel/watcher");
   } catch (error) {
     if (process.env.CORTEX_PACKAGED === "1") {
       console.error(`Native filesystem watcher unavailable; using bounded polling fallback: ${error instanceof Error ? error.message : String(error)}`);

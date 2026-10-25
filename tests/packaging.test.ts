@@ -39,6 +39,8 @@ test("desktop packaging names the sidecar for the active Rust target", () => {
     bunTargetForRustTarget(target),
     "--external",
     "@parcel/watcher",
+    "--external",
+    "playwright-core",
     resolve(root, "src", "cli.ts"),
     "--outfile",
     sidecarOutputPath(target),
@@ -84,7 +86,8 @@ test("desktop packaging prepares the active native watcher next to its JS module
   expect(readFileSync(join(prepared.modulePath, "package.json"), "utf8")).toContain("@parcel/watcher");
   expect(readFileSync(prepared.nativePath).byteLength).toBeGreaterThan(0);
   expect(readFileSync(prepared.embeddedNativePath).byteLength).toBeGreaterThan(0);
-  expect(prepared.runtimePackages).toEqual(expect.arrayContaining(["@parcel/watcher", "picomatch", "is-glob", "is-extglob"]));
+  expect(prepared.runtimePackages).toEqual(expect.arrayContaining(["@parcel/watcher", "picomatch", "is-glob", "is-extglob", "playwright-core"]));
+  expect(readFileSync(join(target, "playwright-core", "browsers.json"), "utf8")).toContain("chromium");
   rmSync(target, { recursive: true, force: true });
 });
 
@@ -164,6 +167,9 @@ test("bundle verification requires the unsigned app layout to contain sidecar an
   mkdirSync(join(bundle, "Contents", "Resources", "node_modules", "@parcel", "watcher"), { recursive: true });
   mkdirSync(join(bundle, "Contents", "Resources", "node_modules", "@parcel", "watcher", "build", "Release"), { recursive: true });
   mkdirSync(join(bundle, "Contents", "Resources", "node_modules", "@parcel", nativePackage), { recursive: true });
+  mkdirSync(join(bundle, "Contents", "Resources", "node_modules", "playwright-core"), { recursive: true });
+  writeFileSync(join(bundle, "Contents", "Resources", "node_modules", "playwright-core", "package.json"), "{}");
+  writeFileSync(join(bundle, "Contents", "Resources", "node_modules", "playwright-core", "browsers.json"), "{}");
   const sidecar = join(bundle, "Contents", "MacOS", "cortex-sidecar");
   writeFileSync(sidecar, "sidecar");
   chmodSync(sidecar, 0o755);

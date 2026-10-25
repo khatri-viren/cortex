@@ -1,0 +1,1510 @@
+{
+  "binary": "/Applications/Cortex.app/Contents/MacOS/cortex-sidecar",
+  "fixture": {
+    "repositories": 13,
+    "repositoryFiles": 13000,
+    "notes": 100,
+    "clients": 12,
+    "desktopBridges": 1
+  },
+  "durationSeconds": 60.04929945900001,
+  "baselineOneClient": [
+    {
+      "pid": 87182,
+      "cpuSeconds": 0.011334384,
+      "rss": 88260608,
+      "footprint": 62196288,
+      "writes": 24576
+    },
+    {
+      "pid": 87181,
+      "cpuSeconds": 0.003476625,
+      "rss": 46448640,
+      "footprint": 32409344,
+      "writes": 0
+    }
+  ],
+  "perProcess": [
+    {
+      "pid": 87182,
+      "role": "owner",
+      "averageCpuPercentOfOneCore": 0.02803275000983721,
+      "diskBytesWritten": 0,
+      "initialFootprintMiB": 74.5494384765625,
+      "finalFootprintMiB": 73.9244384765625,
+      "maxFootprintMiB": 74.5494384765625
+    },
+    {
+      "pid": 87181,
+      "role": "mcp-bridge",
+      "averageCpuPercentOfOneCore": 0.0060707336019615015,
+      "diskBytesWritten": 0,
+      "initialFootprintMiB": 30.548583984375,
+      "finalFootprintMiB": 30.407958984375,
+      "maxFootprintMiB": 30.548583984375
+    },
+    {
+      "pid": 87187,
+      "role": "mcp-bridge",
+      "averageCpuPercentOfOneCore": 0.005925268124783637,
+      "diskBytesWritten": 0,
+      "initialFootprintMiB": 31.3143310546875,
+      "finalFootprintMiB": 30.8143310546875,
+      "maxFootprintMiB": 31.3143310546875
+    },
+    {
+      "pid": 87188,
+      "role": "mcp-bridge",
+      "averageCpuPercentOfOneCore": 0.0047197469837847094,
+      "diskBytesWritten": 0,
+      "initialFootprintMiB": 30.53302001953125,
+      "finalFootprintMiB": 30.14239501953125,
+      "maxFootprintMiB": 30.53302001953125
+    },
+    {
+      "pid": 87189,
+      "role": "mcp-bridge",
+      "averageCpuPercentOfOneCore": 0.0048674422954686596,
+      "diskBytesWritten": 0,
+      "initialFootprintMiB": 31.0330810546875,
+      "finalFootprintMiB": 30.5487060546875,
+      "maxFootprintMiB": 31.0330810546875
+    },
+    {
+      "pid": 87190,
+      "role": "mcp-bridge",
+      "averageCpuPercentOfOneCore": 0.004955293445232728,
+      "diskBytesWritten": 0,
+      "initialFootprintMiB": 31.04864501953125,
+      "finalFootprintMiB": 30.47052001953125,
+      "maxFootprintMiB": 31.04864501953125
+    },
+    {
+      "pid": 87191,
+      "role": "mcp-bridge",
+      "averageCpuPercentOfOneCore": 0.004965386818601953,
+      "diskBytesWritten": 0,
+      "initialFootprintMiB": 30.81427001953125,
+      "finalFootprintMiB": 30.32989501953125,
+      "maxFootprintMiB": 30.81427001953125
+    },
+    {
+      "pid": 87192,
+      "role": "mcp-bridge",
+      "averageCpuPercentOfOneCore": 0.0049397911827852616,
+      "diskBytesWritten": 0,
+      "initialFootprintMiB": 31.0174560546875,
+      "finalFootprintMiB": 30.5174560546875,
+      "maxFootprintMiB": 31.0174560546875
+    },
+    {
+      "pid": 87193,
+      "role": "mcp-bridge",
+      "averageCpuPercentOfOneCore": 0.005632440395594125,
+      "diskBytesWritten": 0,
+      "initialFootprintMiB": 30.40802001953125,
+      "finalFootprintMiB": 29.95489501953125,
+      "maxFootprintMiB": 30.40802001953125
+    },
+    {
+      "pid": 87194,
+      "role": "mcp-bridge",
+      "averageCpuPercentOfOneCore": 0.004999998379747959,
+      "diskBytesWritten": 0,
+      "initialFootprintMiB": 30.970458984375,
+      "finalFootprintMiB": 30.501708984375,
+      "maxFootprintMiB": 30.970458984375
+    },
+    {
+      "pid": 87195,
+      "role": "mcp-bridge",
+      "averageCpuPercentOfOneCore": 0.00484983343059386,
+      "diskBytesWritten": 0,
+      "initialFootprintMiB": 31.39251708984375,
+      "finalFootprintMiB": 30.84564208984375,
+      "maxFootprintMiB": 31.39251708984375
+    },
+    {
+      "pid": 87196,
+      "role": "mcp-bridge",
+      "averageCpuPercentOfOneCore": 0.005605847246058876,
+      "diskBytesWritten": 0,
+      "initialFootprintMiB": 31.142333984375,
+      "finalFootprintMiB": 30.611083984375,
+      "maxFootprintMiB": 31.142333984375
+    },
+    {
+      "pid": 87197,
+      "role": "mcp-bridge",
+      "averageCpuPercentOfOneCore": 0.005633587786165217,
+      "diskBytesWritten": 0,
+      "initialFootprintMiB": 30.9549560546875,
+      "finalFootprintMiB": 30.45489501953125,
+      "maxFootprintMiB": 30.9549560546875
+    },
+    {
+      "pid": 87198,
+      "role": "desktop-bridge",
+      "averageCpuPercentOfOneCore": 0.00599066938733594,
+      "diskBytesWritten": 0,
+      "initialFootprintMiB": 22.892333984375,
+      "finalFootprintMiB": 22.532958984375,
+      "maxFootprintMiB": 22.892333984375
+    }
+  ],
+  "aggregateCpuPercentOfOneCore": 0.09718878908795164,
+  "aggregateDiskBytesWritten": 0,
+  "initialFootprintMiB": 468.61944580078125,
+  "finalFootprintMiB": 462.056884765625,
+  "snapshots": [
+    {
+      "elapsed": 0.002691541000000143,
+      "usage": [
+        {
+          "pid": 87182,
+          "cpuSeconds": 0.017954518,
+          "rss": 65224704,
+          "footprint": 78170752,
+          "writes": 24576
+        },
+        {
+          "pid": 87181,
+          "cpuSeconds": 0.003908051,
+          "rss": 34062336,
+          "footprint": 32032512,
+          "writes": 0
+        },
+        {
+          "pid": 87187,
+          "cpuSeconds": 0.004665424,
+          "rss": 49807360,
+          "footprint": 32835456,
+          "writes": 0
+        },
+        {
+          "pid": 87188,
+          "cpuSeconds": 0.004908735,
+          "rss": 49758208,
+          "footprint": 32016192,
+          "writes": 0
+        },
+        {
+          "pid": 87189,
+          "cpuSeconds": 0.004632083,
+          "rss": 49741824,
+          "footprint": 32540544,
+          "writes": 0
+        },
+        {
+          "pid": 87190,
+          "cpuSeconds": 0.004645083,
+          "rss": 50610176,
+          "footprint": 32556864,
+          "writes": 0
+        },
+        {
+          "pid": 87191,
+          "cpuSeconds": 0.004817073,
+          "rss": 51511296,
+          "footprint": 32311104,
+          "writes": 0
+        },
+        {
+          "pid": 87192,
+          "cpuSeconds": 0.00485979,
+          "rss": 49889280,
+          "footprint": 32524160,
+          "writes": 0
+        },
+        {
+          "pid": 87193,
+          "cpuSeconds": 0.004801801,
+          "rss": 50364416,
+          "footprint": 31885120,
+          "writes": 0
+        },
+        {
+          "pid": 87194,
+          "cpuSeconds": 0.004847777,
+          "rss": 50495488,
+          "footprint": 32474880,
+          "writes": 0
+        },
+        {
+          "pid": 87195,
+          "cpuSeconds": 0.004868872,
+          "rss": 49807360,
+          "footprint": 32917440,
+          "writes": 0
+        },
+        {
+          "pid": 87196,
+          "cpuSeconds": 0.004794066,
+          "rss": 50069504,
+          "footprint": 32655104,
+          "writes": 0
+        },
+        {
+          "pid": 87197,
+          "cpuSeconds": 0.004777328,
+          "rss": 49790976,
+          "footprint": 32458624,
+          "writes": 0
+        },
+        {
+          "pid": 87198,
+          "cpuSeconds": 0.002523203,
+          "rss": 36519936,
+          "footprint": 24004352,
+          "writes": 0
+        }
+      ]
+    },
+    {
+      "elapsed": 5.050518749999999,
+      "usage": [
+        {
+          "pid": 87182,
+          "cpuSeconds": 0.019718476,
+          "rss": 52805632,
+          "footprint": 77826688,
+          "writes": 24576
+        },
+        {
+          "pid": 87181,
+          "cpuSeconds": 0.004440579,
+          "rss": 34455552,
+          "footprint": 31983360,
+          "writes": 0
+        },
+        {
+          "pid": 87187,
+          "cpuSeconds": 0.005077277,
+          "rss": 33226752,
+          "footprint": 32425856,
+          "writes": 0
+        },
+        {
+          "pid": 87188,
+          "cpuSeconds": 0.005249241,
+          "rss": 33210368,
+          "footprint": 31852352,
+          "writes": 0
+        },
+        {
+          "pid": 87189,
+          "cpuSeconds": 0.004986355,
+          "rss": 33325056,
+          "footprint": 32212864,
+          "writes": 0
+        },
+        {
+          "pid": 87190,
+          "cpuSeconds": 0.004989425,
+          "rss": 33390592,
+          "footprint": 32147264,
+          "writes": 0
+        },
+        {
+          "pid": 87191,
+          "cpuSeconds": 0.005174474,
+          "rss": 33177600,
+          "footprint": 31983424,
+          "writes": 0
+        },
+        {
+          "pid": 87192,
+          "cpuSeconds": 0.005214453,
+          "rss": 33439744,
+          "footprint": 32212864,
+          "writes": 0
+        },
+        {
+          "pid": 87193,
+          "cpuSeconds": 0.005183006,
+          "rss": 33472512,
+          "footprint": 31573824,
+          "writes": 0
+        },
+        {
+          "pid": 87194,
+          "cpuSeconds": 0.005201672,
+          "rss": 33374208,
+          "footprint": 32147200,
+          "writes": 0
+        },
+        {
+          "pid": 87195,
+          "cpuSeconds": 0.005222086,
+          "rss": 33325056,
+          "footprint": 32540608,
+          "writes": 0
+        },
+        {
+          "pid": 87196,
+          "cpuSeconds": 0.00514162,
+          "rss": 33226752,
+          "footprint": 32229120,
+          "writes": 0
+        },
+        {
+          "pid": 87197,
+          "cpuSeconds": 0.005156109,
+          "rss": 33292288,
+          "footprint": 32081728,
+          "writes": 0
+        },
+        {
+          "pid": 87198,
+          "cpuSeconds": 0.00290395,
+          "rss": 31588352,
+          "footprint": 23856896,
+          "writes": 0
+        }
+      ]
+    },
+    {
+      "elapsed": 10.081849291,
+      "usage": [
+        {
+          "pid": 87182,
+          "cpuSeconds": 0.020882406,
+          "rss": 53428224,
+          "footprint": 77613696,
+          "writes": 24576
+        },
+        {
+          "pid": 87181,
+          "cpuSeconds": 0.004734836,
+          "rss": 34078720,
+          "footprint": 31983360,
+          "writes": 0
+        },
+        {
+          "pid": 87187,
+          "cpuSeconds": 0.005341374,
+          "rss": 33128448,
+          "footprint": 32278400,
+          "writes": 0
+        },
+        {
+          "pid": 87188,
+          "cpuSeconds": 0.005488415,
+          "rss": 32915456,
+          "footprint": 31622976,
+          "writes": 0
+        },
+        {
+          "pid": 87189,
+          "cpuSeconds": 0.00524624,
+          "rss": 33079296,
+          "footprint": 31983488,
+          "writes": 0
+        },
+        {
+          "pid": 87190,
+          "cpuSeconds": 0.005240801,
+          "rss": 33161216,
+          "footprint": 31967040,
+          "writes": 0
+        },
+        {
+          "pid": 87191,
+          "cpuSeconds": 0.00543565,
+          "rss": 33030144,
+          "footprint": 31786816,
+          "writes": 0
+        },
+        {
+          "pid": 87192,
+          "cpuSeconds": 0.005453013,
+          "rss": 33128448,
+          "footprint": 31934336,
+          "writes": 0
+        },
+        {
+          "pid": 87193,
+          "cpuSeconds": 0.005496162,
+          "rss": 33210368,
+          "footprint": 31393600,
+          "writes": 0
+        },
+        {
+          "pid": 87194,
+          "cpuSeconds": 0.005460436,
+          "rss": 33193984,
+          "footprint": 31934208,
+          "writes": 0
+        },
+        {
+          "pid": 87195,
+          "cpuSeconds": 0.00546978,
+          "rss": 33112064,
+          "footprint": 32360384,
+          "writes": 0
+        },
+        {
+          "pid": 87196,
+          "cpuSeconds": 0.005440229,
+          "rss": 33079296,
+          "footprint": 32081664,
+          "writes": 0
+        },
+        {
+          "pid": 87197,
+          "cpuSeconds": 0.005453995,
+          "rss": 32997376,
+          "footprint": 31934272,
+          "writes": 0
+        },
+        {
+          "pid": 87198,
+          "cpuSeconds": 0.003346882,
+          "rss": 32374784,
+          "footprint": 23774976,
+          "writes": 0
+        }
+      ]
+    },
+    {
+      "elapsed": 15.120555041,
+      "usage": [
+        {
+          "pid": 87182,
+          "cpuSeconds": 0.02233876,
+          "rss": 52314112,
+          "footprint": 77613696,
+          "writes": 24576
+        },
+        {
+          "pid": 87181,
+          "cpuSeconds": 0.004972057,
+          "rss": 32997376,
+          "footprint": 31983360,
+          "writes": 0
+        },
+        {
+          "pid": 87187,
+          "cpuSeconds": 0.005732945,
+          "rss": 33439744,
+          "footprint": 32425856,
+          "writes": 0
+        },
+        {
+          "pid": 87188,
+          "cpuSeconds": 0.00576184,
+          "rss": 33456128,
+          "footprint": 31688512,
+          "writes": 0
+        },
+        {
+          "pid": 87189,
+          "cpuSeconds": 0.005503624,
+          "rss": 33439744,
+          "footprint": 32163712,
+          "writes": 0
+        },
+        {
+          "pid": 87190,
+          "cpuSeconds": 0.005532727,
+          "rss": 33603584,
+          "footprint": 32048960,
+          "writes": 0
+        },
+        {
+          "pid": 87191,
+          "cpuSeconds": 0.005755191,
+          "rss": 33570816,
+          "footprint": 31934272,
+          "writes": 0
+        },
+        {
+          "pid": 87192,
+          "cpuSeconds": 0.005755878,
+          "rss": 33488896,
+          "footprint": 32114560,
+          "writes": 0
+        },
+        {
+          "pid": 87193,
+          "cpuSeconds": 0.005827577,
+          "rss": 33685504,
+          "footprint": 31508288,
+          "writes": 0
+        },
+        {
+          "pid": 87194,
+          "cpuSeconds": 0.005768231,
+          "rss": 33538048,
+          "footprint": 32098048,
+          "writes": 0
+        },
+        {
+          "pid": 87195,
+          "cpuSeconds": 0.005760909,
+          "rss": 33488896,
+          "footprint": 32376768,
+          "writes": 0
+        },
+        {
+          "pid": 87196,
+          "cpuSeconds": 0.005750289,
+          "rss": 33538048,
+          "footprint": 32229120,
+          "writes": 0
+        },
+        {
+          "pid": 87197,
+          "cpuSeconds": 0.005783996,
+          "rss": 33505280,
+          "footprint": 32065344,
+          "writes": 0
+        },
+        {
+          "pid": 87198,
+          "cpuSeconds": 0.00360142,
+          "rss": 31096832,
+          "footprint": 23840512,
+          "writes": 0
+        }
+      ]
+    },
+    {
+      "elapsed": 20.187625916000002,
+      "usage": [
+        {
+          "pid": 87182,
+          "cpuSeconds": 0.023814075,
+          "rss": 53673984,
+          "footprint": 77630080,
+          "writes": 24576
+        },
+        {
+          "pid": 87181,
+          "cpuSeconds": 0.00530791,
+          "rss": 33161216,
+          "footprint": 31885056,
+          "writes": 0
+        },
+        {
+          "pid": 87187,
+          "cpuSeconds": 0.006146728,
+          "rss": 33472512,
+          "footprint": 32376704,
+          "writes": 0
+        },
+        {
+          "pid": 87188,
+          "cpuSeconds": 0.006060704,
+          "rss": 33538048,
+          "footprint": 31688512,
+          "writes": 0
+        },
+        {
+          "pid": 87189,
+          "cpuSeconds": 0.005787571,
+          "rss": 33488896,
+          "footprint": 32130944,
+          "writes": 0
+        },
+        {
+          "pid": 87190,
+          "cpuSeconds": 0.005846015,
+          "rss": 33669120,
+          "footprint": 32016192,
+          "writes": 0
+        },
+        {
+          "pid": 87191,
+          "cpuSeconds": 0.006061967,
+          "rss": 33603584,
+          "footprint": 31885120,
+          "writes": 0
+        },
+        {
+          "pid": 87192,
+          "cpuSeconds": 0.006075009,
+          "rss": 33554432,
+          "footprint": 32081792,
+          "writes": 0
+        },
+        {
+          "pid": 87193,
+          "cpuSeconds": 0.006198799,
+          "rss": 33734656,
+          "footprint": 31491904,
+          "writes": 0
+        },
+        {
+          "pid": 87194,
+          "cpuSeconds": 0.006077696,
+          "rss": 33587200,
+          "footprint": 32065280,
+          "writes": 0
+        },
+        {
+          "pid": 87195,
+          "cpuSeconds": 0.006065604,
+          "rss": 33554432,
+          "footprint": 32425920,
+          "writes": 0
+        },
+        {
+          "pid": 87196,
+          "cpuSeconds": 0.006122743,
+          "rss": 33587200,
+          "footprint": 32179968,
+          "writes": 0
+        },
+        {
+          "pid": 87197,
+          "cpuSeconds": 0.006180719,
+          "rss": 33570816,
+          "footprint": 32032576,
+          "writes": 0
+        },
+        {
+          "pid": 87198,
+          "cpuSeconds": 0.003962894,
+          "rss": 31195136,
+          "footprint": 23643904,
+          "writes": 0
+        }
+      ]
+    },
+    {
+      "elapsed": 25.292636875,
+      "usage": [
+        {
+          "pid": 87182,
+          "cpuSeconds": 0.025531508,
+          "rss": 53690368,
+          "footprint": 77630080,
+          "writes": 24576
+        },
+        {
+          "pid": 87181,
+          "cpuSeconds": 0.005582532,
+          "rss": 33177600,
+          "footprint": 31885056,
+          "writes": 0
+        },
+        {
+          "pid": 87187,
+          "cpuSeconds": 0.006484832,
+          "rss": 33472512,
+          "footprint": 32343936,
+          "writes": 0
+        },
+        {
+          "pid": 87188,
+          "cpuSeconds": 0.0063514,
+          "rss": 33538048,
+          "footprint": 31672128,
+          "writes": 0
+        },
+        {
+          "pid": 87189,
+          "cpuSeconds": 0.006098098,
+          "rss": 33488896,
+          "footprint": 32098176,
+          "writes": 0
+        },
+        {
+          "pid": 87190,
+          "cpuSeconds": 0.006151573,
+          "rss": 33669120,
+          "footprint": 32016192,
+          "writes": 0
+        },
+        {
+          "pid": 87191,
+          "cpuSeconds": 0.006352528,
+          "rss": 33603584,
+          "footprint": 31852352,
+          "writes": 0
+        },
+        {
+          "pid": 87192,
+          "cpuSeconds": 0.006367331,
+          "rss": 33554432,
+          "footprint": 32065408,
+          "writes": 0
+        },
+        {
+          "pid": 87193,
+          "cpuSeconds": 0.006519867,
+          "rss": 33734656,
+          "footprint": 31459136,
+          "writes": 0
+        },
+        {
+          "pid": 87194,
+          "cpuSeconds": 0.006395095,
+          "rss": 33587200,
+          "footprint": 32032512,
+          "writes": 0
+        },
+        {
+          "pid": 87195,
+          "cpuSeconds": 0.006355029,
+          "rss": 33554432,
+          "footprint": 32425920,
+          "writes": 0
+        },
+        {
+          "pid": 87196,
+          "cpuSeconds": 0.006466982,
+          "rss": 33587200,
+          "footprint": 32147200,
+          "writes": 0
+        },
+        {
+          "pid": 87197,
+          "cpuSeconds": 0.006515054,
+          "rss": 33570816,
+          "footprint": 31983424,
+          "writes": 0
+        },
+        {
+          "pid": 87198,
+          "cpuSeconds": 0.004300239,
+          "rss": 31211520,
+          "footprint": 23627520,
+          "writes": 0
+        }
+      ]
+    },
+    {
+      "elapsed": 30.352038375,
+      "usage": [
+        {
+          "pid": 87182,
+          "cpuSeconds": 0.026696694,
+          "rss": 53444608,
+          "footprint": 77531776,
+          "writes": 24576
+        },
+        {
+          "pid": 87181,
+          "cpuSeconds": 0.005924507,
+          "rss": 33128448,
+          "footprint": 31885056,
+          "writes": 0
+        },
+        {
+          "pid": 87187,
+          "cpuSeconds": 0.006729945,
+          "rss": 33193984,
+          "footprint": 32278400,
+          "writes": 0
+        },
+        {
+          "pid": 87188,
+          "cpuSeconds": 0.006559666,
+          "rss": 33390592,
+          "footprint": 31590208,
+          "writes": 0
+        },
+        {
+          "pid": 87189,
+          "cpuSeconds": 0.006314374,
+          "rss": 33275904,
+          "footprint": 32032640,
+          "writes": 0
+        },
+        {
+          "pid": 87190,
+          "cpuSeconds": 0.006374015,
+          "rss": 33488896,
+          "footprint": 31934272,
+          "writes": 0
+        },
+        {
+          "pid": 87191,
+          "cpuSeconds": 0.006572017,
+          "rss": 33423360,
+          "footprint": 31786816,
+          "writes": 0
+        },
+        {
+          "pid": 87192,
+          "cpuSeconds": 0.006570158,
+          "rss": 33406976,
+          "footprint": 31999872,
+          "writes": 0
+        },
+        {
+          "pid": 87193,
+          "cpuSeconds": 0.006759634,
+          "rss": 33603584,
+          "footprint": 31393600,
+          "writes": 0
+        },
+        {
+          "pid": 87194,
+          "cpuSeconds": 0.006606271,
+          "rss": 33357824,
+          "footprint": 31966976,
+          "writes": 0
+        },
+        {
+          "pid": 87195,
+          "cpuSeconds": 0.006555247,
+          "rss": 33390592,
+          "footprint": 32327616,
+          "writes": 0
+        },
+        {
+          "pid": 87196,
+          "cpuSeconds": 0.006697505,
+          "rss": 33357824,
+          "footprint": 32081664,
+          "writes": 0
+        },
+        {
+          "pid": 87197,
+          "cpuSeconds": 0.006756797,
+          "rss": 33390592,
+          "footprint": 31917888,
+          "writes": 0
+        },
+        {
+          "pid": 87198,
+          "cpuSeconds": 0.004577677,
+          "rss": 31178752,
+          "footprint": 23643904,
+          "writes": 0
+        }
+      ]
+    },
+    {
+      "elapsed": 35.39210325,
+      "usage": [
+        {
+          "pid": 87182,
+          "cpuSeconds": 0.028048795,
+          "rss": 53329920,
+          "footprint": 77531776,
+          "writes": 24576
+        },
+        {
+          "pid": 87181,
+          "cpuSeconds": 0.006182921,
+          "rss": 33128448,
+          "footprint": 31901440,
+          "writes": 0
+        },
+        {
+          "pid": 87187,
+          "cpuSeconds": 0.007034295,
+          "rss": 33193984,
+          "footprint": 32278400,
+          "writes": 0
+        },
+        {
+          "pid": 87188,
+          "cpuSeconds": 0.006790795,
+          "rss": 33374208,
+          "footprint": 31590208,
+          "writes": 0
+        },
+        {
+          "pid": 87189,
+          "cpuSeconds": 0.006564438,
+          "rss": 33210368,
+          "footprint": 32032640,
+          "writes": 0
+        },
+        {
+          "pid": 87190,
+          "cpuSeconds": 0.006647846,
+          "rss": 33456128,
+          "footprint": 31934272,
+          "writes": 0
+        },
+        {
+          "pid": 87191,
+          "cpuSeconds": 0.00681847,
+          "rss": 33390592,
+          "footprint": 31786816,
+          "writes": 0
+        },
+        {
+          "pid": 87192,
+          "cpuSeconds": 0.006817734,
+          "rss": 33308672,
+          "footprint": 32016256,
+          "writes": 0
+        },
+        {
+          "pid": 87193,
+          "cpuSeconds": 0.007047159,
+          "rss": 33603584,
+          "footprint": 31393600,
+          "writes": 0
+        },
+        {
+          "pid": 87194,
+          "cpuSeconds": 0.006858197,
+          "rss": 33341440,
+          "footprint": 31983360,
+          "writes": 0
+        },
+        {
+          "pid": 87195,
+          "cpuSeconds": 0.006812185,
+          "rss": 33390592,
+          "footprint": 32327616,
+          "writes": 0
+        },
+        {
+          "pid": 87196,
+          "cpuSeconds": 0.006968859,
+          "rss": 33357824,
+          "footprint": 32081664,
+          "writes": 0
+        },
+        {
+          "pid": 87197,
+          "cpuSeconds": 0.007059739,
+          "rss": 33357824,
+          "footprint": 31917888,
+          "writes": 0
+        },
+        {
+          "pid": 87198,
+          "cpuSeconds": 0.00489719,
+          "rss": 31178752,
+          "footprint": 23627520,
+          "writes": 0
+        }
+      ]
+    },
+    {
+      "elapsed": 40.449224333000004,
+      "usage": [
+        {
+          "pid": 87182,
+          "cpuSeconds": 0.029292948,
+          "rss": 53067776,
+          "footprint": 77531776,
+          "writes": 24576
+        },
+        {
+          "pid": 87181,
+          "cpuSeconds": 0.006449262,
+          "rss": 33128448,
+          "footprint": 31901440,
+          "writes": 0
+        },
+        {
+          "pid": 87187,
+          "cpuSeconds": 0.007350763,
+          "rss": 32456704,
+          "footprint": 32278400,
+          "writes": 0
+        },
+        {
+          "pid": 87188,
+          "cpuSeconds": 0.007009306,
+          "rss": 32587776,
+          "footprint": 31590208,
+          "writes": 0
+        },
+        {
+          "pid": 87189,
+          "cpuSeconds": 0.006781244,
+          "rss": 32423936,
+          "footprint": 32032640,
+          "writes": 0
+        },
+        {
+          "pid": 87190,
+          "cpuSeconds": 0.006858784,
+          "rss": 32587776,
+          "footprint": 31934272,
+          "writes": 0
+        },
+        {
+          "pid": 87191,
+          "cpuSeconds": 0.00704956,
+          "rss": 32505856,
+          "footprint": 31786816,
+          "writes": 0
+        },
+        {
+          "pid": 87192,
+          "cpuSeconds": 0.007039561,
+          "rss": 32604160,
+          "footprint": 31999872,
+          "writes": 0
+        },
+        {
+          "pid": 87193,
+          "cpuSeconds": 0.007305864,
+          "rss": 32735232,
+          "footprint": 31393600,
+          "writes": 0
+        },
+        {
+          "pid": 87194,
+          "cpuSeconds": 0.007086736,
+          "rss": 32604160,
+          "footprint": 31983360,
+          "writes": 0
+        },
+        {
+          "pid": 87195,
+          "cpuSeconds": 0.007034724,
+          "rss": 32587776,
+          "footprint": 32327616,
+          "writes": 0
+        },
+        {
+          "pid": 87196,
+          "cpuSeconds": 0.007274221,
+          "rss": 32571392,
+          "footprint": 32081664,
+          "writes": 0
+        },
+        {
+          "pid": 87197,
+          "cpuSeconds": 0.007335911,
+          "rss": 32538624,
+          "footprint": 31917888,
+          "writes": 0
+        },
+        {
+          "pid": 87198,
+          "cpuSeconds": 0.005210919,
+          "rss": 31162368,
+          "footprint": 23627520,
+          "writes": 0
+        }
+      ]
+    },
+    {
+      "elapsed": 45.499188333,
+      "usage": [
+        {
+          "pid": 87182,
+          "cpuSeconds": 0.030776027,
+          "rss": 52658176,
+          "footprint": 77597312,
+          "writes": 24576
+        },
+        {
+          "pid": 87181,
+          "cpuSeconds": 0.006704261,
+          "rss": 33079296,
+          "footprint": 31901440,
+          "writes": 0
+        },
+        {
+          "pid": 87187,
+          "cpuSeconds": 0.007625821,
+          "rss": 32423936,
+          "footprint": 32294784,
+          "writes": 0
+        },
+        {
+          "pid": 87188,
+          "cpuSeconds": 0.007244848,
+          "rss": 32522240,
+          "footprint": 31606592,
+          "writes": 0
+        },
+        {
+          "pid": 87189,
+          "cpuSeconds": 0.007014699,
+          "rss": 32391168,
+          "footprint": 32049024,
+          "writes": 0
+        },
+        {
+          "pid": 87190,
+          "cpuSeconds": 0.00709386,
+          "rss": 32555008,
+          "footprint": 31950656,
+          "writes": 0
+        },
+        {
+          "pid": 87191,
+          "cpuSeconds": 0.007295946,
+          "rss": 32407552,
+          "footprint": 31803200,
+          "writes": 0
+        },
+        {
+          "pid": 87192,
+          "cpuSeconds": 0.00727874,
+          "rss": 32538624,
+          "footprint": 32016256,
+          "writes": 0
+        },
+        {
+          "pid": 87193,
+          "cpuSeconds": 0.007551467,
+          "rss": 32702464,
+          "footprint": 31409984,
+          "writes": 0
+        },
+        {
+          "pid": 87194,
+          "cpuSeconds": 0.00732225,
+          "rss": 32555008,
+          "footprint": 31999744,
+          "writes": 0
+        },
+        {
+          "pid": 87195,
+          "cpuSeconds": 0.007272583,
+          "rss": 32505856,
+          "footprint": 32344000,
+          "writes": 0
+        },
+        {
+          "pid": 87196,
+          "cpuSeconds": 0.007541849,
+          "rss": 32505856,
+          "footprint": 32098048,
+          "writes": 0
+        },
+        {
+          "pid": 87197,
+          "cpuSeconds": 0.007574812,
+          "rss": 32456704,
+          "footprint": 31934272,
+          "writes": 0
+        },
+        {
+          "pid": 87198,
+          "cpuSeconds": 0.005290615,
+          "rss": 31080448,
+          "footprint": 23627520,
+          "writes": 0
+        }
+      ]
+    },
+    {
+      "elapsed": 50.548005208,
+      "usage": [
+        {
+          "pid": 87182,
+          "cpuSeconds": 0.032052832,
+          "rss": 52527104,
+          "footprint": 77613696,
+          "writes": 24576
+        },
+        {
+          "pid": 87181,
+          "cpuSeconds": 0.007003757,
+          "rss": 33079296,
+          "footprint": 31901440,
+          "writes": 0
+        },
+        {
+          "pid": 87187,
+          "cpuSeconds": 0.00781301,
+          "rss": 32391168,
+          "footprint": 32294784,
+          "writes": 0
+        },
+        {
+          "pid": 87188,
+          "cpuSeconds": 0.00738772,
+          "rss": 32407552,
+          "footprint": 31606592,
+          "writes": 0
+        },
+        {
+          "pid": 87189,
+          "cpuSeconds": 0.00716742,
+          "rss": 32309248,
+          "footprint": 32049024,
+          "writes": 0
+        },
+        {
+          "pid": 87190,
+          "cpuSeconds": 0.007243249,
+          "rss": 32473088,
+          "footprint": 31950656,
+          "writes": 0
+        },
+        {
+          "pid": 87191,
+          "cpuSeconds": 0.007445873,
+          "rss": 32391168,
+          "footprint": 31803200,
+          "writes": 0
+        },
+        {
+          "pid": 87192,
+          "cpuSeconds": 0.007435807,
+          "rss": 32456704,
+          "footprint": 31999872,
+          "writes": 0
+        },
+        {
+          "pid": 87193,
+          "cpuSeconds": 0.007753995,
+          "rss": 32571392,
+          "footprint": 31393600,
+          "writes": 0
+        },
+        {
+          "pid": 87194,
+          "cpuSeconds": 0.007471484,
+          "rss": 32423936,
+          "footprint": 31999744,
+          "writes": 0
+        },
+        {
+          "pid": 87195,
+          "cpuSeconds": 0.007405774,
+          "rss": 32456704,
+          "footprint": 32344000,
+          "writes": 0
+        },
+        {
+          "pid": 87196,
+          "cpuSeconds": 0.007711728,
+          "rss": 32456704,
+          "footprint": 32098048,
+          "writes": 0
+        },
+        {
+          "pid": 87197,
+          "cpuSeconds": 0.007766,
+          "rss": 32391168,
+          "footprint": 31917888,
+          "writes": 0
+        },
+        {
+          "pid": 87198,
+          "cpuSeconds": 0.005563267,
+          "rss": 31064064,
+          "footprint": 23643904,
+          "writes": 0
+        }
+      ]
+    },
+    {
+      "elapsed": 55.605078041,
+      "usage": [
+        {
+          "pid": 87182,
+          "cpuSeconds": 0.033584644,
+          "rss": 52019200,
+          "footprint": 77531776,
+          "writes": 24576
+        },
+        {
+          "pid": 87181,
+          "cpuSeconds": 0.007287221,
+          "rss": 33062912,
+          "footprint": 31901440,
+          "writes": 0
+        },
+        {
+          "pid": 87187,
+          "cpuSeconds": 0.007981645,
+          "rss": 32391168,
+          "footprint": 32294784,
+          "writes": 0
+        },
+        {
+          "pid": 87188,
+          "cpuSeconds": 0.007520666,
+          "rss": 32407552,
+          "footprint": 31606592,
+          "writes": 0
+        },
+        {
+          "pid": 87189,
+          "cpuSeconds": 0.007319695,
+          "rss": 32325632,
+          "footprint": 32049024,
+          "writes": 0
+        },
+        {
+          "pid": 87190,
+          "cpuSeconds": 0.007393528,
+          "rss": 32473088,
+          "footprint": 31950656,
+          "writes": 0
+        },
+        {
+          "pid": 87191,
+          "cpuSeconds": 0.007602305,
+          "rss": 32407552,
+          "footprint": 31803200,
+          "writes": 0
+        },
+        {
+          "pid": 87192,
+          "cpuSeconds": 0.007610337,
+          "rss": 32456704,
+          "footprint": 31999872,
+          "writes": 0
+        },
+        {
+          "pid": 87193,
+          "cpuSeconds": 0.007929853,
+          "rss": 32587776,
+          "footprint": 31393600,
+          "writes": 0
+        },
+        {
+          "pid": 87194,
+          "cpuSeconds": 0.007621671,
+          "rss": 32440320,
+          "footprint": 31999744,
+          "writes": 0
+        },
+        {
+          "pid": 87195,
+          "cpuSeconds": 0.007559554,
+          "rss": 32440320,
+          "footprint": 32344000,
+          "writes": 0
+        },
+        {
+          "pid": 87196,
+          "cpuSeconds": 0.007891372,
+          "rss": 32456704,
+          "footprint": 32081664,
+          "writes": 0
+        },
+        {
+          "pid": 87197,
+          "cpuSeconds": 0.007937112,
+          "rss": 32358400,
+          "footprint": 31917888,
+          "writes": 0
+        },
+        {
+          "pid": 87198,
+          "cpuSeconds": 0.005837709,
+          "rss": 31047680,
+          "footprint": 23627520,
+          "writes": 0
+        }
+      ]
+    },
+    {
+      "elapsed": 60.05199100000001,
+      "usage": [
+        {
+          "pid": 87182,
+          "cpuSeconds": 0.034787988,
+          "rss": 51773440,
+          "footprint": 77515392,
+          "writes": 24576
+        },
+        {
+          "pid": 87181,
+          "cpuSeconds": 0.007553484,
+          "rss": 33062912,
+          "footprint": 31885056,
+          "writes": 0
+        },
+        {
+          "pid": 87187,
+          "cpuSeconds": 0.008223506,
+          "rss": 32391168,
+          "footprint": 32311168,
+          "writes": 0
+        },
+        {
+          "pid": 87188,
+          "cpuSeconds": 0.00774291,
+          "rss": 32423936,
+          "footprint": 31606592,
+          "writes": 0
+        },
+        {
+          "pid": 87189,
+          "cpuSeconds": 0.007554948,
+          "rss": 32342016,
+          "footprint": 32032640,
+          "writes": 0
+        },
+        {
+          "pid": 87190,
+          "cpuSeconds": 0.007620702,
+          "rss": 32489472,
+          "footprint": 31950656,
+          "writes": 0
+        },
+        {
+          "pid": 87191,
+          "cpuSeconds": 0.007798753,
+          "rss": 32407552,
+          "footprint": 31803200,
+          "writes": 0
+        },
+        {
+          "pid": 87192,
+          "cpuSeconds": 0.0078261,
+          "rss": 32440320,
+          "footprint": 31999872,
+          "writes": 0
+        },
+        {
+          "pid": 87193,
+          "cpuSeconds": 0.008184042,
+          "rss": 32571392,
+          "footprint": 31409984,
+          "writes": 0
+        },
+        {
+          "pid": 87194,
+          "cpuSeconds": 0.007850241,
+          "rss": 32456704,
+          "footprint": 31983360,
+          "writes": 0
+        },
+        {
+          "pid": 87195,
+          "cpuSeconds": 0.007781163,
+          "rss": 32440320,
+          "footprint": 32344000,
+          "writes": 0
+        },
+        {
+          "pid": 87196,
+          "cpuSeconds": 0.008160338,
+          "rss": 32456704,
+          "footprint": 32098048,
+          "writes": 0
+        },
+        {
+          "pid": 87197,
+          "cpuSeconds": 0.008160258,
+          "rss": 32374784,
+          "footprint": 31934272,
+          "writes": 0
+        },
+        {
+          "pid": 87198,
+          "cpuSeconds": 0.006120558,
+          "rss": 31064064,
+          "footprint": 23627520,
+          "writes": 0
+        }
+      ]
+    }
+  ],
+  "testedSidecarSha256": "c08e6e6bc1d5203b77165e7213ae0475fa4bce81c88c697d9fba2f87906d1f3b",
+  "measurementScope": "Installed build with on-demand bundled Chromium/Playwright discovery; before final health-preflight/PDF-header/save-panel corrections.",
+  "hardware": {
+    "model": "MacBookAir10,1",
+    "memoryGiB": 16,
+    "logicalCpus": 8,
+    "os": "macOS 26.6.2"
+  },
+  "measurement": "Darwin proc_pid_rusage v2 cumulative user+system CPU and disk-write counter deltas; summed per-process physical footprints. Settled idle after fixture index/edit. Desktop bridge included; native UI and Chromium renderer excluded.",
+  "recordedDate": "2026-10-22"
+}

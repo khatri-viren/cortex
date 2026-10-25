@@ -22,7 +22,7 @@ import { RUNTIME_DIRECTORY } from "./vault.js";
 import type { Diagnostic, NoteFrontmatter, Section } from "./types.js";
 import { ServiceError } from "./errors.js";
 import type { DiffResult, GraphDirection, GraphEdgeRecord, GraphNodeRecord, GraphQueryResult, HealthResult, HistoryResult, IndexPhase, IndexRefreshResult, NoteCreateInput, NoteLinkSuggestion, NoteRecord, NoteSelector, NoteSource, NoteUpdateInput, RepositoryDiffResult, RepositoryHistoryResult, RepositoryRestoreResult, SectionReadResult, VaultChangeEvent, VaultChangeScope, VaultChangeSet, VaultCheckResult, VaultIndexStatus, VaultTree, VaultTreeNode, WorkspaceStatus, WriteResult } from "./runtime-types.js";
-import type { IndexReport } from "./index-types.js";
+import type { WorkspaceIndexReport, IndexReport } from "./index-types.js";
 import { startWatcher, type WatcherHandle } from "./watcher.js";
 import { isWorkspaceIgnored, loadWorkspaceConfig, workspaceIgnorePatterns, workspaceManifestPath, repositoryRelativePath as workspaceRepositoryRelativePath, workspaceRepositoryMatches, type WorkspaceConfig, type WorkspaceRepository } from "./workspace.js";
 import { WorkspaceIndexer } from "./workspace-indexer.js";
@@ -271,6 +271,8 @@ export class VaultRuntime {
   private workspaceError?: string;
   private workspaceTask?: Promise<void>;
   private closing = false;
+  private projectionChild?: Bun.Subprocess;
+  private workspaceProjectionReport?: WorkspaceIndexReport;
   private readonly writes = new AsyncMutex();
   private readonly subscribers = new Set<(changeSet: VaultChangeSet) => void>();
   private readonly changeHistory: VaultChangeSet[] = [];
@@ -333,13 +335,15 @@ export class VaultRuntime {
         const normalized = events.map((event) => ({ ...event, path: this.normalizeEventPath(event.path, repository.absolutePath) }));
         this.workspacePhase = "rebuilding";
         try {
-          await this.writes.run(() => {
-            this.workspaceIndexer!.incrementalRebuild(repository.id);
-            this.refreshWorkspaceAttachments();
+          const changed = await this.writes.run(async () => {
+            if (this.closing) return false;
+            const changed = await this.rebuildWorkspaceInBackground(repository.id, events.map(event => event.path));
+            if (changed) this.refreshWorkspaceAttachments();
+            return changed;
           });
           this.workspacePhase = "current";
           this.workspaceError = undefined;
-          this.publishChanges(normalized, repository.id);
+          if (changed) this.publishChanges(normalized, repository.id);
         } catch (error) {
           this.workspacePhase = "error";
           this.workspaceError = error instanceof Error ? error.message : String(error);
@@ -366,7 +370,7 @@ export class VaultRuntime {
   private async rebuildWorkspace(): Promise<void> {
     if (!this.workspaceIndexer || !this.workspace?.workspaceExists) return;
     try {
-      await this.rebuildWorkspaceInBackground();
+      await this.writes.run(() => this.closing ? Promise.resolve(false) : this.rebuildWorkspaceInBackground());
       this.refreshWorkspaceAttachments();
       this.workspacePhase = "current";
       this.workspaceError = undefined;
@@ -382,15 +386,26 @@ export class VaultRuntime {
 
   /** Run the expensive workspace projection in a separate process so source,
    * search, and health requests keep the main event loop available. */
-  private async rebuildWorkspaceInBackground(): Promise<void> {
-    if (!this.workspace) return;
+  private async rebuildWorkspaceInBackground(repository?: string, paths?: string[]): Promise<boolean> {
+    if (!this.workspace) return false;
     const cliEntry = resolve(dirname(fileURLToPath(import.meta.url)), "../cli.ts");
-    const args = existsSync(cliEntry)
-      ? ["run", cliEntry, "workspace:rebuild", "--vault", this.vaultRoot, "--workspace", this.workspace.workspaceRoot]
-      : ["workspace:rebuild", "--vault", this.vaultRoot, "--workspace", this.workspace.workspaceRoot];
-    const child = Bun.spawn([process.execPath, ...args], { stdout: "ignore", stderr: "pipe" });
-    const exitCode = await child.exited;
-    if (exitCode !== 0) throw new Error(`Background workspace projection exited with code ${exitCode}.`);
+    const args = existsSync(cliEntry) ? ["run", cliEntry] : [];
+    args.push("workspace:rebuild", "--vault", this.vaultRoot, "--workspace", this.workspace.workspaceRoot);
+    if (repository) {
+      args.push("--repository", repository);
+      const serialized = JSON.stringify(paths ?? []);
+      if (serialized.length < 32_768) args.push("--paths", serialized);
+    }
+    const child = Bun.spawn([process.execPath, ...args], { stdout: "pipe", stderr: "pipe" });
+    this.projectionChild = child;
+    try {
+      // Drain both pipes while the child is running; a full stderr pipe must
+      // never deadlock a projection job.
+      const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+      if (exitCode !== 0) throw new Error(`Background workspace projection exited with code ${exitCode}: ${stderr.slice(-2000)}`);
+      this.workspaceProjectionReport = JSON.parse(stdout) as WorkspaceIndexReport;
+      return this.workspaceProjectionReport.repositories.length > 0;
+    } finally { if (this.projectionChild === child) this.projectionChild = undefined; }
   }
 
   private refreshWorkspaceAttachments(): void {
@@ -455,6 +470,7 @@ export class VaultRuntime {
   async close(): Promise<void> {
     this.closing = true;
     this.pdfExports.close();
+    this.projectionChild?.kill("SIGTERM");
     await this.watcher?.stop();
     await this.watcher?.flushSnapshot();
     for (const handle of this.repoWatchers.values()) {
@@ -471,7 +487,7 @@ export class VaultRuntime {
   }
 
   async rebuildIndex(): Promise<IndexRefreshResult> {
-    return this.writes.run(() => {
+    return this.writes.run(async () => {
       const workspaceExists = Boolean(this.workspace?.workspaceExists && this.workspaceIndexer);
       if (workspaceExists) {
         this.workspacePhase = "rebuilding";
@@ -481,7 +497,8 @@ export class VaultRuntime {
 
       try {
         const index = this.indexer.fullRebuild();
-        const workspace = this.workspaceIndexer?.fullRebuild();
+        if (workspaceExists) await this.rebuildWorkspaceInBackground();
+        const workspace = workspaceExists ? this.workspaceProjectionReport : undefined;
         if (workspaceExists) {
           this.refreshWorkspaceAttachments();
           this.workspacePhase = "current";

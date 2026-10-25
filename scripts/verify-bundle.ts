@@ -11,6 +11,7 @@ export interface BundleVerification {
   watcherModulePath: string;
   watcherEmbeddedNativePath: string;
   watcherNativePath: string;
+  playwrightPackagePath: string;
   errors: string[];
 }
 
@@ -29,6 +30,8 @@ export function verifyBundleLayout(bundlePath: string): BundleVerification {
   const watcherModulePath = join(bundle, "Contents", "Resources", "node_modules", "@parcel", "watcher", "index.js");
   const watcherEmbeddedNativePath = join(bundle, "Contents", "Resources", "node_modules", "@parcel", "watcher", "build", "Release", "watcher.node");
   const watcherNativePath = join(bundle, "Contents", "Resources", "node_modules", "@parcel", watcherPackage, "watcher.node");
+  const playwrightPackagePath = join(bundle, "Contents", "Resources", "node_modules", "playwright-core", "package.json");
+  const playwrightBrowsersPath = join(bundle, "Contents", "Resources", "node_modules", "playwright-core", "browsers.json");
   const errors: string[] = [];
   if (!bundle.endsWith(".app")) errors.push("Bundle path must end with .app.");
   if (!existsSync(bundle) || !statSync(bundle).isDirectory()) errors.push("Cortex.app does not exist.");
@@ -39,7 +42,9 @@ export function verifyBundleLayout(bundlePath: string): BundleVerification {
   if (!existsSync(watcherModulePath) || !statSync(watcherModulePath).isFile()) errors.push("Packaged @parcel/watcher module is missing.");
   if (!existsSync(watcherEmbeddedNativePath) || !statSync(watcherEmbeddedNativePath).isFile()) errors.push("Packaged embedded @parcel/watcher binding is missing.");
   if (!existsSync(watcherNativePath) || !statSync(watcherNativePath).isFile()) errors.push("Packaged native @parcel/watcher binding is missing.");
-  return { valid: errors.length === 0, bundlePath: bundle, sidecarPath, uiIndexPath, chromiumPath, watcherModulePath, watcherEmbeddedNativePath, watcherNativePath, errors };
+  if (!existsSync(playwrightPackagePath) || !statSync(playwrightPackagePath).isFile()) errors.push("Packaged playwright-core package.json is missing.");
+  if (!existsSync(playwrightBrowsersPath) || !statSync(playwrightBrowsersPath).isFile()) errors.push("Packaged playwright-core browsers.json is missing.");
+  return { valid: errors.length === 0, bundlePath: bundle, sidecarPath, uiIndexPath, chromiumPath, watcherModulePath, watcherEmbeddedNativePath, watcherNativePath, playwrightPackagePath, errors };
 }
 
 if (import.meta.main) {
