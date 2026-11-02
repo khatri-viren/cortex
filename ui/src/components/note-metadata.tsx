@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 type NoteMetadataProps = {
+  fullWidth: boolean;
+  onFullWidthChange: (value: boolean) => void;
   metadata: NoteFrontmatter;
   mode: Mode;
   dirty: boolean;
@@ -68,7 +70,7 @@ function StringListField({ values, onChange, placeholder, disabled = false }: { 
   );
 }
 
-export function NoteMetadata({ metadata, mode, dirty, notePath, connectedFiles, onChange, onModeChange, onToggleInspector, disabled = false, focusTitleRequest, onTitleFocusComplete, onTitleEnter }: NoteMetadataProps) {
+export function NoteMetadata({ fullWidth, onFullWidthChange, metadata, mode, dirty, notePath, connectedFiles, onChange, onModeChange, onToggleInspector, disabled = false, focusTitleRequest, onTitleFocusComplete, onTitleEnter }: NoteMetadataProps) {
   const [extraKey, setExtraKey] = useState("");
   const titleRef = useRef<HTMLInputElement>(null);
   const onTitleFocusCompleteRef = useRef(onTitleFocusComplete);
@@ -132,6 +134,7 @@ export function NoteMetadata({ metadata, mode, dirty, notePath, connectedFiles, 
               <TabsTrigger value="live" disabled={disabled} className="h-7 px-2.5 text-xs">Live</TabsTrigger>
             </TabsList>
           </Tabs>
+          <Button variant="ghost" size="sm" aria-pressed={fullWidth} aria-label="Full width" title="Use full document width" disabled={disabled} onClick={() => onFullWidthChange(!fullWidth)}>Full width</Button>
           <Button variant="ghost" size="icon-sm" aria-label="Open inspector" disabled={disabled} onClick={onToggleInspector}>
             <span className="text-sm">☷</span>
           </Button>

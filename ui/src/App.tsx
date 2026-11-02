@@ -123,6 +123,7 @@ type VaultSession = {
   contextPanelOpen: boolean;
   panel: Panel;
   mode: Mode;
+  fullWidth: boolean;
 };
 
 const DEFAULT_SESSION: VaultSession = {
@@ -132,6 +133,7 @@ const DEFAULT_SESSION: VaultSession = {
   contextPanelOpen: false,
   panel: "context",
   mode: "reading",
+  fullWidth: false,
 };
 
 const RECENTS_LIMIT = 8;
@@ -299,6 +301,7 @@ function parseVaultSession(raw: string | null): VaultSession {
       contextPanelOpen: typeof parsed.contextPanelOpen === "boolean" ? parsed.contextPanelOpen : false,
       panel: parsed.panel === "git" || parsed.panel === "outline" || parsed.panel === "diagnostics" ? parsed.panel : "context",
       mode: parsed.mode === "source" || parsed.mode === "live" ? parsed.mode : "reading",
+      fullWidth: parsed.fullWidth === true,
     };
   } catch {
     return DEFAULT_SESSION;
@@ -359,6 +362,7 @@ function WorkspaceApp() {
     acknowledge: acknowledgeDocument,
   } = useDocumentSession();
   const [mode, setMode] = useState<Mode>(initialSession.mode);
+  const [fullWidth, setFullWidth] = useState(initialSession.fullWidth);
   const [vaultTree, setVaultTree] = useState<ApiVaultTree>();
   const [previewPath, setPreviewPath] = useState<string>();
   const [vaultRegistry, setVaultRegistry] = useState<VaultRegistry>();
@@ -692,6 +696,7 @@ function WorkspaceApp() {
       setExpandedTreePaths(new Set(restored.expandedTreePaths));
       setPanel(restored.panel);
       setMode(restored.mode);
+      setFullWidth(restored.fullWidth);
       setSessionReady(true);
     }).catch(() => {
       if (active) setSessionReady(true);
@@ -717,7 +722,7 @@ function WorkspaceApp() {
 
   useEffect(() => {
     if (!sessionReady) return;
-    const payload: VaultSession = { tabs, activeTabPath: selected ?? null, expandedTreePaths: [...expandedTreePaths], contextPanelOpen, panel, mode };
+    const payload: VaultSession = { tabs, activeTabPath: selected ?? null, expandedTreePaths: [...expandedTreePaths], contextPanelOpen, panel, mode, fullWidth };
     try {
       localStorage.setItem(sessionStorageKey, JSON.stringify(payload));
     } catch {
@@ -730,7 +735,7 @@ function WorkspaceApp() {
         .then(() => invoke("save_session", { vaultId: vaultKey, sessionJson: serialized }).then(() => undefined))
         .catch(() => undefined);
     }
-  }, [sessionReady, tabs, selected, expandedTreePaths, contextPanelOpen, panel, mode]);
+  }, [sessionReady, tabs, selected, expandedTreePaths, contextPanelOpen, panel, mode, fullWidth]);
 
   useEffect(() => {
     if (!selected) return;
@@ -1453,11 +1458,11 @@ function WorkspaceApp() {
           </Sidebar>
 
           <SidebarInset data-testid="workspace" className="relative min-w-0">
-            {route === "graph" ? <section className="flex min-h-0 flex-1 flex-col bg-background"><Suspense fallback={<div className="grid min-h-0 flex-1 place-items-center text-sm text-muted-foreground">Loading graph tools…</div>}><GraphPane onOpenPath={openPath} onOpenCode={openGraphCode} onBackToNote={() => { if (!isCreatingNote) navigate("notes"); }} activeNoteLabel={source?.note.title} initialCenter={graphCenter} initialCenterLabel={currentTitle} /></Suspense></section> : <div className="note-workspace flex min-h-0 flex-1 flex-col" aria-busy={isCreatingNote}>
+            {route === "graph" ? <section className="flex min-h-0 flex-1 flex-col bg-background"><Suspense fallback={<div className="grid min-h-0 flex-1 place-items-center text-sm text-muted-foreground">Loading graph tools…</div>}><GraphPane onOpenPath={openPath} onOpenCode={openGraphCode} onBackToNote={() => { if (!isCreatingNote) navigate("notes"); }} activeNoteLabel={source?.note.title} initialCenter={graphCenter} initialCenterLabel={currentTitle} /></Suspense></section> : <div className={"note-workspace flex min-h-0 flex-1 flex-col" + (fullWidth ? " note-full-width" : "")} aria-busy={isCreatingNote}>
               <div data-testid="note-document-scroll" className="note-document-scroll min-h-0 flex-1 overflow-auto overscroll-contain">
                 {pdfExportError && <Alert data-testid="pdf-export-error" variant="destructive" className="m-3 break-words"><AlertTitle>PDF export failed</AlertTitle><AlertDescription><p className="break-words whitespace-pre-wrap">{pdfExportError}</p><Button size="sm" variant="outline" className="mt-2" onClick={() => setPdfExportError(undefined)}>Dismiss</Button></AlertDescription></Alert>}
                 {creationIssue && <Alert data-testid="note-creation-status" variant="destructive" className="m-3"><AlertTitle>{creationIssue.kind === "save" ? "Could not create note" : creationIssue.kind === "load" ? "Note created but could not be opened" : creationIssue.kind === "refresh" ? "Note created but workspace refresh failed" : "Could not create note"}</AlertTitle><AlertDescription><p>{creationIssue.message}</p>{creationIssue.kind === "load" && <Button size="sm" variant="outline" disabled={isCreatingNote} onClick={() => void retryOpenCreatedNote()}>Open created note again</Button>}{creationIssue.kind === "refresh" && <Button size="sm" variant="outline" disabled={isRefreshingCreatedNote || isCreatingNote} onClick={() => void retryCreatedNoteRefresh()}>{isRefreshingCreatedNote ? "Refreshing…" : "Refresh"}</Button>}{creationIssue.kind === "create" && <Button size="sm" variant="outline" disabled={isRefreshing || isCreatingNote} onClick={() => void refreshIndex()}>Refresh</Button>}</AlertDescription></Alert>}
-                {source && metadataDraft ? <NoteMetadata metadata={metadataDraft} mode={mode} dirty={isDirty} notePath={activeNotePath} connectedFiles={context?.likely_files?.length ?? 0} disabled={isCreatingNote} focusTitleRequest={focusTitleRequest} onTitleFocusComplete={completeTitleFocus} onTitleEnter={focusBodyAfterTitle} onChange={updateMetadata} onModeChange={setMode} onToggleInspector={() => setContextPanelOpen(true)} /> : previewPath ? <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileIcon /></EmptyMedia><EmptyTitle>File preview unavailable</EmptyTitle><EmptyDescription>{previewPath} is not an indexed Markdown note.</EmptyDescription></EmptyHeader></Empty> : <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileTextIcon /></EmptyMedia><EmptyTitle>Choose a note</EmptyTitle><EmptyDescription>The indexed Markdown workspace will appear here.</EmptyDescription><Button data-testid="create-note-empty" onClick={() => void createNewNote()} disabled={isCreatingNote}><PlusIcon />Create note</Button></EmptyHeader></Empty>}
+                {source && metadataDraft ? <NoteMetadata fullWidth={fullWidth} onFullWidthChange={setFullWidth} metadata={metadataDraft} mode={mode} dirty={isDirty} notePath={activeNotePath} connectedFiles={context?.likely_files?.length ?? 0} disabled={isCreatingNote} focusTitleRequest={focusTitleRequest} onTitleFocusComplete={completeTitleFocus} onTitleEnter={focusBodyAfterTitle} onChange={updateMetadata} onModeChange={setMode} onToggleInspector={() => setContextPanelOpen(true)} /> : previewPath ? <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileIcon /></EmptyMedia><EmptyTitle>File preview unavailable</EmptyTitle><EmptyDescription>{previewPath} is not an indexed Markdown note.</EmptyDescription></EmptyHeader></Empty> : <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><FileTextIcon /></EmptyMedia><EmptyTitle>Choose a note</EmptyTitle><EmptyDescription>The indexed Markdown workspace will appear here.</EmptyDescription><Button data-testid="create-note-empty" onClick={() => void createNewNote()} disabled={isCreatingNote}><PlusIcon />Create note</Button></EmptyHeader></Empty>}
                 {source && <div className="note-editor-section flex border-t border-border/60"><Suspense fallback={<div className="grid min-h-[440px] flex-1 place-items-center text-sm text-muted-foreground">Loading editor…</div>}><Editor key={activeNotePath + ":" + (isCreatingNote ? "busy" : "ready")} value={draft} mode={mode} onChange={isCreatingNote ? () => undefined : updateDraft} linkTargets={notes.map((note) => note.title)} notePath={activeNotePath} notes={notes} suggestNoteLinks={suggestNoteLinks} onOpenNote={openPath} sections={source.sections} contentRevision={contentRevision} jumpRequest={jumpRequest} disabled={isCreatingNote} focusRequest={focusBodyRequest} onFocusComplete={completeBodyFocus} /></Suspense></div>}
               </div>
               {conflict && <Alert variant="destructive" className="m-3 shrink-0"><AlertTitle>External edit needs your decision</AlertTitle><AlertDescription><p>Conflicts: {conflict.sections.join(", ")}</p><div className="mt-2 flex gap-2"><Button size="sm" variant="outline" onClick={() => void takeTheirs()}>Take theirs</Button><Button size="sm" variant="outline" onClick={() => void keepMine()}>Keep mine</Button></div></AlertDescription></Alert>}

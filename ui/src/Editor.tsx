@@ -28,6 +28,7 @@ import type { ApiSection } from "../../src/api/contracts";
 import { SectionOutline } from "./components/section-outline";
 import { markdownBackquoteKey } from "./markdown-input";
 import { hasRichMarkdownBlock, MarkdownReader } from "./MarkdownReader";
+import { installTableResize } from "./table-resize";
 import { nextBottomPinnedState } from "./scroll-state";
 
 // Only the vault's actually-used fence languages get a grammar; matches
@@ -576,13 +577,19 @@ export const Editor = memo(function Editor({
     window.open(url, "_blank", "noopener,noreferrer");
   }, []);
 
+  useEffect(() => {
+    const host = readingHostRef.current;
+    if (mode !== "live" || disabled || !host) return;
+    return installTableResize(host, () => readingViewRef.current?.requestMeasure());
+  }, [mode, disabled, notePath, contentRevision]);
+
   if (mode !== "source") {
     const useRichReader = mode === "reading" && hasRichMarkdownBlock(value);
     return (
       <div className="relative flex min-h-[440px] min-w-0 w-full max-[700px]:min-h-[420px]">
         <div
           ref={readingHostRef}
-          className={(useRichReader ? "markdown-reader-host " : "atomic-editor-host ") + "min-h-[440px] min-w-0 flex-1 overflow-visible max-[700px]:min-h-[420px]"}
+          className={(useRichReader ? "markdown-reader-host " : "atomic-editor-host ") + (mode === "live" ? "is-live " : "") + "min-h-[440px] min-w-0 flex-1 overflow-visible max-[700px]:min-h-[420px]"}
           aria-label="Markdown editor"
         >
           {useRichReader ? <MarkdownReader value={value} sections={sections} jumpRequest={readerJumpRequest} notes={notes} onChange={onChange} onOpenNote={onOpenNote} /> : <AtomicCodeMirrorEditor

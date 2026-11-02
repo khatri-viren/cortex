@@ -655,3 +655,19 @@
   --node-directory: oklch(0.75 0.13 190);
   --node-root: oklch(0.75 0.16 300);
 }
+
+/* Full width is a view preference, never note metadata. */
+.note-full-width .note-metadata { max-width: none; }
+.note-full-width .atomic-editor-host { --atomic-editor-measure: 100%; }
+.note-full-width .markdown-reader { width: 100%; }
+
+/* Fixed layout allows long cell text to wrap within the chosen width. */
+.atomic-editor-host.is-live .cm-atomic-table table { width: 100%; table-layout: fixed; }
+.atomic-editor-host .cm-atomic-table th,
+.atomic-editor-host .cm-atomic-table td { overflow-wrap: anywhere; position: relative; }
+.atomic-editor-host .cm-atomic-table-cell-source { overflow-wrap: anywhere; white-space: pre-wrap; }
+.cortex-column-resize {
+  position: absolute; z-index: 2; inset-block: 0; right: -5px; width: 10px;
+  cursor: col-resize; touch-action: none; background: transparent; border: 0; padding: 0;
+}
+.cortex-column-resize:hover, .cortex-column-resize:focus-visible { background: var(--primary); opacity: .55; outline: none; }
