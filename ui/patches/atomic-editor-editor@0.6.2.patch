@@ -1,0 +1,65 @@
+--- a/dist/table-widget.js
++++ b/dist/table-widget.js
+@@ -678,7 +678,9 @@
+         // textContent (not innerText) so `display: none` delimiters inside
+         // mark wraps are still captured — otherwise a cell containing
+         // `**bold**` would serialize to just `bold` on every keystroke.
+-        const raw = (source.textContent ?? '').replace(/\s+/g, ' ').trim();
++        // Keep trailing whitespace in the editing DOM so the next character can follow it.
++        // readCellSource trims padding when serializing the Markdown table.
++        const raw = (source.textContent ?? '').replace(/\s+/g, ' ');
+         cell.dataset.raw = raw;
+         const offset = getCaretCharOffset(source);
+         renderCellSourceDecorated(source);
+@@ -700,6 +702,24 @@
+         composing = false;
+         commit();
+     });
++    // Native deletion at the edge of a nested contenteditable can escape into
++    // a neighbouring cell in WebKit. Deletion belongs to this cell only.
++    source.addEventListener('beforeinput', (event) => {
++        if (!event.inputType.startsWith('delete'))
++            return;
++        const selection = source.ownerDocument.defaultView?.getSelection();
++        if (!selection || !source.contains(selection.anchorNode) || !source.contains(selection.focusNode)) {
++            event.preventDefault();
++            return;
++        }
++        if (!selection.isCollapsed)
++            return;
++        const offset = getCaretCharOffset(source);
++        const backward = event.inputType.endsWith('Backward');
++        const forward = event.inputType.endsWith('Forward');
++        if ((backward && offset === 0) || (forward && offset === (source.textContent ?? '').length))
++            event.preventDefault();
++    });
+     source.addEventListener('input', (event) => {
+         if (composing || event.isComposing)
+             return;
+@@ -730,7 +750,16 @@
+     // three ways the caret can land in a new mark without firing an
+     // input event (click-to-place, arrow-key nav, tab-into-cell). The
+     // update is idempotent — redundant calls cost nothing.
+-    source.addEventListener('focus', () => updateActiveMarkForSource(source));
++    // CM renders its document selection even outside the viewport. Keep that
++    // selection inside this table while a nested editable cell owns focus.
++    // Otherwise scrolling can unmount the focused widget, leaving WebKit's
++    // native selection pointing at a document gap and Backspace deleting the tail.
++    source.addEventListener('focus', () => {
++        const wrap = cell.closest('.cm-atomic-table');
++        const range = wrap && findCurrentTableRange(view, wrap);
++        if (range) view.dispatch({ selection: EditorSelection.cursor(range.from + 1) });
++        updateActiveMarkForSource(source);
++    });
+     source.addEventListener('mouseup', () => updateActiveMarkForSource(source));
+     source.addEventListener('keyup', () => updateActiveMarkForSource(source));
+     // Blur: collapse every active wrap so the reader-resting state
+@@ -948,6 +977,8 @@
+         return;
+     view.dispatch({
+         changes: { from: range.from, to: range.to, insert: next },
++        // Replacing the whole table would otherwise map the cursor to its end.
++        selection: EditorSelection.cursor(range.from + 1),
+         // Tag as typing so CM6's history coalesces consecutive cell edits
+         // into one undo group instead of one step per keystroke (each of
+         // which rewrites the whole table range).

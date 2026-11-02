@@ -41,14 +41,13 @@ test("full width and live table resizing preserve Markdown editing", async ({ pa
     await expect.poll(async () => (await header.boundingBox())!.width).toBeLessThan(width - 20);
     const source = page.locator(".cm-atomic-table td .cm-atomic-table-cell-source").nth(1);
     await expect(source).toHaveCSS("overflow-wrap", "anywhere");
-    await source.click();
-    await page.keyboard.press("End");
-    await page.keyboard.type(" Edited");
-    await expect(source).toContainText("Edited");
-    await expect.poll(() => readFileSync(file, "utf8"), { timeout: 10_000 }).toContain("Edited");
+    await source.fill("");
+    await source.pressSequentially("hello world");
+    await expect(source).toHaveText("hello world");
+    await expect.poll(() => readFileSync(file, "utf8"), { timeout: 10_000 }).toContain("hello world");
     await page.reload();
     await expect(full).toHaveAttribute("aria-pressed", "true");
-    await expect(page.locator(".cm-atomic-table td .cm-atomic-table-cell-source").nth(1)).toContainText("Edited");
+    await expect(page.locator(".cm-atomic-table td .cm-atomic-table-cell-source").nth(1)).toHaveText("hello world");
   } finally {
     if (original !== undefined) writeFileSync(file, original);
     else if (existsSync(file)) unlinkSync(file);

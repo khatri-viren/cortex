@@ -14,7 +14,7 @@
     "e2e": "playwright test"
   },
   "dependencies": {
-    "@atomic-editor/editor": "^0.6.2",
+    "@atomic-editor/editor": "0.6.2",
     "@base-ui/react": "^1.6.0",
     "@codemirror/autocomplete": "6.20.3",
     "@codemirror/commands": "6.10.4",
@@ -63,5 +63,8 @@
     "tailwindcss": "^4.3.3",
     "typescript": "7.0.2",
     "vite": "8.1.5"
+  },
+  "patchedDependencies": {
+    "@atomic-editor/editor@0.6.2": "patches/atomic-editor-editor@0.6.2.patch"
   }
 }
